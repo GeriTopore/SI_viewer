@@ -1,0 +1,20 @@
+name: si-viewer
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - hyperspy>=2.4
+  - exspy>=0.3
+  - rosettasciio>=0.14
+  - sparse            # needed by rsciio to read Velox spectrum streams
+  - numba
+  - tifffile          # TIFF images and stacks
+  - pillow            # thumbnails
+  - fastapi
+  - uvicorn
+  - websockets
+  - pytest
+  - httpx             # FastAPI TestClient
+  - pip
+  - pip:
+      - -e .

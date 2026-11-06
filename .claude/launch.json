@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "si-viewer",
+      "runtimeExecutable": "/Users/gt622/miniforge3/envs/si-viewer/bin/si-viewer",
+      "runtimeArgs": ["--no-browser"],
+      "port": 8765
+    }
+  ]
+}

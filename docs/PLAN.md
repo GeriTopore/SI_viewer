@@ -135,8 +135,9 @@ SI_viewer/
 - **Image view:** pan/zoom (wheel, drag), fit-to-window, pixel readout in
   calibrated units, colormaps (gray, inferno, viridis, …), contrast from a
   histogram with percentile auto-scaling, gamma, and a scale bar.
-- **Stacks:** frame slider, play/pause, sum or mean projection, and for the SI
-  HAADF stack a frame-to-frame view to check drift.
+- **Stacks:** a slider bar under the image, dragged to scrub through the frames,
+  with a frame number readout (no playback). Neighbouring frames are prefetched
+  so scrubbing stays smooth. Sum or mean projection is available as an option.
 - **SI layout:** navigator image on the left, spectrum on the right. The
   navigator can be the simultaneous HAADF, the SI total counts, or any
   energy-window or element map.
@@ -219,14 +220,14 @@ processing recipes across files, and saved sessions.
 
 ## 6. Milestones
 
-| # | Deliverable |
-|---|---|
-| M0 | Repo scaffold, `environment.yml`, `load_emd` with the VeloxLite shim and pytest on the example file, FastAPI skeleton, Vite app shell, `si-viewer` command |
-| M1 | Dataset list and loading; image and stack viewer; SI navigator + sum spectrum |
-| M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table |
-| M3 | Background (windows + model), model fit + calibration, quantification, SI maps job |
-| M4 | Line profiles for images and SIs (intensity and element profiles) |
-| M5 | Export, keyboard shortcuts, pywebview desktop window, polish |
+| # | Deliverable | Status |
+|---|---|---|
+| M0 | Repo scaffold, `environment.yml`, `load_emd` with the VeloxLite shim and pytest on the example file, FastAPI skeleton, Vite app shell, `si-viewer` command | Done |
+| M1 | Dataset list and loading; image and stack viewer; SI navigator + sum spectrum; manual axis calibration | Done |
+| M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table | |
+| M3 | Background (windows + model), model fit + calibration, quantification, SI maps job | |
+| M4 | Line profiles for images and SIs (intensity and element profiles) | |
+| M5 | Export, keyboard shortcuts, pywebview desktop window, polish | |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

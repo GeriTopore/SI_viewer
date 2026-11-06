@@ -4,14 +4,13 @@ import { DatasetList, DatasetListHeader } from "./components/DatasetList";
 import { FileBrowser } from "./components/FileBrowser";
 import { Inspector } from "./components/Inspector";
 import { OpenFile } from "./components/OpenFile";
-import { useDatasets, useSelectedDataset } from "./state/datasets";
+import { useDatasets } from "./state/datasets";
 import { useUi } from "./state/ui";
-import { kindLabel, shapeLabel } from "./format";
+import { MainView } from "./views/MainView";
 
 export function App() {
   const { refresh, selectRelative, errors, clearErrors } = useDatasets();
   const browserOpen = useUi((s) => s.browserOpen);
-  const selected = useSelectedDataset();
   const [health, setHealth] = useState<Health | null>(null);
   const [backendDown, setBackendDown] = useState(false);
 
@@ -65,21 +64,7 @@ export function App() {
       </aside>
 
       <main className="main panel">
-        {selected ? (
-          <div className="placeholder">
-            <span className={`badge badge-${selected.is_element_map ? "map" : selected.kind}`}>
-              {kindLabel(selected)}
-            </span>
-            <h1>{selected.title}</h1>
-            <p className="muted">{shapeLabel(selected)}</p>
-            <p className="muted small">The viewer for this dataset arrives in milestone M1.</p>
-          </div>
-        ) : (
-          <div className="placeholder">
-            <h1>No dataset selected</h1>
-            <p className="muted">Open .emd files or TIFF stacks to start (⌘/Ctrl+O).</p>
-          </div>
-        )}
+        <MainView />
       </main>
 
       <aside className="inspector-panel panel">

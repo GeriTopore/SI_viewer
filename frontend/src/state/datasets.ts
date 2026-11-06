@@ -16,6 +16,8 @@ interface DatasetsState {
   openFiles: (paths: string[]) => Promise<void>;
   closeFile: (fileId: string) => Promise<void>;
   closeAll: () => Promise<void>;
+  /** Replace a dataset's summary (after loading, calibration, …). */
+  updateDataset: (summary: DatasetSummary) => void;
   select: (datasetId: string | null) => void;
   selectRelative: (step: 1 | -1) => void;
   clearErrors: () => void;
@@ -76,6 +78,15 @@ export const useDatasets = create<DatasetsState>((set, get) => ({
   closeAll: async () => {
     for (const f of get().files) await get().closeFile(f.id);
   },
+
+  updateDataset: (summary) =>
+    set({
+      files: get().files.map((f) =>
+        f.id !== summary.file_id
+          ? f
+          : { ...f, datasets: f.datasets.map((d) => (d.id === summary.id ? summary : d)) },
+      ),
+    }),
 
   select: (selectedId) => set({ selectedId }),
 

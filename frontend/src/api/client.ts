@@ -47,6 +47,18 @@ export interface FsListing {
   entries: FsEntry[];
 }
 
+export interface NavigatorSource {
+  id: string;
+  label: string;
+}
+
+export interface AxisCalibration {
+  index: number;
+  scale?: number;
+  offset?: number;
+  units?: string;
+}
+
 export interface Health {
   status: string;
   versions: Record<string, string>;
@@ -81,6 +93,11 @@ export const api = {
   openFile: (path: string) =>
     request<FileSummary>("/api/files", { method: "POST", body: JSON.stringify({ path }) }),
   closeFile: (id: string) => request<void>(`/api/files/${id}`, { method: "DELETE" }),
+  getDataset: (id: string) => request<DatasetSummary>(`/api/datasets/${id}`),
+  loadDataset: (id: string) => request<DatasetSummary>(`/api/datasets/${id}/load`, { method: "POST" }),
+  navigators: (id: string) => request<NavigatorSource[]>(`/api/datasets/${id}/navigators`),
+  calibrate: (id: string, axes: AxisCalibration[]) =>
+    request<DatasetSummary>(`/api/datasets/${id}/axes`, { method: "PATCH", body: JSON.stringify(axes) }),
   listDir: (path?: string) =>
     request<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
 };

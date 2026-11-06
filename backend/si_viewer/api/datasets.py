@@ -1,9 +1,14 @@
-"""Dataset summaries and metadata."""
+"""Dataset summaries, metadata, display data and calibration."""
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel
+
+from ..processing.frames import NotApplicable, get_frame, get_spectrum, navigator_sources
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -15,9 +20,86 @@ def _dataset(request: Request, dataset_id: str):
         raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
 
 
+def array_response(arr: np.ndarray, **meta) -> Response:
+    """Raw little-endian float32 bytes; shape and extra info in headers."""
+    arr = np.ascontiguousarray(arr, dtype="<f4")
+    return Response(
+        arr.tobytes(),
+        media_type="application/octet-stream",
+        headers={
+            "X-Array-Shape": ",".join(map(str, arr.shape)),
+            "X-Array-Meta": json.dumps(meta),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @router.get("/{dataset_id}")
 def get_dataset(dataset_id: str, request: Request) -> dict:
     return _dataset(request, dataset_id).summary()
+
+
+@router.post("/{dataset_id}/load")
+def load_dataset(dataset_id: str, request: Request) -> dict:
+    """Load the dataset into RAM (spectrum images: makes cursor/ROI work fast)."""
+    ds = _dataset(request, dataset_id)
+    ds.materialise()
+    return ds.summary()
+
+
+@router.get("/{dataset_id}/frame")
+def frame(
+    dataset_id: str, request: Request, index: int = 0, projection: str | None = None,
+    bin: int = 1,
+) -> Response:
+    ds = _dataset(request, dataset_id)
+    bin = max(1, min(bin, 64))
+    try:
+        arr = get_frame(ds, index=index, projection=projection, bin=bin)
+    except NotApplicable as e:
+        raise HTTPException(400, str(e))
+    except IndexError as e:
+        raise HTTPException(416, str(e))
+    return array_response(arr, bin=bin, index=index, projection=projection)
+
+
+@router.get("/{dataset_id}/spectrum")
+def spectrum(dataset_id: str, request: Request) -> Response:
+    try:
+        arr = get_spectrum(_dataset(request, dataset_id))
+    except NotApplicable as e:
+        raise HTTPException(400, str(e))
+    return array_response(arr)
+
+
+@router.get("/{dataset_id}/navigators")
+def navigators(dataset_id: str, request: Request) -> list[dict]:
+    ds = _dataset(request, dataset_id)
+    try:
+        return navigator_sources(ds, request.app.state.session.siblings(ds))
+    except NotApplicable as e:
+        raise HTTPException(400, str(e))
+
+
+class AxisCalibration(BaseModel):
+    index: int
+    scale: float | None = None
+    offset: float | None = None
+    units: str | None = None
+
+
+@router.patch("/{dataset_id}/axes")
+def calibrate_axes(dataset_id: str, body: list[AxisCalibration], request: Request) -> dict:
+    ds = _dataset(request, dataset_id)
+    n_axes = len(ds.signal.axes_manager._axes)
+    for cal in body:
+        if not 0 <= cal.index < n_axes:
+            raise HTTPException(422, f"Axis index {cal.index} out of range")
+        try:
+            ds.set_axis_calibration(cal.index, cal.scale, cal.offset, cal.units)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+    return ds.summary()
 
 
 @router.get("/{dataset_id}/thumbnail")

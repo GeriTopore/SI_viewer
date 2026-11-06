@@ -59,6 +59,9 @@ class Dataset:
     kind: DatasetKind
     is_element_map: bool = False
     thumbnails: dict[int, bytes] = field(default_factory=dict, repr=False)
+    # Derived arrays (projections, sum spectra, …) keyed by name.
+    cache: dict[str, object] = field(default_factory=dict, repr=False)
+    _load_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def title(self) -> str:
@@ -70,8 +73,24 @@ class Dataset:
 
     def materialise(self) -> None:
         """Load the data into RAM (no-op if already in memory)."""
-        if self.lazy:
-            self.signal.compute(close_file=False, show_progressbar=False)
+        with self._load_lock:
+            if self.lazy:
+                self.signal.compute(close_file=False, show_progressbar=False)
+
+    def set_axis_calibration(
+        self, index: int, scale: float | None = None, offset: float | None = None,
+        units: str | None = None,
+    ) -> None:
+        """Change the calibration of axis ``index`` (array order, as in ``summary``)."""
+        axis = self.signal.axes_manager._axes[index]
+        if scale is not None:
+            if not scale > 0:
+                raise ValueError("Scale must be positive")
+            axis.scale = scale
+        if offset is not None:
+            axis.offset = offset
+        if units is not None:
+            axis.units = units
 
     def summary(self) -> dict:
         s = self.signal

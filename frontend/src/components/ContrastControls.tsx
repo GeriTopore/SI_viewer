@@ -4,6 +4,7 @@ import { COLORMAPS, OVERLAY_COLOURS, colormapGradient, isColour } from "../viewe
 import { autoRange, fullRange, histogram, percentile, sortedSample } from "../viewer/contrast";
 import type { DisplayParams } from "../viewer/renderer";
 import { formatValue } from "../format";
+import { useUi } from "../state/ui";
 
 interface Props {
   frame: Frame | null;
@@ -17,6 +18,7 @@ const SOLID = "__solid";
 /** Colormap, histogram with draggable min/max handles, auto contrast and gamma. */
 export function ContrastControls({ frame, display, onChange }: Props) {
   const sample = useMemo(() => (frame ? sortedSample(frame.data) : null), [frame]);
+  const theme = useUi((s) => s.theme); // histogram colours come from CSS
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragging = useRef<"lo" | "hi" | null>(null);
   // Colour restored when switching back to "solid colour".
@@ -59,7 +61,7 @@ export function ContrastControls({ frame, display, onChange }: Props) {
     });
     ctx.fillStyle = css.getPropertyValue("--accent");
     for (const v of [display.lo, display.hi]) ctx.fillRect(Math.round(x(v)) - 1, 0, 2, h);
-  }, [sample, range?.[0], range?.[1], display]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sample, range?.[0], range?.[1], display, theme]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!display) return <div className="contrast-controls" />;
 

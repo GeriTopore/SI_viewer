@@ -224,7 +224,7 @@ processing recipes across files, and saved sessions.
 |---|---|---|
 | M0 | Repo scaffold, `environment.yml`, `load_emd` with the VeloxLite shim and pytest on the example file, FastAPI skeleton, Vite app shell, `si-viewer` command | Done |
 | M1 | Dataset list and loading; image and stack viewer; SI navigator + sum spectrum; manual axis calibration | Done |
-| M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table | |
+| M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table | Done |
 | M3 | Background (windows + model), model fit + calibration, quantification, SI maps job | |
 | M4 | Line profiles for images and SIs (intensity and element profiles) | |
 | M5 | Export, keyboard shortcuts, pywebview desktop window, polish | |

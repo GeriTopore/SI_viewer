@@ -11,7 +11,7 @@ import type { ImageGeometry } from "../views/geometry";
 import { useImageDisplay } from "../views/useImageDisplay";
 import { useOverlayFrames } from "../views/useOverlayFrames";
 import { ContrastControls } from "./ContrastControls";
-import { ImageView, type ViewLayer } from "./ImageView";
+import { ImageView, type Interaction, type Transform, type ViewLayer } from "./ImageView";
 import { LayersPanel } from "./LayersPanel";
 
 /** Drag-and-drop type for datasets dragged from the sidebar. */
@@ -44,13 +44,16 @@ interface Props {
   onRemoveBase?: () => void;
   /** Shown when there is nothing to draw. */
   empty?: string;
+  /** Pointer tool and SVG overlay passed to the image view. */
+  interaction?: Interaction;
+  renderOverlay?: (t: Transform) => ReactNode;
 }
 
 const BASE = "base";
 
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
-  viewKey, base, images, geometry, loading, error, children, onRemoveBase, empty,
+  viewKey, base, images, geometry, loading, error, children, onRemoveBase, empty, interaction, renderOverlay,
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
   const { setFocus, deselect, addToSelection } = useDatasets.getState();
@@ -194,6 +197,8 @@ export function LayeredViewer({
         error={error}
         empty={layers.length ? null : (empty ?? null)}
         panel={panel}
+        interaction={interaction}
+        renderOverlay={renderOverlay}
         hint={showPanel ? undefined : "click or drag maps to overlay them"}
       >
         {children}

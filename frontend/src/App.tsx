@@ -4,10 +4,12 @@ import { DatasetList, DatasetListHeader } from "./components/DatasetList";
 import { FileBrowser } from "./components/FileBrowser";
 import { Inspector } from "./components/Inspector";
 import { OpenFile } from "./components/OpenFile";
+import { ThemeToggle } from "./components/ThemeToggle";
 import { Toast } from "./components/Toast";
 import { useDatasets } from "./state/datasets";
 import { useUi } from "./state/ui";
 import { MainView } from "./views/MainView";
+import { isTyping } from "./keyboard";
 
 export function App() {
   const { refresh, selectRelative, errors, clearErrors } = useDatasets();
@@ -28,8 +30,8 @@ export function App() {
   // Up/down arrows switch datasets, unless typing in a field or a dialog is open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (useUi.getState().browserOpen) return;
-      if ((e.target as HTMLElement).closest("input, textarea, select")) return;
+      if (e.defaultPrevented || useUi.getState().browserOpen) return;
+      if (isTyping(e)) return;
       if (e.key === "ArrowDown") selectRelative(1);
       else if (e.key === "ArrowUp") selectRelative(-1);
       else return;
@@ -44,6 +46,8 @@ export function App() {
       <header className="topbar">
         <span className="app-name">SI Viewer</span>
         <OpenFile />
+        <span className="topbar-spacer" />
+        <ThemeToggle />
       </header>
 
       {errors.length > 0 && (

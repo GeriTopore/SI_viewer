@@ -1,0 +1,71 @@
+"""Spectrum-image interaction (point/region spectra, energy maps) and elements."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel
+
+from ..processing.regions import Region, energy_map, pixel_spectrum, region_spectrum
+from ..processing.xray import element_table, set_elements
+from ..session import DatasetKind
+from .datasets import _dataset, array_response
+
+router = APIRouter(tags=["eds"])
+
+
+def _spectrum_image(request: Request, dataset_id: str):
+    ds = _dataset(request, dataset_id)
+    if ds.kind is not DatasetKind.SPECTRUM_IMAGE:
+        raise HTTPException(400, f"{ds.title} is not a spectrum image")
+    ds.materialise()
+    return ds
+
+
+@router.get("/api/datasets/{dataset_id}/pixel-spectrum")
+def get_pixel_spectrum(dataset_id: str, request: Request, x: int, y: int, size: int = 1) -> Response:
+    """Summed spectrum of the size × size block around pixel (x, y)."""
+    ds = _spectrum_image(request, dataset_id)
+    try:
+        spectrum, n = pixel_spectrum(ds.signal.data, x, y, max(1, min(size, 64)))
+    except IndexError as e:
+        raise HTTPException(416, str(e))
+    return array_response(spectrum, pixels=n)
+
+
+@router.post("/api/datasets/{dataset_id}/region-spectrum")
+def post_region_spectrum(dataset_id: str, region: Region, request: Request) -> Response:
+    """Summed spectrum over a rectangle, ellipse or polygon of the scan."""
+    ds = _spectrum_image(request, dataset_id)
+    spectrum, n = region_spectrum(ds.signal.data, region)
+    return array_response(spectrum, pixels=n)
+
+
+@router.get("/api/datasets/{dataset_id}/energy-map")
+def get_energy_map(dataset_id: str, request: Request, lo: float, hi: float) -> Response:
+    """Counts in the energy window [lo, hi] (spectral-axis units) at every pixel."""
+    ds = _spectrum_image(request, dataset_id)
+    axis = ds.signal.axes_manager.signal_axes[0]
+    return array_response(energy_map(ds.signal.data, axis.offset, axis.scale, lo, hi), lo=lo, hi=hi)
+
+
+@router.get("/api/elements")
+def get_elements() -> list[dict]:
+    """Periodic table data: symbol, Z, name and X-ray lines (keV, weight)."""
+    return element_table()
+
+
+class ElementsBody(BaseModel):
+    elements: list[str]
+
+
+@router.put("/api/datasets/{dataset_id}/elements")
+def put_elements(dataset_id: str, body: ElementsBody, request: Request) -> dict:
+    """Set the elements of an EDS spectrum or spectrum image."""
+    ds = _dataset(request, dataset_id)
+    if ds.summary().get("eds") is None:
+        raise HTTPException(400, f"{ds.title} is not an EDS dataset")
+    try:
+        set_elements(ds.signal, body.elements)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return ds.summary()

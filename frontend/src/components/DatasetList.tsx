@@ -72,6 +72,7 @@ export function DatasetList() {
                       <div {...itemProps(d, "dataset-card")} title={`${d.title} — ${shapeLabel(d)}`}>
                         <span className={`thumb thumb-${d.kind}`}>
                           <img src={thumbnailUrl(d.id)} alt="" loading="lazy" draggable={false} />
+                          {d.is_element_map && <MapTint d={d} />}
                           <span className={badgeClass(d)}>{kindLabel(d)}</span>
                         </span>
                         <span className="dataset-title">
@@ -106,9 +107,20 @@ export function DatasetList() {
   );
 }
 
+/** The colormap an element map is shown with (its element colour by default). */
+const useMapColormap = (d: DatasetSummary) =>
+  useDisplay((s) => s.display[d.id]?.colormap ?? s.elementColours[d.title] ?? "#ffffff");
+
+/** Tints a map's greyscale thumbnail with its colour: multiplying turns the
+ * grey ramp into the same black → colour scale the viewer uses. */
+function MapTint({ d }: { d: DatasetSummary }) {
+  const colormap = useMapColormap(d);
+  return isColour(colormap) ? <span className="thumb-tint" style={{ background: colormap }} /> : null;
+}
+
 /** An element map's colour; click to pick another (applies to that element). */
 function ColourDot({ d }: { d: DatasetSummary }) {
-  const colormap = useDisplay((s) => s.display[d.id]?.colormap ?? s.elementColours[d.title] ?? "#ffffff");
+  const colormap = useMapColormap(d);
   return (
     <label
       className="colour-dot"

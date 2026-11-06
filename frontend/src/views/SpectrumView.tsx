@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchSpectrum } from "../api/arrays";
 import type { DatasetSummary } from "../api/client";
+import { ElementsPicker } from "../components/ElementsPicker";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { isAbort, spectralAxis } from "./geometry";
+import { useLineMarkers } from "./si/xray";
 
 export const SPECTRUM_COLOR = "#4c8dff";
 
@@ -39,6 +41,8 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
     () => (data ? [{ label: ds.title, data, color: SPECTRUM_COLOR }] : []),
     [data, ds.title],
   );
+  const [preview, setPreview] = useState<string | null>(null);
+  const markers = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, [axis.x[0], axis.x[axis.x.length - 1]]);
   return (
     <div className="view">
       <SpectrumPlot
@@ -48,6 +52,8 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
         xUnits={axis.units}
         loading={data ? null : "Loading spectrum…"}
         error={error}
+        markers={markers}
+        toolbar={<ElementsPicker ds={ds} onPreview={setPreview} />}
       />
     </div>
   );

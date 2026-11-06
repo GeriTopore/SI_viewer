@@ -93,9 +93,12 @@ class Dataset:
             axis.units = units
 
     def summary(self) -> dict:
+        from .processing.xray import eds_info
+
         s = self.signal
         am = s.axes_manager
         return {
+            "eds": eds_info(s),
             "id": self.id,
             "file_id": self.file_id,
             "title": self.title,

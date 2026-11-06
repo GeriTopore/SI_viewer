@@ -3,11 +3,41 @@ import type { Frame } from "../api/arrays";
 import { useDisplay } from "../state/display";
 import { ImageRenderer, type DisplayParams, type ViewTransform } from "../viewer/renderer";
 import { formatValue, niceScaleBar } from "../format";
+import { isTyping } from "../keyboard";
 
 export interface AxisCal {
   scale: number;
   offset: number;
   units: string;
+}
+
+/** A point in data pixel coordinates (pixel i spans [i, i+1)). */
+export interface Pt {
+  x: number;
+  y: number;
+}
+
+/** Maps data coordinates to CSS pixels within the image area. */
+export interface Transform {
+  zoom: number;
+  toScreen: (x: number, y: number) => [number, number];
+}
+
+/** Pointer/keyboard tool on top of pan/zoom (e.g. a cursor or region tool).
+ * Middle-drag or Space+drag always pans. */
+export interface Interaction {
+  /** CSS cursor over the image. */
+  cursor?: string;
+  /** Return true to take the drag (otherwise the image pans). */
+  onDown?: (p: Pt, e: React.PointerEvent, t: Transform) => boolean;
+  onMove?: (p: Pt, e: React.PointerEvent, t: Transform) => void;
+  onUp?: (p: Pt, e: React.PointerEvent, t: Transform) => void;
+  /** Pointer moved without a drag (null when it leaves). */
+  onHover?: (p: Pt | null) => void;
+  /** Return true to stop double-click from fitting the image. */
+  onDoubleClick?: (p: Pt) => boolean;
+  /** Keys while the image has focus; return true if handled. */
+  onKeyDown?: (e: React.KeyboardEvent) => boolean;
 }
 
 /** One image layer. The first is the base; later ones are added on top. */
@@ -40,6 +70,9 @@ interface Props {
   hint?: string;
   /** Message shown when there are no layers to draw. */
   empty?: string | null;
+  interaction?: Interaction;
+  /** SVG content drawn over the image in screen coordinates. */
+  renderOverlay?: (t: Transform) => ReactNode;
 }
 
 const MAX_ZOOM = 64;
@@ -58,6 +91,7 @@ const valueAt = (frame: Frame, ix: number, iy: number) => {
 
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
+  interaction, renderOverlay,
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -167,9 +201,36 @@ export function ImageView({
     return () => el.removeEventListener("wheel", onWheel);
   });
 
+  const transform: Transform | null = view && {
+    zoom: view.zoom,
+    toScreen: (x, y) => [(x - view.cx) * view.zoom + size.w / 2, (y - view.cy) * view.zoom + size.h / 2],
+  };
+
+  // Space held: drags pan even when a tool is active.
+  const spaceDown = useRef(false);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === " " && !isTyping(e)) spaceDown.current = true;
+    };
+    const up = (e: KeyboardEvent) => e.key === " " && (spaceDown.current = false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
+  const tooling = useRef(false); // the current drag belongs to the interaction
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (!view || (e.button !== 0 && e.button !== 1)) return;
+    wrapRef.current!.focus({ preventScroll: true });
     e.currentTarget.setPointerCapture(e.pointerId);
+    const p = toData(e.clientX, e.clientY, view);
+    if (e.button === 0 && !spaceDown.current && interaction?.onDown?.(p, e, transform!)) {
+      tooling.current = true;
+      return;
+    }
     drag.current = { x: e.clientX, y: e.clientY, view };
   };
 
@@ -185,6 +246,8 @@ export function ImageView({
       return;
     }
     const p = toData(e.clientX, e.clientY, view);
+    if (tooling.current) interaction?.onMove?.(p, e, transform!);
+    else interaction?.onHover?.(p);
     const ix = Math.floor(p.x);
     const iy = Math.floor(p.y);
     if (ix < 0 || iy < 0 || ix >= fullWidth || iy >= fullHeight) {
@@ -198,8 +261,10 @@ export function ImageView({
     setHover({ x: ix, y: iy, values });
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
     drag.current = null;
+    if (tooling.current && view) interaction?.onUp?.(toData(e.clientX, e.clientY, view), e, transform!);
+    tooling.current = false;
   };
 
   const bar = view && niceScaleBar(calX.scale / view.zoom, calX.units);
@@ -209,13 +274,29 @@ export function ImageView({
       <div
         ref={wrapRef}
         className="image-canvas-wrap"
+        tabIndex={0}
+        style={interaction?.cursor ? { cursor: interaction.cursor } : undefined}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerLeave={() => setHover(null)}
-        onDoubleClick={fit}
+        onPointerLeave={() => {
+          setHover(null);
+          interaction?.onHover?.(null);
+        }}
+        onDoubleClick={(e) => {
+          if (view && interaction?.onDoubleClick?.(toData(e.clientX, e.clientY, view))) return;
+          fit();
+        }}
+        onKeyDown={(e) => {
+          if (interaction?.onKeyDown?.(e)) e.preventDefault();
+        }}
       >
         <canvas ref={canvasRef} />
+        {renderOverlay && transform && (
+          <svg className="image-overlay-svg" width={size.w} height={size.h}>
+            {renderOverlay(transform)}
+          </svg>
+        )}
         {children && <div className="image-overlay-tl">{children}</div>}
         {panel && (
           <div

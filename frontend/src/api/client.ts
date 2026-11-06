@@ -11,6 +11,13 @@ export interface Axis {
   navigate: boolean;
 }
 
+export interface EdsInfo {
+  elements: string[];
+  xray_lines: string[];
+  beam_energy: number | null;
+  energy_resolution_MnKa: number | null;
+}
+
 export interface DatasetSummary {
   id: string;
   file_id: string;
@@ -24,6 +31,8 @@ export interface DatasetSummary {
   nbytes: number;
   lazy: boolean;
   axes: Axis[];
+  /** Present for EDS spectra and spectrum images. */
+  eds: EdsInfo | null;
 }
 
 export interface FileSummary {
@@ -98,6 +107,8 @@ export const api = {
   navigators: (id: string) => request<NavigatorSource[]>(`/api/datasets/${id}/navigators`),
   calibrate: (id: string, axes: AxisCalibration[]) =>
     request<DatasetSummary>(`/api/datasets/${id}/axes`, { method: "PATCH", body: JSON.stringify(axes) }),
+  setElements: (id: string, elements: string[]) =>
+    request<DatasetSummary>(`/api/datasets/${id}/elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
   listDir: (path?: string) =>
     request<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
 };

@@ -25,20 +25,20 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #15171c;
-    --panel: #1d2027;
-    --border: #2c313b;
-    --text: #e6e8ec;
-    --muted: #8b93a1;
-    --accent: #4c8dff;
-    --hover: #262a33;
-    --selected: #23324d;
-    --danger-bg: #3a1d1d;
-    --danger: #ff8a80;
-    color-scheme: dark;
-  }
+/* Theme: index.html sets data-theme before first paint (saved choice, else
+   the system setting); the toggle in the top bar changes it. */
+:root[data-theme="dark"] {
+  --bg: #15171c;
+  --panel: #1d2027;
+  --border: #2c313b;
+  --text: #e6e8ec;
+  --muted: #8b93a1;
+  --accent: #4c8dff;
+  --hover: #262a33;
+  --selected: #23324d;
+  --danger-bg: #3a1d1d;
+  --danger: #ff8a80;
+  color-scheme: dark;
 }
 
 * {
@@ -1256,4 +1256,211 @@ button.primary:disabled {
   inset: 0;
   opacity: 0;
   cursor: pointer;
+}
+
+/* ---------- M2: navigator tools, regions, legend, periodic table ---------- */
+.si-pane-header {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.tool-buttons button {
+  min-width: 30px;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+.image-canvas-wrap:focus {
+  outline: none;
+}
+
+.image-canvas-wrap:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.image-overlay-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.roi-label {
+  font: 600 11px var(--font);
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.75);
+  stroke-width: 3px;
+}
+
+.roi-handle {
+  fill: #111;
+  stroke-width: 1.5;
+}
+
+.cursor-box {
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
+}
+
+/* Spectrum series legend */
+.series-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
+.series-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.series-chip input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.series-chip select {
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  font-size: 11px;
+}
+
+.series-chip.off {
+  opacity: 0.55;
+}
+
+.series-chip.selected {
+  border-color: var(--accent);
+  background: var(--selected);
+}
+
+.series-chip .icon-button {
+  font-size: 14px;
+  padding: 0 2px;
+}
+
+.series-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.spectrum-plot.window-mode .u-over {
+  cursor: col-resize;
+}
+
+/* Elements picker + periodic table */
+.elements-picker {
+  position: relative;
+}
+
+.elements-button.active {
+  background: var(--selected);
+  border-color: var(--accent);
+}
+
+.periodic-table {
+  z-index: 15;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.pt-grid {
+  display: grid;
+  grid-template-columns: repeat(18, 1fr);
+  gap: 2px;
+}
+
+.pt-gap {
+  grid-column: 1 / -1;
+  height: 6px;
+}
+
+.pt-cell {
+  aspect-ratio: 1;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.pt-cell:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.pt-cell.on {
+  color: #000;
+  font-weight: 700;
+  border-color: transparent;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+.pt-cell:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.pt-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  min-height: 18px;
+  font-size: 12px;
+}
+
+.pt-info {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Element-map thumbnails shown in their element colour (grey × colour). */
+.thumb-tint {
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+.thumb .badge {
+  z-index: 1;
+}
+
+/* Theme toggle */
+.topbar-spacer {
+  flex: 1;
+}
+
+.theme-toggle {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.theme-toggle:hover {
+  color: var(--text);
+  background: var(--hover);
 }

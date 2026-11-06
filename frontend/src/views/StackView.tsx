@@ -4,6 +4,7 @@ import { api, type DatasetSummary } from "../api/client";
 import { LayeredViewer } from "../components/LayeredViewer";
 import { useDatasets } from "../state/datasets";
 import { imageGeometry, isAbort } from "./geometry";
+import { isTyping } from "../keyboard";
 
 type Projection = "frame" | "mean" | "sum";
 
@@ -100,7 +101,7 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
   // ←/→ step through frames (unless typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest("input, textarea, select")) return;
+      if (e.defaultPrevented || isTyping(e)) return;
       if (projection !== "frame") return;
       if (e.key === "ArrowRight") setIndex((i) => Math.min(n - 1, i + 1));
       else if (e.key === "ArrowLeft") setIndex((i) => Math.max(0, i - 1));

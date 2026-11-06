@@ -1,15 +1,43 @@
-import { useState } from "react";
+import { useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { thumbnailUrl, type DatasetSummary } from "../api/client";
-import { useDatasets } from "../state/datasets";
+import { setMapColour, useDatasets } from "../state/datasets";
+import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
+import { isColour, swatchBackground } from "../viewer/colormaps";
 import { kindLabel, shapeLabel } from "../format";
+import { DATASET_MIME } from "./LayeredViewer";
 
 const badgeClass = (d: DatasetSummary) => `badge badge-${d.is_element_map ? "map" : d.kind}`;
 
 export function DatasetList() {
-  const { files, selectedId, select, closeFile } = useDatasets();
+  const { files, selection, clickDataset, toggleSelect, closeFile } = useDatasets();
   const listMode = useUi((s) => s.listMode);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const highlighted = new Set(selection);
+
+  // Rows are div[role=button] (not <button>) so the colour picker can sit inside.
+  // Click: maps/images are added to or removed from the view; a spectrum
+  // image, stack or spectrum becomes the view. ⌘/Ctrl-click toggles anything
+  // (e.g. removes the spectrum image to leave just its maps). Images can also
+  // be dragged onto the viewer.
+  const activate = (d: DatasetSummary, toggle: boolean) => (toggle ? toggleSelect(d) : clickDataset(d));
+  const itemProps = (d: DatasetSummary, className: string) => ({
+    role: "button",
+    tabIndex: 0,
+    "aria-pressed": highlighted.has(d.id),
+    className: `${className}${highlighted.has(d.id) ? " selected" : ""}`,
+    onClick: (e: MouseEvent) => activate(d, e.metaKey || e.ctrlKey),
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      activate(d, e.metaKey || e.ctrlKey);
+    },
+    draggable: d.kind === "image",
+    onDragStart: (e: DragEvent) => {
+      e.dataTransfer.setData(DATASET_MIME, d.id);
+      e.dataTransfer.effectAllowed = "copy";
+    },
+  });
 
   if (!files.length) {
     return <p className="muted empty-list">No files open. Use Open… (⌘/Ctrl+O).</p>;
@@ -41,18 +69,17 @@ export function DatasetList() {
                 <ul className="dataset-grid">
                   {file.datasets.map((d) => (
                     <li key={d.id}>
-                      <button
-                        className={`dataset-card${d.id === selectedId ? " selected" : ""}`}
-                        onClick={() => select(d.id)}
-                        title={`${d.title} — ${shapeLabel(d)}`}
-                      >
+                      <div {...itemProps(d, "dataset-card")} title={`${d.title} — ${shapeLabel(d)}`}>
                         <span className={`thumb thumb-${d.kind}`}>
                           <img src={thumbnailUrl(d.id)} alt="" loading="lazy" draggable={false} />
                           <span className={badgeClass(d)}>{kindLabel(d)}</span>
                         </span>
-                        <span className="dataset-title">{d.title}</span>
+                        <span className="dataset-title">
+                          {d.is_element_map && <ColourDot d={d} />}
+                          {d.title}
+                        </span>
                         <span className="dataset-shape">{shapeLabel(d)}</span>
-                      </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -60,14 +87,14 @@ export function DatasetList() {
                 <ul className="dataset-list">
                   {file.datasets.map((d) => (
                     <li key={d.id}>
-                      <button
-                        className={`dataset${d.id === selectedId ? " selected" : ""}`}
-                        onClick={() => select(d.id)}
-                      >
+                      <div {...itemProps(d, "dataset")}>
                         <span className={badgeClass(d)}>{kindLabel(d)}</span>
-                        <span className="dataset-title">{d.title}</span>
+                        <span className="dataset-title">
+                          {d.is_element_map && <ColourDot d={d} />}
+                          {d.title}
+                        </span>
                         <span className="dataset-shape">{shapeLabel(d)}</span>
-                      </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -78,6 +105,28 @@ export function DatasetList() {
     </ul>
   );
 }
+
+/** An element map's colour; click to pick another (applies to that element). */
+function ColourDot({ d }: { d: DatasetSummary }) {
+  const colormap = useDisplay((s) => s.display[d.id]?.colormap ?? s.elementColours[d.title] ?? "#ffffff");
+  return (
+    <label
+      className="colour-dot"
+      style={{ background: swatchBackground(colormap) }}
+      title={`${d.title} colour — click to change`}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <input
+        type="color"
+        value={isColour(colormap) ? colormap : "#ffffff"}
+        onChange={(e) => setMapColour(d, e.target.value)}
+        aria-label={`${d.title} colour`}
+      />
+    </label>
+  );
+}
+
 
 /** Header of the dataset sidebar: count, list/icon toggle, close all. */
 export function DatasetListHeader() {

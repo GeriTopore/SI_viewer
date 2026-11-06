@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchFrame, type Frame } from "../api/arrays";
 import { api, type DatasetSummary } from "../api/client";
+import { LayeredViewer } from "../components/LayeredViewer";
 import { useDatasets } from "../state/datasets";
-import { ContrastControls } from "../components/ContrastControls";
-import { ImageView } from "../components/ImageView";
 import { imageGeometry, isAbort } from "./geometry";
-import { useImageDisplay } from "./useImageDisplay";
 
 type Projection = "frame" | "mean" | "sum";
 
@@ -21,7 +19,7 @@ const PREVIEW_MAX_SIZE = 1024;
 
 const keyOf = (r: Request) => (r.projection === "frame" ? `${r.index}@${r.bin}` : `${r.projection}`);
 
-export function StackView({ ds }: { ds: DatasetSummary }) {
+export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetSummary[] }) {
   const n = ds.navigation_shape[0] ?? 1;
   const g = imageGeometry(ds, "signal");
   const previewBin = Math.max(1, Math.ceil(Math.max(g.width, g.height) / PREVIEW_MAX_SIZE));
@@ -29,12 +27,14 @@ export function StackView({ ds }: { ds: DatasetSummary }) {
   const [index, setIndex] = useState(0);
   const [projection, setProjection] = useState<Projection>("frame");
   const [scrubbing, setScrubbing] = useState(false);
-  const [frame, setFrame] = useState<Frame | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Frames share one contrast setting so scrubbing doesn't flicker;
-  // projections (with different ranges) get their own.
-  const { display, setDisplay } = useImageDisplay(`${ds.id}:${projection}`, frame);
+  // Frames share one contrast setting (base key) so scrubbing doesn't flicker;
+  // projections (with different ranges) get their own. The shown image is
+  // kept with its projection, so right after switching the previous one isn't
+  // used (e.g. to auto-contrast the new projection).
+  const [shown, setShown] = useState<{ projection: Projection; frame: Frame } | null>(null);
+  const frame = shown && shown.projection === projection ? shown.frame : null;
 
   // At most one request in flight; when it lands, fetch whatever is wanted now.
   // Every frame that arrives is shown, so dragging stays responsive.
@@ -57,14 +57,14 @@ export function StackView({ ds }: { ds: DatasetSummary }) {
     const key = keyOf(r);
     const hit = cache.current.get(key);
     if (hit) {
-      setFrame(hit);
+      setShown({ projection: r.projection, frame: hit });
       return;
     }
     inFlight.current = true;
     try {
       const f = await get(r);
       remember(key, f);
-      setFrame(f);
+      setShown({ projection: r.projection, frame: f });
       setError(null);
     } catch (e) {
       if (!isAbort(e)) setError((e as Error).message);
@@ -115,20 +115,16 @@ export function StackView({ ds }: { ds: DatasetSummary }) {
 
   return (
     <div className="view">
-      <ContrastControls frame={frame} display={display} onChange={setDisplay} />
-      <ImageView
+      <LayeredViewer
         viewKey={ds.id}
-        frame={frame}
-        fullWidth={g.width}
-        fullHeight={g.height}
-        display={display}
-        calX={g.calX}
-        calY={g.calY}
+        base={{ key: `${ds.id}:${projection}`, label: ds.title, frame }}
+        images={images}
+        geometry={g}
         loading={frame ? null : "Loading frame…"}
         error={error}
       >
         <span className="frame-chip">{frameLabel}</span>
-      </ImageView>
+      </LayeredViewer>
       <div className="stack-bar">
         <input
           type="range"

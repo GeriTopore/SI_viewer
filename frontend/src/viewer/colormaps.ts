@@ -24,6 +24,17 @@ const STOPS: Record<string, string[]> = {
 
 export const COLORMAPS = Object.keys(STOPS);
 
+// Default colours for element maps, in the order they're handed out.
+export const OVERLAY_COLOURS = [
+  "#ff3b30", "#34c759", "#2f7bff", "#00d1e6", "#ff2dd4", "#ffd60a",
+  "#ff9500", "#af52de", "#a8ff3e", "#ff8fa3", "#7fd4ff", "#ffffff",
+];
+
+/** A colormap name may also be a "#rrggbb" colour: black → that colour. */
+export const isColour = (name: string) => /^#[0-9a-f]{6}$/i.test(name);
+
+const stopsFor = (name: string) => (isColour(name) ? ["#000000", name] : (STOPS[name] ?? STOPS.gray));
+
 const hexToRgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
 
 const lutCache = new Map<string, Uint8Array>();
@@ -32,7 +43,7 @@ const lutCache = new Map<string, Uint8Array>();
 export function colormapLut(name: string): Uint8Array {
   const cached = lutCache.get(name);
   if (cached) return cached;
-  const stops = (STOPS[name] ?? STOPS.gray).map(hexToRgb);
+  const stops = stopsFor(name).map(hexToRgb);
   const lut = new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
     const pos = (i / 255) * (stops.length - 1);
@@ -47,6 +58,9 @@ export function colormapLut(name: string): Uint8Array {
   return lut;
 }
 
+/** CSS background for a small swatch: the colour itself, or the gradient. */
+export const swatchBackground = (name: string) => (isColour(name) ? name : colormapGradient(name));
+
 /** CSS gradient for previews in the colormap picker. */
 export const colormapGradient = (name: string) =>
-  `linear-gradient(to right, ${(STOPS[name] ?? STOPS.gray).join(", ")})`;
+  `linear-gradient(to right, ${stopsFor(name).join(", ")})`;

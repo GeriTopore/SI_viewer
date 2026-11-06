@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Frame } from "../api/arrays";
-import { COLORMAPS, colormapGradient } from "../viewer/colormaps";
+import { COLORMAPS, OVERLAY_COLOURS, colormapGradient, isColour } from "../viewer/colormaps";
 import { autoRange, fullRange, histogram, percentile, sortedSample } from "../viewer/contrast";
 import type { DisplayParams } from "../viewer/renderer";
 import { formatValue } from "../format";
@@ -12,12 +12,15 @@ interface Props {
 }
 
 const BINS = 96;
+const SOLID = "__solid";
 
 /** Colormap, histogram with draggable min/max handles, auto contrast and gamma. */
 export function ContrastControls({ frame, display, onChange }: Props) {
   const sample = useMemo(() => (frame ? sortedSample(frame.data) : null), [frame]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragging = useRef<"lo" | "hi" | null>(null);
+  // Colour restored when switching back to "solid colour".
+  const lastColour = useRef(display && isColour(display.colormap) ? display.colormap : OVERLAY_COLOURS[0]);
 
   // Histogram range: the bulk of the data, widened to include the current limits.
   const bulk = useMemo(
@@ -84,16 +87,35 @@ export function ContrastControls({ frame, display, onChange }: Props) {
 
   return (
     <div className="contrast-controls">
-      <label className="colormap-picker" title="Colormap">
+      <div className="colormap-picker" title="Colormap">
         <span className="colormap-swatch" style={{ background: colormapGradient(display.colormap) }} />
-        <select value={display.colormap} onChange={(e) => onChange({ colormap: e.target.value })}>
+        <select
+          value={isColour(display.colormap) ? SOLID : display.colormap}
+          onChange={(e) =>
+            onChange({ colormap: e.target.value === SOLID ? lastColour.current : e.target.value })
+          }
+          aria-label="Colormap"
+        >
           {COLORMAPS.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
           ))}
+          <option value={SOLID}>solid colour</option>
         </select>
-      </label>
+        {isColour(display.colormap) && (
+          <input
+            type="color"
+            className="colour-input"
+            value={display.colormap}
+            onChange={(e) => {
+              lastColour.current = e.target.value;
+              onChange({ colormap: e.target.value });
+            }}
+            title="Colour at maximum intensity (black at minimum)"
+          />
+        )}
+      </div>
 
       <div className="histogram">
         <canvas

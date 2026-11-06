@@ -10,14 +10,23 @@ export interface AxisCal {
   units: string;
 }
 
+/** One image layer. The first is the base; later ones are added on top. */
+export interface ViewLayer {
+  key: string;
+  label: string;
+  frame: Frame | null;
+  display: DisplayParams | undefined;
+  opacity: number;
+  visible: boolean;
+}
+
 interface Props {
   /** Key under which pan/zoom is remembered. */
   viewKey: string;
-  frame: Frame | null;
+  layers: ViewLayer[];
   /** Full-resolution size in data pixels (frames may be binned). */
   fullWidth: number;
   fullHeight: number;
-  display: DisplayParams | undefined;
   calX: AxisCal;
   calY: AxisCal;
   /** Message shown over the image while data loads. */
@@ -25,6 +34,12 @@ interface Props {
   error?: string | null;
   /** Extra overlay (e.g. a frame label), drawn top-left. */
   children?: ReactNode;
+  /** Interactive panel drawn top-right (e.g. the layer list). */
+  panel?: ReactNode;
+  /** Hint shown in the readout bar when the pointer is outside the image. */
+  hint?: string;
+  /** Message shown when there are no layers to draw. */
+  empty?: string | null;
 }
 
 const MAX_ZOOM = 64;
@@ -32,12 +47,19 @@ const MAX_ZOOM = 64;
 interface Hover {
   x: number;
   y: number;
-  value: number | null;
+  values: { label: string; value: number }[];
 }
 
+const valueAt = (frame: Frame, ix: number, iy: number) => {
+  const fx = Math.floor(ix / frame.bin);
+  const fy = Math.floor(iy / frame.bin);
+  return fx < frame.width && fy < frame.height ? frame.data[fy * frame.width + fx] : null;
+};
+
 export function ImageView({
-  viewKey, frame, fullWidth, fullHeight, display, calX, calY, loading, error, children,
+  viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
 }: Props) {
+  const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<ImageRenderer | null>(null);
@@ -104,20 +126,20 @@ export function ImageView({
     if (size.w && fullWidth && (fitted.current || !view)) fit();
   }, [size.w, size.h, fullWidth, fullHeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Upload data and draw on any change, batched into one animation frame.
+  // Hidden layers keep their textures so toggling visibility is instant.
   useEffect(() => {
     const r = rendererRef.current;
-    if (!r) return;
-    if (frame) r.setData(frame.data, frame.width, frame.height, frame.bin);
-    else r.clearData();
-  }, [frame]);
-
-  // Draw on any change, batched into one animation frame.
-  useEffect(() => {
-    const r = rendererRef.current;
-    if (!r || !view || !display) return;
-    const id = requestAnimationFrame(() => r.draw(view, display, window.devicePixelRatio || 1));
+    if (!r || !view) return;
+    const id = requestAnimationFrame(() => {
+      r.setLayers(layers.filter((l) => l.frame).map((l) => ({ key: l.key, data: l.frame! })));
+      const draws = layers
+        .filter((l) => l.visible && l.frame && l.display)
+        .map((l) => ({ key: l.key, display: l.display!, opacity: l.opacity }));
+      r.draw(view, draws, window.devicePixelRatio || 1);
+    });
     return () => cancelAnimationFrame(id);
-  }, [view, display, frame, size]);
+  }, [view, layers, size]);
 
   const toData = (clientX: number, clientY: number, v: ViewTransform) => {
     const rect = wrapRef.current!.getBoundingClientRect();
@@ -169,13 +191,11 @@ export function ImageView({
       setHover(null);
       return;
     }
-    let value: number | null = null;
-    if (frame) {
-      const fx = Math.floor(ix / frame.bin);
-      const fy = Math.floor(iy / frame.bin);
-      if (fx < frame.width && fy < frame.height) value = frame.data[fy * frame.width + fx];
-    }
-    setHover({ x: ix, y: iy, value });
+    const values = layers.flatMap((l) => {
+      const v = l.visible && l.frame ? valueAt(l.frame, ix, iy) : null;
+      return v === null ? [] : [{ label: l.label, value: v }];
+    });
+    setHover({ x: ix, y: iy, values });
   };
 
   const onPointerUp = () => {
@@ -197,12 +217,23 @@ export function ImageView({
       >
         <canvas ref={canvasRef} />
         {children && <div className="image-overlay-tl">{children}</div>}
-        {bar && frame && (
+        {panel && (
+          <div
+            className="image-overlay-tr"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            {panel}
+          </div>
+        )}
+        {bar && anyFrame && (
           <div className="scale-bar">
             <div className="scale-bar-line" style={{ width: bar.pixels }} />
             <span>{bar.label}</span>
           </div>
         )}
+        {empty && !loading && !error && !glError && <div className="image-message">{empty}</div>}
         {(loading || error || glError) && (
           <div className={`image-message${error || glError ? " error" : ""}`}>
             {loading && !error && <span className="spinner" aria-hidden />}
@@ -222,12 +253,20 @@ export function ImageView({
                   {formatValue(calY.offset + (hover.y + 0.5) * calY.scale)} {calX.units})
                 </span>
               )}
-              {hover.value !== null && <> · {formatValue(hover.value)}</>}
+              {hover.values.length === 1 && <> · {formatValue(hover.values[0].value)}</>}
+              {hover.values.length > 1 &&
+                hover.values.map((v, i) => (
+                  <span key={i}>
+                    {" · "}
+                    <span className="muted">{v.label}</span> {formatValue(v.value)}
+                  </span>
+                ))}
             </>
           ) : (
             <span className="muted">
               {fullWidth} × {fullHeight} px
-              {frame && frame.bin > 1 && ` · preview binned ×${frame.bin}`}
+              {(layers[0]?.frame?.bin ?? 1) > 1 && ` · preview binned ×${layers[0].frame!.bin}`}
+              {hint && ` · ${hint}`}
             </span>
           )}
         </span>

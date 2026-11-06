@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, type DatasetSummary } from "../api/client";
-import { useDatasets, useSelectedDataset } from "../state/datasets";
+import { useDatasets, useFocusedDataset } from "../state/datasets";
 import { bytesLabel, kindLabel, shapeLabel } from "../format";
 
 export function Inspector() {
-  const d = useSelectedDataset();
+  const d = useFocusedDataset();
   if (!d) return <p className="muted">Select a dataset to see its details.</p>;
 
   return (

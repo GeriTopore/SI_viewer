@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchFrame, type Frame } from "../api/arrays";
 import { api, type DatasetSummary, type NavigatorSource } from "../api/client";
-import { ContrastControls } from "../components/ContrastControls";
-import { ImageView } from "../components/ImageView";
+import { LayeredViewer } from "../components/LayeredViewer";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
-import { useDatasets } from "../state/datasets";
+import { allDatasets, useDatasets } from "../state/datasets";
 import { bytesLabel } from "../format";
 import { imageGeometry, isAbort } from "./geometry";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
-import { useImageDisplay } from "./useImageDisplay";
+
+/** Navigator source meaning "no base image": only the overlaid maps are shown. */
+const NONE = "none";
 
 /** Navigator image (ADF, total counts or a map) beside the SI's spectrum. */
-export function SpectrumImageView({ ds }: { ds: DatasetSummary }) {
+export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: DatasetSummary[] }) {
   const updateDataset = useDatasets((s) => s.updateDataset);
   const [loadError, setLoadError] = useState<string | null>(null);
   const ready = !ds.lazy;
@@ -35,22 +36,28 @@ export function SpectrumImageView({ ds }: { ds: DatasetSummary }) {
   }, [ds.id]);
 
   // The total-counts map (source = the SI itself) needs the SI in memory.
-  const sourceReady = sourceId !== null && (sourceId !== ds.id || ready);
-  const [navFrame, setNavFrame] = useState<Frame | null>(null);
+  const sourceReady = sourceId !== null && sourceId !== NONE && (sourceId !== ds.id || ready);
+  // The frame is kept with the source it came from: right after switching
+  // source the previous image must not be used (e.g. for auto contrast).
+  const [nav, setNav] = useState<{ source: string; frame: Frame } | null>(null);
   const [navError, setNavError] = useState<string | null>(null);
   useEffect(() => {
     if (!sourceReady) return;
     const ac = new AbortController();
-    setNavFrame(null);
-    fetchFrame(sourceId!, {}, ac.signal)
-      .then(setNavFrame)
+    const source = sourceId!;
+    fetchFrame(source, {}, ac.signal)
+      .then((frame) => setNav({ source, frame }))
       .catch((e) => !isAbort(e) && setNavError((e as Error).message));
     return () => ac.abort();
   }, [sourceId, sourceReady]);
+  const navFrame = nav && nav.source === sourceId ? nav.frame : null;
 
-  const navKey = `${ds.id}:nav:${sourceId}`;
-  const { display, setDisplay } = useImageDisplay(navKey, navFrame);
-  const g = imageGeometry(ds, "navigation");
+  // A navigator image shares its display settings (contrast, element colour)
+  // with the dataset itself; the SI's total-counts map has its own.
+  const files = useDatasets((s) => s.files);
+  const sourceDataset =
+    sourceId && sourceId !== ds.id ? allDatasets(files).find((d) => d.id === sourceId) : undefined;
+  const navKey = sourceId === ds.id ? `${ds.id}:total` : (sourceId ?? "");
 
   const axis = useEnergyAxis(ds);
   const spectrum = useSpectrum(ds, ready);
@@ -74,20 +81,34 @@ export function SpectrumImageView({ ds }: { ds: DatasetSummary }) {
                     {s.label}
                   </option>
                 ))}
+                <option value={NONE}>None (maps only)</option>
               </select>
             </label>
           </div>
-          <ContrastControls frame={navFrame} display={display} onChange={setDisplay} />
-          <ImageView
+          <LayeredViewer
             viewKey={`${ds.id}:nav`}
-            frame={navFrame}
-            fullWidth={g.width}
-            fullHeight={g.height}
-            display={display}
-            calX={g.calX}
-            calY={g.calY}
-            loading={navFrame ? null : sourceId === ds.id && !ready ? loadingMsg : "Loading navigator…"}
+            base={
+              sourceId === NONE
+                ? null
+                : {
+                    key: navKey,
+                    label: sources.find((s) => s.id === sourceId)?.label ?? "Navigator",
+                    frame: navFrame,
+                    dataset: sourceDataset,
+                  }
+            }
+            onRemoveBase={() => setSourceId(NONE)}
+            images={images.filter((d) => d.id !== sourceId)}
+            geometry={imageGeometry(ds, "navigation")}
+            loading={
+              navFrame || sourceId === NONE
+                ? null
+                : sourceId === ds.id && !ready
+                  ? loadingMsg
+                  : "Loading navigator…"
+            }
             error={navError ?? loadError}
+            empty="No navigator image. Click element maps in the dataset pane to show them here."
           />
         </section>
         <section className="si-pane">

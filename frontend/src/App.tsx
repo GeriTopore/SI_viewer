@@ -4,6 +4,7 @@ import { DatasetList, DatasetListHeader } from "./components/DatasetList";
 import { FileBrowser } from "./components/FileBrowser";
 import { Inspector } from "./components/Inspector";
 import { OpenFile } from "./components/OpenFile";
+import { Toast } from "./components/Toast";
 import { useDatasets } from "./state/datasets";
 import { useUi } from "./state/ui";
 import { MainView } from "./views/MainView";
@@ -87,6 +88,7 @@ export function App() {
       </footer>
 
       {browserOpen && <FileBrowser />}
+      <Toast />
     </div>
   );
 }

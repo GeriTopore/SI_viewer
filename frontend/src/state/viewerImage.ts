@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { Frame } from "../api/arrays";
+import type { MaskSettings } from "../api/client";
 import type { AxisCal } from "../components/ImageView";
 
 /** The image the viewer shows (its active layer) and the part of it in view,
@@ -22,6 +23,12 @@ interface ViewerImageState {
   owner: string | null;
   publish: (owner: string, image: ViewerImage | null) => void;
   clear: (owner: string) => void;
+  /** A Fourier mask drawn on the FFT panel (drift correction), and whether
+   * it is shown. */
+  fftMask: MaskSettings | null;
+  showFftMask: boolean;
+  setFftMask: (mask: MaskSettings | null) => void;
+  setShowFftMask: (show: boolean) => void;
 }
 
 export const useViewerImage = create<ViewerImageState>((set, get) => ({
@@ -29,4 +36,8 @@ export const useViewerImage = create<ViewerImageState>((set, get) => ({
   owner: null,
   publish: (owner, image) => set({ owner, image }),
   clear: (owner) => get().owner === owner && set({ owner: null, image: null }),
+  fftMask: null,
+  showFftMask: true,
+  setFftMask: (fftMask) => set({ fftMask }),
+  setShowFftMask: (showFftMask) => set({ showFftMask }),
 }));

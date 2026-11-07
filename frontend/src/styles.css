@@ -2471,3 +2471,246 @@ kbd {
   font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
 }
+
+/* ---------- Alignment workspace (drift correction) ---------- */
+.align-workspace {
+  position: relative;
+  gap: 8px;
+}
+
+.align-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.align-title {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.align-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex: 1;
+}
+
+.align-steps button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.align-steps button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.align-steps button.active {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.align-step-number {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.align-steps button.active .align-step-number {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.align-steps button.done .align-step-number {
+  background: var(--accent);
+  color: var(--accent-text);
+  opacity: 0.6;
+}
+
+.align-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.align-error {
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: rgba(255, 69, 58, 0.12);
+  color: #ff453a;
+  font-size: 12px;
+}
+
+.align-busy {
+  position: absolute;
+  top: 56px;
+  right: 8px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 11px;
+}
+
+.align-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+}
+
+/* Frames: the frame, then its slider (its FFT is in the FFT panel). */
+.align-frames {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.align-frame-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+
+/* Fourier mask: three panels, then the comparison row. */
+/* Main row above, the compared cutoffs below (height set by dragging). */
+.align-mask {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.align-mask-row {
+  flex: 1 1 0;
+}
+
+.align-compare-row {
+  flex: 0 0 auto;
+}
+
+.align-mask-row,
+.align-compare-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-height: 0;
+}
+
+.align-hint {
+  margin: 0;
+}
+
+.array-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  gap: 3px;
+}
+
+.array-panel-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.array-panel-title .muted {
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.align-ring circle {
+  fill: none;
+  stroke: #00e5ff;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.align-ring text {
+  fill: #00e5ff;
+  font-size: 11px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.75);
+  stroke-width: 3px;
+}
+
+.align-peak circle {
+  fill: none;
+  stroke: #ff453a;
+  stroke-width: 2;
+}
+
+.align-centre {
+  stroke: rgba(255, 255, 255, 0.7);
+  stroke-width: 1;
+}
+
+/* Process tab controls */
+.align-bad-frames {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.align-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 2px 0 4px;
+}
+
+.align-ns {
+  width: 110px;
+  margin-left: 4px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.fft-mask-toggle {
+  margin-left: auto;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.fft-mask-toggle.active {
+  border-color: #ff961e;
+  color: #ff961e;
+}

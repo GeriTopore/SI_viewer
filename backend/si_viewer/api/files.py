@@ -40,4 +40,8 @@ def close_file(file_id: str, request: Request) -> None:
         _session(request).close_file(file_id)
     except KeyError:
         raise HTTPException(404, f"Unknown file id: {file_id}")
+    # Registration sessions of its stacks go too (their FFTs can be large).
+    alive = _session(request).datasets
+    for ds_id in [k for k in request.app.state.registrations if k not in alive]:
+        del request.app.state.registrations[ds_id]
 

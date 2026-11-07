@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useUi } from "../state/ui";
 import { useViewerImage, type ViewerImage } from "../state/viewerImage";
 import type { FftRequest, FftResult } from "../viewer/fft.worker";
-import { formatValue } from "../format";
+import { formatValue, inAngstrom } from "../format";
+import type { MaskSettings } from "../api/client";
+import { maskCutoff, maskValue } from "../viewer/fourierMask";
 
 // Largest patch transformed; a bigger visible area uses its centre.
 const MAX_PATCH = 2048;
@@ -21,6 +23,8 @@ interface Patch {
   px: number;
   py: number;
   units: string;
+  /** Frame pixels per patch pixel (a binned preview frame). */
+  bin: number;
   /** The patch was cut from a larger visible area. */
   cropped: boolean;
 }
@@ -31,17 +35,6 @@ interface Shown {
 }
 
 const nextPow2 = (v: number) => 2 ** Math.ceil(Math.log2(v));
-
-// Lengths are shown in ångström; these units are converted (others kept as is).
-const TO_ANGSTROM: Record<string, number> = {
-  m: 1e10, mm: 1e7, µm: 1e4, μm: 1e4, um: 1e4, nm: 10, pm: 0.01, Å: 1, A: 1, angstrom: 1,
-};
-
-/** Pixel size and units for the readout: ångström when the units are a length. */
-function inAngstrom(scale: number, units: string): { size: number; units: string } {
-  const f = TO_ANGSTROM[units.trim()];
-  return f ? { size: scale * f, units: "Å" } : { size: scale, units };
-}
 
 /** The centred square of the visible area, as frame pixels. */
 function cutPatch(img: ViewerImage): { data: Float32Array; patch: Patch } | null {
@@ -73,6 +66,7 @@ function cutPatch(img: ViewerImage): { data: Float32Array; patch: Patch } | null
       px: x.size * b,
       py: y.size * b,
       units: x.units,
+      bin: b,
       cropped: fx1 - fx0 > size || fy1 - fy0 > size,
     },
   };
@@ -84,6 +78,9 @@ export function FftPanel() {
   const open = useUi((s) => s.fftOpen);
   const setOpen = useUi((s) => s.setFftOpen);
   const image = useViewerImage((s) => s.image);
+  const fftMask = useViewerImage((s) => s.fftMask);
+  const showMask = useViewerImage((s) => s.showFftMask);
+  const setShowMask = useViewerImage((s) => s.setShowFftMask);
   const [zoom, setZoom] = useState(1);
 
   return (
@@ -100,6 +97,16 @@ export function FftPanel() {
           </span>
           FFT
         </button>
+        {open && fftMask && (
+          <button
+            className={`fft-mask-toggle${showMask ? " active" : ""}`}
+            aria-pressed={showMask}
+            onClick={() => setShowMask(!showMask)}
+            title={showMask ? "Hide the alignment's Fourier mask to see the whole FFT" : "Show the alignment's Fourier mask"}
+          >
+            Mask
+          </button>
+        )}
         {open && (
           <div className="segmented fft-zoom" role="group" aria-label="FFT zoom">
             {ZOOMS.map((z) => (
@@ -116,12 +123,16 @@ export function FftPanel() {
           </div>
         )}
       </div>
-      {open && <FftView image={image} zoom={zoom} />}
+      {open && <FftView image={image} zoom={zoom} mask={fftMask && showMask ? fftMask : null} />}
     </section>
   );
 }
 
-function FftView({ image, zoom }: { image: ViewerImage | null; zoom: number }) {
+// Colour of the Fourier mask's tint, and its strength where the mask is 1.
+const MASK_RGB = [255, 150, 30];
+const MASK_ALPHA = 0.5;
+
+function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: number; mask: MaskSettings | null }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [side, setSide] = useState(0);
@@ -196,6 +207,8 @@ function FftView({ image, zoom }: { image: ViewerImage | null; zoom: number }) {
     const start = (n - span) / 2;
     const img = ctx.createImageData(d, d);
     const scale = 255 / (hi - lo);
+    // Frequency (cycles per frame pixel) per FFT pixel from the centre.
+    const perPixel = 1 / (n * shown.patch.bin);
     for (let cy = 0; cy < d; cy++) {
       const ya = Math.floor(start + (cy * span) / d);
       const yb = Math.max(ya + 1, Math.floor(start + ((cy + 1) * span) / d));
@@ -209,12 +222,20 @@ function FftView({ image, zoom }: { image: ViewerImage | null; zoom: number }) {
         }
         const g = Math.max(0, Math.min(255, (m - lo) * scale));
         const o = (cy * d + cx) * 4;
-        img.data[o] = img.data[o + 1] = img.data[o + 2] = g;
+        if (mask) {
+          // Tint by the mask's weight at this frequency.
+          const u = start + ((cx + 0.5) * span) / d - n / 2;
+          const v = start + ((cy + 0.5) * span) / d - n / 2;
+          const a = MASK_ALPHA * maskValue(mask, Math.hypot(u, v) * perPixel);
+          img.data[o] = g * (1 - a) + MASK_RGB[0] * a;
+          img.data[o + 1] = g * (1 - a) + MASK_RGB[1] * a;
+          img.data[o + 2] = g * (1 - a) + MASK_RGB[2] * a;
+        } else img.data[o] = img.data[o + 1] = img.data[o + 2] = g;
         img.data[o + 3] = 255;
       }
     }
     ctx.putImageData(img, 0, 0);
-  }, [shown, side, zoom]);
+  }, [shown, side, zoom, mask]);
 
   // Hover position in FFT pixels from the centre (u right, v down).
   const onMove = (e: React.PointerEvent) => {
@@ -233,6 +254,15 @@ function FftView({ image, zoom }: { image: ViewerImage | null; zoom: number }) {
   const k = freq && Math.hypot(freq.kx, freq.ky);
   // Screen radius and position of the hovered frequency (for the ring).
   const toScreen = (u: number) => (shown ? (u / (shown.result.n / zoom) + 0.5) * side : 0);
+  // The mask's cutoff ring: f_c cycles per frame pixel is f_c·n·bin FFT pixels.
+  const fc = mask && maskCutoff(mask);
+  const ringR = p && fc ? toScreen(fc * shown!.result.n * p.bin) - side / 2 : null;
+  const ringLabel =
+    p && mask && fc
+      ? `n = ${formatValue(mask.n)} · ${formatValue(2 * mask.n)} px${
+          p.units !== "px" ? ` (${formatValue((2 * mask.n * p.px) / p.bin)} ${p.units})` : ""
+        }`
+      : "";
 
   let readout: React.ReactNode;
   if (!image) readout = <span className="muted">No image in the viewer</span>;
@@ -267,6 +297,16 @@ function FftView({ image, zoom }: { image: ViewerImage | null; zoom: number }) {
         title={p ? `FFT of ${p.label}` : undefined}
       >
         <canvas ref={canvasRef} style={{ width: side, height: side }} />
+        {ringR !== null && ringR > 0 && (
+          <svg className="fft-overlay" width={side} height={side}>
+            <g className="align-ring">
+              <circle cx={side / 2} cy={side / 2} r={ringR} />
+              <text x={Math.min(side - 4, side / 2 + ringR * 0.71 + 4)} y={Math.max(12, side / 2 - ringR * 0.71 - 4)} textAnchor={side / 2 + ringR * 0.71 + 120 > side ? "end" : "start"}>
+                {ringLabel}
+              </text>
+            </g>
+          </svg>
+        )}
         {shown && hover && k ? (
           <svg className="fft-overlay" width={side} height={side}>
             <circle

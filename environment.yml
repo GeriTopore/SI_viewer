@@ -10,6 +10,7 @@ dependencies:
   - numba
   - tifffile          # TIFF images and stacks
   - pillow            # thumbnails
+  - pyfftw            # fast FFTs for rigidregistration (drift correction)
   - fastapi
   - uvicorn
   - websockets
@@ -18,3 +19,6 @@ dependencies:
   - pip
   - pip:
       - -e .
+      # Drift correction of image stacks: the local rigidRegistration copy,
+      # editable so changes to it take effect at once.
+      - -e ../rigidRegistration

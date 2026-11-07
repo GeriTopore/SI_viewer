@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, planeSize, useDatasets } from "../state/datasets";
+import { useAlignment } from "../state/alignment";
+import { AlignmentWorkspace } from "./AlignmentWorkspace";
 import { ImagesView } from "./ImagesView";
 import { SpectrumImageView } from "./SpectrumImageView";
 import { SpectrumView } from "./SpectrumView";
@@ -11,6 +13,7 @@ import { StackView } from "./StackView";
 export function MainView() {
   const files = useDatasets((s) => s.files);
   const selection = useDatasets((s) => s.selection);
+  const alignOpen = useAlignment((s) => s.openId);
   const selected = useMemo(() => {
     const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
     return selection.map((id) => byId.get(id)).filter((d): d is DatasetSummary => !!d);
@@ -38,6 +41,8 @@ export function MainView() {
     case "spectrum_image":
       return <SpectrumImageView key={key} ds={primary} images={images} />;
     case "stack":
+      // Drift correction of this stack fills the viewer while it is open.
+      if (alignOpen === primary.id) return <AlignmentWorkspace key={key} ds={primary} />;
       return <StackView key={key} ds={primary} images={images} />;
     case "spectrum":
       return <SpectrumView key={key} ds={primary} />;

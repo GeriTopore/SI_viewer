@@ -77,3 +77,34 @@ export async function fetchEnergyMap(si: string, lo: number, hi: number): Promis
   const { data, shape } = await fetchArray(`/api/datasets/${si}/energy-map?lo=${lo}&hi=${hi}`);
   return { data, height: shape[0], width: shape[1], bin: 1 };
 }
+
+/** Square frames of a (k, rows, cols) array, e.g. a registration's panels. */
+export function splitFrames({ data, shape }: ArrayResult): Frame[] {
+  const [k, height, width] = shape;
+  return Array.from({ length: k }, (_, i) => ({
+    data: data.subarray(i * height * width, (i + 1) * height * width),
+    width,
+    height,
+    bin: 1,
+  }));
+}
+
+/** Frame i of a stack being registered, as loaded. */
+export async function fetchRegistrationFrame(stack: string, i: number): Promise<Frame> {
+  const { data, shape } = await fetchArray(`/api/datasets/${stack}/registration/frame?i=${i}`);
+  return { data, height: shape[0], width: shape[1], bin: 1 };
+}
+
+/** Cross-correlation of frames i, j with a Fourier mask (zero shift at the centre). */
+export async function fetchCorrelation(stack: string, i: number, j: number, type: string, n: number): Promise<Frame> {
+  const { data, shape } = await fetchArray(
+    `/api/datasets/${stack}/registration/correlation?i=${i}&j=${j}&type=${type}&n=${n}`,
+  );
+  return { data, height: shape[0], width: shape[1], bin: 1 };
+}
+
+/** Cross-correlations of frames i, j for several cutoffs n. */
+export async function fetchCompareN(stack: string, i: number, j: number, type: string, ns: number[]) {
+  const q = ns.map((n) => `n=${n}`).join("&");
+  return splitFrames(await fetchArray(`/api/datasets/${stack}/registration/compare-n?i=${i}&j=${j}&type=${type}&${q}`));
+}

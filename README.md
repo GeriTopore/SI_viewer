@@ -69,6 +69,24 @@ and drag across the image:
 - On a spectrum image, click or drag on the profile to see the spectrum of
   that part of the line.
 
+### Drift correction of image stacks (in progress)
+
+Right-click a stack → **Align frames…** (or the Process tab) to open the
+alignment workspace. It registers the frames with
+[rigidregistration](https://github.com/kem-group/rigidRegistration), step by
+step, with each step's diagnostics in the viewer and its parameters in the
+Process tab. So far:
+- **Frames:** each frame (slider, ← / →), with its FFT in the FFT panel; set
+  the frame range and mark bad frames.
+- **Fourier mask:**
+  - The mask and its cutoff ring are drawn on the FFT panel; its *Mask*
+    button hides them.
+  - The frame and the cross-correlation of a pair of frames, updating live.
+  - Compare several cutoffs side by side.
+
+The package is installed editable from `../rigidRegistration` (see
+`environment.yml`).
+
 ### Saving
 
 - Right-click a dataset (or use Save in the Info tab) to save it:

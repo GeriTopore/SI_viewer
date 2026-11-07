@@ -404,8 +404,186 @@ viewer's active layer.
 
 ### 4.9 Later (not in the first draft)
 EELS SIs (`exspy.signals.EELSSpectrum`, background power law, edges), PCA/NMF
-denoising (`decomposition`), drift correction from the SI HAADF stack, batch
-processing recipes across files, and saved sessions.
+denoising (`decomposition`), drift correction of EDS spectrum images (applying
+the HAADF stack's shifts to the EDS frames, see 4.10), batch processing
+recipes across files, and saved sessions.
+
+### 4.10 Drift correction of image stacks (M9, planned)
+
+Registering and averaging HAADF (and other STEM) image stacks with the
+**rigidregistration** package (Savitzky et al., Ultramicroscopy 2018; local
+copy at `~/Documents/Dev/rigidRegistration`). Only image stacks for now; EDS
+spectrum images come later.
+
+**How the package works:**
+1. The FFT of every frame is taken (Hann-windowed, mean removed). A Fourier
+   mask weights the trustworthy frequencies; `n` is the cutoff (features
+   smaller than ~n px are ignored).
+2. Every pair of frames is cross-correlated (N(N−1)/2 pairs), giving the
+   shift matrices Xᵢⱼ, Yᵢⱼ. Maxima are found by brightest pixel, a Gaussian
+   fit (subpixel, robust to unit-cell jumps) or centre of mass.
+3. Wrong shifts are found from transitivity (shift i→j + j→k must equal
+   i→k) or from nearest-neighbour jumps in the matrix, then corrected along
+   good paths.
+4. Each frame's shift is the mean of its row. Frames are shifted in Fourier
+   space (subpixel), averaged, and cropped to the area every frame covers.
+
+Measured here without pyfftw (NumPy FFT):
+- the Nb₃Cl₈ sample (27 × 512²) takes 2 s;
+- the CdSe sample (21 × 1024²) takes 5 s;
+- the HAADF stack of the example `.emd` (122 × 256²) takes 7 s. Its drift is
+  about ±1.5 px.
+
+Pairs grow as N², so large stacks (100 × 1024²) take minutes. pyfftw (up to
+20× faster) is optional.
+
+**Integration:**
+- Install the package editable from the local copy
+  (`pip install -e ~/Documents/Dev/rigidRegistration`, listed in
+  `environment.yml`), with pyfftw from conda-forge for speed.
+- `processing/registration.py` wraps `imstack`.
+  - It converts the frame axis: the package uses (x, y, frame), with frames
+    last.
+  - It runs headless: matplotlib uses the Agg backend, and nothing is
+    printed.
+  - It reports progress and handles cancel by swapping the package's `tqdm`
+    for an adapter that reports to the job (and raises `Cancelled`).
+- Registration runs as a job (like per-pixel fitting): the FFTs, then the pair
+  correlations (progress), outliers, correction, then shifting and
+  averaging.
+- **Non-destructive, like the filters.** The stack keeps its frames, and the
+  alignment is stored with it: per-frame shifts, bad frames, parameters and
+  crop.
+  - Frames are shifted (Fourier shift) and cropped when read, so the slider,
+    projections, FFT and line profiles all see aligned frames.
+  - An *Original / Aligned* switch shows either. Removing the alignment
+    restores the original.
+  - The cropped average is added to the file as a new image dataset
+    ("HAADF (aligned average)").
+
+**Guided workflow: the user decides at every step.** Nothing runs the whole
+pipeline in one go. Each step shows its diagnostics in the viewer, the user
+sets that step's parameters while watching them update, and moves on only
+when satisfied. These are the notebook's steps (QuickWalkThrough /
+DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
+
+1. **Frames.** The stack (slider) beside the FFT of the current frame, and a
+   plot of each frame's mean intensity, to spot blank or damaged frames.
+   - Choose the frame range, and mark bad frames to leave out.
+2. **Fourier mask.** Three panels for a chosen pair of frames (i, j), as
+   `show_Fourier_mask` draws them, updating live as the mask changes:
+   - the FFT of frame i with the mask overlaid in colour;
+   - the masked FFT;
+   - the cross-correlation of i and j.
+
+   Choose the mask type (bandpass, Hann/lowpass, Gaussian, Hamming,
+   Blackman, none; elliptical Gaussian later) and the cutoff n. The cutoff
+   is drawn as a ring on the FFT, with its spacing in Å.
+   - *Compare n* shows the cross-correlation for a row of n values side by
+     side, as the notebook's loop over n does.
+3. **Peak finding.** The cross-correlation of the pair, zoomed on its
+   maximum, with the peaks found marked and the chosen one crossed.
+   - Choose: brightest pixel, Gaussian fit or centre of mass, and the
+     correlation type (cross, mutual or phase).
+   - Gaussian fit: number of peaks, σ guess and window radius, with the
+     data/fit cut-outs side by side, as `show_Gaussian_fit` shows them.
+   - The pair can be changed at any time; mismatched pairs are the cases to
+     check.
+4. **Shift matrices.** *Compute shifts* runs all N(N−1)/2 correlations as a
+   job, with progress and cancel. It shows Xᵢⱼ and Yᵢⱼ as heatmaps:
+   - a diverging colormap with a colour bar;
+   - hovering shows i, j and the shift;
+   - clicking a cell opens that pair's cross-correlation and peak (step 3's
+     view), so a suspicious entry can be checked directly.
+5. **Outliers and correction.**
+   - Choose the outlier method: transitivity (threshold, max paths) or
+     nearest neighbours (max shift).
+   - Choose how far off the diagonal to use, the frame range and the bad
+     frames.
+   - Masked entries are overlaid on the matrices live.
+   - *Correct* fills them along good paths and shows the corrected
+     matrices beside the originals.
+6. **Result.**
+   - The drift trajectory (x and y shift against frame, bad frames marked).
+   - The cropped average beside its FFT; compare it with a single frame's
+     FFT to check information was gained, not blurred.
+   - The crop region drawn on a frame.
+   - *Back* to any step to change something; *Apply* stores the alignment on
+     the stack (non-destructive) and adds the average as a new image dataset.
+
+**UI arrangement:**
+- **Alignment workspace in the viewer.**
+  - *Align frames…* (Process tab, or right-click a stack) switches the main
+    viewer to a workspace for that stack.
+  - A stepper at the top: Frames → Fourier mask → Peak finding → Shift
+    matrices → Outliers → Result. It has Back / Next and shows which steps
+    are done; later steps unlock once earlier ones are done.
+  - The panels of the current step fill the viewer: images in the app's
+    WebGL image view (zoom, contrast, hover readout), plots in uPlot, and
+    matrices as heatmaps.
+  - *Close* returns to the normal viewer; the workspace's state is kept until
+    the stack is closed.
+- **Parameters in the Process tab.** Its *Align frames* section shows the
+  controls of the current step, simple ones first and the rest under
+  *Advanced*.
+  - The pair (i, j) used for previews is chosen there, or by clicking a
+    matrix cell.
+- **Processing order in the Process tab:** ① *Align frames* (stacks),
+  ② *Rebin* (spectrum images), ③ *Filters*, each shown only when it applies.
+- **After Apply:**
+  - The stack shows aligned frames, with an *Original / Aligned* switch.
+  - The *Alignment* tab under the image keeps the trajectory and summary.
+  - *Align frames…* reopens the workspace with the stored parameters, to
+    refine them.
+
+**Backend:**
+- A registration session per stack, held in memory: the `imstack` object
+  with its FFTs, shift matrices and masks.
+- Each step's parameters are applied to the session, and the previews come
+  back as float32 arrays like every other frame.
+- Preview requests (mask, one pair's correlation, peak fit, outlier mask,
+  correction) are fast; only *Compute shifts* and the final shift-and-average
+  run as jobs.
+- Memory: the package keeps complex128 FFTs of every frame (122 × 256² is
+  128 MB; 100 × 1024² would be 1.6 GB). Large stacks warn first, and may use
+  complex64 or a cropped region.
+
+**Rollout:**
+1. **M9a: workspace, Frames and Fourier mask** (done).
+   - Done: `processing/registration.py`, `api/registration.py`, and
+     `AlignmentWorkspace` + `AlignSection` in the frontend.
+   - Cross-correlation previews come from the session's own FFTs
+     (`imstack.fftstack`), so they match what the registration will use.
+   - Layout after review:
+     - Steps 1–2 show the frame in the viewer, which feeds the FFT panel
+       (log power) instead of extra FFT views.
+     - The mask is drawn on the FFT panel (`viewer/fourierMask.ts`, the
+       package's formulas in terms of frequency), with its cutoff ring and a
+       *Mask* show/hide toggle.
+     - The masked-FFT view and the per-frame intensity plot were dropped, and
+       the diagnostic panels have no readout bar.
+   - FFTW's wisdom is kept in `~/.cache/si-viewer`.
+   - Install the package (editable) and write the headless wrapper
+     (progress, cancel, Agg backend).
+   - The registration session API.
+   - The workspace shell with the stepper, and steps 1–2 with live mask
+     previews and *Compare n*.
+2. **M9b: Peak finding and Shift matrices.**
+   - Step 3 (pair cross-correlation, peaks, Gaussian-fit cut-outs).
+   - Step 4 (the *Compute shifts* job, interactive Xᵢⱼ/Yᵢⱼ heatmaps, click
+     a cell to inspect the pair).
+3. **M9c: Outliers, Result and Apply.**
+   - Step 5 (outlier methods, masks overlaid, corrected matrices).
+   - Step 6 (trajectory, average and FFT, crop).
+   - Apply: aligned frames on read, the *Original / Aligned* switch, the
+     average as a new dataset, and the *Alignment* tab.
+   - Tests: a synthetic stack with known shifts (under 0.2 px), and the
+     sample stacks.
+4. **M9d: extras.**
+   - The dual mask (two-pass registration), elliptical masks and the
+     clipping dimension.
+   - Apply the shifts to other stacks of the same scan.
+   - Save the shifts (CSV) and a report (PNG/PDF of the steps).
 
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
@@ -433,6 +611,7 @@ processing recipes across files, and saved sessions.
 | M6 | Line profiles for images and SIs (intensity and element profiles) | Done |
 | M7 | Export, keyboard shortcuts, polish | Done |
 | M8 | pywebview desktop window and installers (deferred until the features are complete) | |
+| M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b), Outliers + Result + Apply (M9c), extras (M9d) | In progress |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

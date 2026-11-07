@@ -81,6 +81,30 @@ export interface Filters {
   order: number;
 }
 
+export type MaskType = "bandpass" | "hann" | "gaussian" | "hamming" | "blackman" | "none";
+
+/** Fourier mask of a registration: features smaller than ~n px are ignored. */
+export interface MaskSettings {
+  type: MaskType;
+  n: number;
+}
+
+/** State of a stack's registration in progress (backend session). */
+export interface RegistrationSummary {
+  /** Frames first … last - 1 are registered (stack numbering). */
+  first: number;
+  last: number;
+  n_total: number;
+  /** Frame size (rows, columns). */
+  shape: [number, number];
+  bad_frames: number[];
+  mask: MaskSettings;
+  /** Memory taken by the FFTs of the frames. */
+  fft_bytes: number;
+  /** pyfftw is used (faster FFTs). */
+  fftw: boolean;
+}
+
 /** A file format a dataset can be saved in. */
 export interface ExportFormat {
   format: string;
@@ -266,6 +290,15 @@ export const api = {
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<JobSummary>(`/api/jobs/${id}/cancel`, { method: "POST" }),
+  startRegistration: (id: string, first: number, last: number) =>
+    request<RegistrationSummary>(`/api/datasets/${id}/registration`, {
+      method: "POST",
+      body: JSON.stringify({ first, last }),
+    }),
+  getRegistration: (id: string) => request<RegistrationSummary>(`/api/datasets/${id}/registration`),
+  putRegistration: (id: string, settings: { bad_frames?: number[]; mask?: MaskSettings }) =>
+    request<RegistrationSummary>(`/api/datasets/${id}/registration`, { method: "PUT", body: JSON.stringify(settings) }),
+  endRegistration: (id: string) => request<void>(`/api/datasets/${id}/registration`, { method: "DELETE" }),
   exportFormats: () => request<Record<string, ExportFormat[]>>("/api/export-formats"),
   listExamples: () => request<ExampleInfo[]>("/api/examples"),
   openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),

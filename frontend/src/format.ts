@@ -24,6 +24,17 @@ export function datasetTooltip(d: DatasetSummary): string {
   return base;
 }
 
+// Lengths are shown in ångström; these units are converted (others kept as is).
+const TO_ANGSTROM: Record<string, number> = {
+  m: 1e10, mm: 1e7, µm: 1e4, μm: 1e4, um: 1e4, nm: 10, pm: 0.01, Å: 1, A: 1, angstrom: 1,
+};
+
+/** A pixel size in ångström when its units are a length (else as is). */
+export function inAngstrom(scale: number, units: string): { size: number; units: string } {
+  const f = TO_ANGSTROM[units.trim()];
+  return f ? { size: scale * f, units: "Å" } : { size: scale, units };
+}
+
 /** e.g. "Gaussian σ 1.5 px; Savitzky–Golay 7 ch, order 2" ("" when unfiltered). */
 export function filterLabel(f: Filters | undefined): string {
   if (!f) return "";

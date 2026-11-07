@@ -9,6 +9,7 @@ import { ContextMenu } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
 import { RebinDialog, canRebin } from "./RebinDialog";
+import { openAlignment } from "./AlignSection";
 import { downloadUrl, useExportFormats } from "../download";
 
 const badgeClass = (d: DatasetSummary) => `badge badge-${d.is_element_map ? "map" : d.kind}`;
@@ -140,6 +141,7 @@ export function DatasetList() {
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
+            ...(menu.d.kind === "stack" ? [{ label: "Align frames…", onSelect: () => openAlignment(menu.d) }] : []),
             ...(canRebin(menu.d) ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
             ...(exportFormats[menu.d.kind] ?? []).map((f) => ({
               label: `Save as ${f.label}`,

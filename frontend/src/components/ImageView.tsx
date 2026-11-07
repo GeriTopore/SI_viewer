@@ -80,6 +80,13 @@ interface Props {
   /** Layer whose visible part is published for analysis (the FFT panel);
    * defaults to the first visible layer. */
   analysisKey?: string;
+  /** Show the scale bar (default true). */
+  scaleBar?: boolean;
+  /** Show the readout bar under the image (size, hover values, zoom; default true). */
+  readout?: boolean;
+  /** Publish the analysed layer for the FFT panel (default true; off for
+   * secondary views such as diagnostic panels). */
+  publish?: boolean;
 }
 
 const MAX_ZOOM = 64;
@@ -98,7 +105,8 @@ const valueAt = (frame: Frame, ix: number, iy: number) => {
 
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
-  interaction, renderOverlay, analysisKey,
+  interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true,
+  readout = true,
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -188,6 +196,7 @@ export function ImageView({
     layers.find((l) => l.key === analysisKey && l.frame) ?? layers.find((l) => l.visible && l.frame);
   useEffect(() => {
     const { publish } = useViewerImage.getState();
+    if (!publishes) return;
     if (!analysed?.frame || !view || !size.w) {
       publish(owner, null);
       return;
@@ -204,7 +213,7 @@ export function ImageView({
       x1: Math.min(fullWidth, Math.ceil(view.cx + hw)),
       y1: Math.min(fullHeight, Math.ceil(view.cy + hh)),
     });
-  }, [owner, analysed?.frame, analysed?.label, view, size.w, size.h, fullWidth, fullHeight, calX.scale, calX.units, calY.scale]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [owner, publishes, analysed?.frame, analysed?.label, view, size.w, size.h, fullWidth, fullHeight, calX.scale, calX.units, calY.scale]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => useViewerImage.getState().clear(owner), [owner]);
 
   const toData = (clientX: number, clientY: number, v: ViewTransform) => {
@@ -301,10 +310,12 @@ export function ImageView({
 
   const bar = view && niceScaleBar(calX.scale / view.zoom, calX.units);
 
-  useShortcuts({ f: () => fit(), "1": () => view && setView({ ...view, zoom: 1 }) });
+  // Keys act on the main view only (not on diagnostic panels beside it).
+  useShortcuts({ f: () => fit(), "1": () => view && setView({ ...view, zoom: 1 }) }, publishes);
   // ⌘/Ctrl+S saves the image (instead of the browser saving the page).
   const save = useRef<() => void>(() => {});
   useEffect(() => {
+    if (!publishes) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "s") {
         e.preventDefault();
@@ -313,7 +324,7 @@ export function ImageView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [publishes]);
 
   const saveImage = () => {
     const shown = layers.filter((l) => l.visible && l.frame && l.display);
@@ -367,7 +378,7 @@ export function ImageView({
             {panel}
           </div>
         )}
-        {bar && anyFrame && (
+        {scaleBar && bar && anyFrame && (
           <div className="scale-bar">
             <div className="scale-bar-line" style={{ width: bar.pixels }} />
             <span>{bar.label}</span>
@@ -381,7 +392,7 @@ export function ImageView({
           </div>
         )}
       </div>
-      <div className="readout">
+      {readout && <div className="readout">
         <span className="readout-pos">
           {hover ? (
             <>
@@ -431,7 +442,7 @@ export function ImageView({
             Save PNG
           </button>
         </span>
-      </div>
+      </div>}
     </div>
   );
 }

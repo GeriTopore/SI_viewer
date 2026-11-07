@@ -4,6 +4,7 @@ import { allDatasets, useDatasets } from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { filterLabel } from "../format";
 import { RebinDialog, canRebin } from "./RebinDialog";
+import { AlignSection } from "./AlignSection";
 
 const SPATIAL: { id: SpatialFilter; label: string; title: string }[] = [
   { id: "none", label: "None", title: "No spatial filter" },
@@ -119,6 +120,9 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
     : [];
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
+  // The sections that apply, numbered in workflow order.
+  const sections = [d.kind === "stack" && "align", canRebin(d) && "rebin", "filters"].filter(Boolean);
+  const num = (s: string) => `${sections.indexOf(s) + 1}. `;
 
   return (
     <div className="quantify process">
@@ -132,9 +136,16 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
         )}
       </section>
 
+      {d.kind === "stack" && (
+        <section className="q-maps">
+          <h3>{num("align")}Align frames</h3>
+          <AlignSection d={d} />
+        </section>
+      )}
+
       {canRebin(d) && (
         <section className="q-maps">
-          <h3>Rebin</h3>
+          <h3>{num("rebin")}Rebin</h3>
           <p className="muted small q-elements">
             Sums neighbouring pixels or channels of the spectrum image and its whole scan (HyperSpy rebin). This
             overwrites the loaded data; the file on disk is untouched.
@@ -146,7 +157,7 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       )}
 
       <section className="q-maps">
-        <h3>Filters</h3>
+        <h3>{num("filters")}Filters</h3>
         <p className="muted small q-elements">
           Filters apply whenever the data is shown; the loaded data is unchanged and they can be removed at any
           time.

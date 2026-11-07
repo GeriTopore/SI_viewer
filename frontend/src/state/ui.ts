@@ -11,6 +11,8 @@ export const PANE_SIZES = {
   left: { initial: 280, min: 180, max: 640 },
   right: { initial: 330, min: 260, max: 720 },
   bottom: { initial: 0.42, min: 0.15, max: 0.85 },
+  // The alignment's row of compared cross-correlations, as a fraction of the step.
+  compare: { initial: 0.38, min: 0.12, max: 0.8 },
 };
 
 const clamp = (v: number, { min, max }: { min: number; max: number }) => Math.min(max, Math.max(min, v));
@@ -57,6 +59,8 @@ interface UiState {
    * fraction of the viewer. */
   bottomFraction: number;
   setBottomFraction: (f: number) => void;
+  compareFraction: number;
+  setCompareFraction: (f: number) => void;
   bottomTab: BottomTab;
   setBottomTab: (tab: BottomTab) => void;
   /** FFT of the viewer's image, above the tabs. */
@@ -96,6 +100,12 @@ export const useUi = create<UiState>((set) => ({
     const bottomFraction = clamp(f, PANE_SIZES.bottom);
     save("si-viewer.bottomFraction", bottomFraction.toFixed(3));
     set({ bottomFraction });
+  },
+  compareFraction: loadNumber("si-viewer.compareFraction", PANE_SIZES.compare),
+  setCompareFraction: (f) => {
+    const compareFraction = clamp(f, PANE_SIZES.compare);
+    save("si-viewer.compareFraction", compareFraction.toFixed(3));
+    set({ compareFraction });
   },
   bottomTab: load<BottomTab>("si-viewer.bottomTab", "spectrum"),
   setBottomTab: (bottomTab) => {

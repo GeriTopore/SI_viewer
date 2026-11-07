@@ -228,6 +228,51 @@ def test_result(stack):
     assert _array(client.get(f"{url}/average", params={"crop": False})).shape == (96, 96)
 
 
+def test_apply(stack):
+    client, ds = stack
+    url = f"/api/datasets/{ds['id']}/registration"
+    client.post(url, json={})
+    client.put(url, json={"mask": {"type": "hann", "n": 4}})
+    assert client.post(f"{url}/apply").status_code == 422  # nothing computed yet
+    assert _wait(client, client.post(f"{url}/shifts").json())["status"] == "done"
+    client.post(f"{url}/correct", json={"outliers": {"method": "none", "off_diagonal": 2}, "bad_frames": [3]})
+    aligned = [_array(client.get(f"{url}/aligned", params={"i": f})) for f in (0, 1, 2, 4, 5)]
+    average = _array(client.get(f"{url}/average"))
+
+    # Applied: the stack's frames are the aligned ones (bad frame 3 left
+    # out, cropped), and the average is a new image next to it.
+    r = client.post(f"{url}/apply").json()
+    stack_ = r["dataset"]
+    assert stack_["navigation_shape"] == [5] and stack_["signal_shape"] == [87, 87]
+    assert stack_["alignment"]["active"] and stack_["alignment"]["frames"] == [0, 1, 2, 4, 5]
+    assert stack_["alignment"]["loaded_frames"] == 6
+    names = [d["title"] for d in r["file"]["datasets"]]
+    assert names == ["drift", "drift (aligned average)"]
+    assert r["average"]["signal_shape"] == [87, 87] and r["average"]["derived_from"] == ds["id"]
+    frame = lambda **q: _array(client.get(f"/api/datasets/{ds['id']}/frame", params=q))  # noqa: E731
+    np.testing.assert_allclose(frame(index=3), aligned[3])
+    np.testing.assert_allclose(frame(projection="mean"), average, rtol=1e-5)
+    # The image axes start at the square's corner.
+    x0 = r["dataset"]["axes"][2]["offset"] - ds["axes"][2]["offset"]
+    assert x0 == pytest.approx(client.get(f"{url}/result").json()["square"][0] * ds["axes"][2]["scale"])
+    # The registration carries on from the loaded frames.
+    assert client.get(url).status_code == 200
+
+    # The switch: frames as loaded, then aligned again.
+    off = client.put(f"/api/datasets/{ds['id']}/alignment", json={"active": False}).json()["dataset"]
+    assert off["navigation_shape"] == [6] and off["signal_shape"] == [96, 96] and not off["alignment"]["active"]
+    assert off["filter_rev"] > stack_["filter_rev"]
+    np.testing.assert_allclose(frame(index=3), _drifting_stack(SHIFTS)[3])
+    on = client.put(f"/api/datasets/{ds['id']}/alignment", json={"active": True}).json()["dataset"]
+    assert on["navigation_shape"] == [5]
+
+    # Applying again replaces the average; removing restores the stack.
+    assert len(client.post(f"{url}/apply").json()["file"]["datasets"]) == 2
+    gone = client.delete(f"/api/datasets/{ds['id']}/alignment").json()
+    assert gone["dataset"]["alignment"] is None and gone["dataset"]["navigation_shape"] == [6]
+    assert [d["title"] for d in gone["file"]["datasets"]] == ["drift"]
+
+
 def test_elliptical_mask_is_the_packages(stack):
     """The elliptical Gaussian mask (makeFourierMask_eg) with theta in degrees."""
     import rigidregistration

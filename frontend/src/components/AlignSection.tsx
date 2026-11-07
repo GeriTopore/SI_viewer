@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type {
-  CorrelationType, DatasetSummary, MaskSettings, MaskType, OutlierSettings, PeakMethod, PeakSettings,
+import {
+  api, type CorrelationType, type DatasetSummary, type MaskSettings, type MaskType, type OutlierSettings,
+  type PeakMethod, type PeakSettings,
 } from "../api/client";
 import { maskLabel } from "../viewer/fourierMask";
 import { ALIGN_STEPS, clampFrame, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
@@ -66,16 +67,27 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
   const n = d.navigation_shape[0] ?? 1;
 
   if (!isOpen || !a) {
+    const applied = d.alignment;
     return (
       <>
-        <p className="muted small q-elements">
-          Registers the frames to each other (rigidregistration: every pair cross-correlated, outliers corrected) so
-          drift can be removed and the frames averaged. You choose the parameters step by step while looking at
-          their effect in the viewer.
-        </p>
-        <button className="process-rebin" onClick={() => openAlignment(d)} disabled={n < 2}>
-          {a?.session ? `Resume aligning (${ALIGN_STEPS.find((s) => s.id === a.step)?.label})…` : "Align frames…"}
-        </button>
+        {applied ? (
+          <p className="small q-elements">
+            Drift-corrected: {applied.frames.length} of {applied.loaded_frames} frames, cropped to {applied.square[2]} ×{" "}
+            {applied.square[3]} px{applied.active ? "" : " (showing the frames as loaded)"}.
+          </p>
+        ) : (
+          <p className="muted small q-elements">
+            Registers the frames to each other (rigidregistration: every pair cross-correlated, outliers corrected)
+            so drift can be removed and the frames averaged. You choose the parameters step by step while looking
+            at their effect in the viewer.
+          </p>
+        )}
+        <div className="process-actions">
+          <button className="process-rebin" onClick={() => openAlignment(d)} disabled={n < 2}>
+            {a?.session ? `Resume aligning (${ALIGN_STEPS.find((s) => s.id === a.step)?.label})…` : "Align frames…"}
+          </button>
+          {applied && <RemoveAlignment d={d} />}
+        </div>
       </>
     );
   }
@@ -94,6 +106,23 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
 }
 
 function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
+  const { patch, close } = useAlignment.getState();
+  const replaceFile = useDatasets((s) => s.replaceFile);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const apply = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      replaceFile((await api.applyAlignment(d.id)).file);
+      close();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const k = ALIGN_STEPS.findIndex((s) => s.id === a.step);
   return (
     <section className="q-form">
       <h4 className="process-heading">Step 5 · Result</h4>
@@ -101,8 +130,44 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
         Scroll through the aligned frames (slider, ← / →); Original shows them as loaded, with the square kept in
         every frame. The FFT panel shows the average's FFT.
       </p>
-      <NextStep d={d} a={a} />
+      <p className="muted small process-note">
+        Apply shows the stack's frames aligned and cropped (switch back with Original under the image) and adds
+        the average as an image.{d.alignment ? " It replaces the current alignment." : ""}
+      </p>
+      {error && <p className="field-error">{error}</p>}
+      <div className="process-actions">
+        <button onClick={() => patch(d.id, { step: ALIGN_STEPS[k - 1].id })}>Back</button>
+        <button className="primary" onClick={apply} disabled={busy || !a.session?.shifts}>
+          {busy ? "Applying…" : "Apply"}
+        </button>
+        <button className="link-button" onClick={close}>
+          Close
+        </button>
+      </div>
     </section>
+  );
+}
+
+function RemoveAlignment({ d }: { d: DatasetSummary }) {
+  const replaceFile = useDatasets((s) => s.replaceFile);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <>
+      <button
+        className="secondary"
+        title="Back to the frames as loaded; the aligned average is removed too"
+        onClick={async () => {
+          try {
+            replaceFile((await api.removeAlignment(d.id)).file);
+          } catch (e) {
+            setError((e as Error).message);
+          }
+        }}
+      >
+        Remove alignment
+      </button>
+      {error && <p className="field-error">{error}</p>}
+    </>
   );
 }
 

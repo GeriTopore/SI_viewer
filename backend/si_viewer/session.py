@@ -107,6 +107,14 @@ class Dataset:
     # processing/filters.py); filter_rev is bumped whenever they change.
     filters: dict = field(default_factory=dict)
     filter_rev: int = 0
+    # Stacks: an applied drift correction (see Session.apply_alignment). While
+    # it is shown, ``signal`` is the aligned stack and ``loaded_signal`` the
+    # stack as loaded; ``alignment`` says how it was made.
+    alignment: dict | None = None
+    aligned_signal: object | None = field(default=None, repr=False)
+    original_signal: object | None = field(default=None, repr=False)
+    # A dataset made from another (e.g. a stack's aligned average).
+    derived_from: str | None = None
     thumbnails: dict[int, bytes] = field(default_factory=dict, repr=False)
     # Derived arrays (projections, sum spectra, …) keyed by name.
     cache: dict[str, object] = field(default_factory=dict, repr=False)
@@ -121,6 +129,11 @@ class Dataset:
         from .processing.filters import Filters
 
         return Filters(**self.filters)
+
+    @property
+    def loaded_signal(self):
+        """The data as loaded (a stack's frames before any alignment)."""
+        return self.original_signal if self.original_signal is not None else self.signal
 
     @property
     def lazy(self) -> bool:
@@ -172,6 +185,12 @@ class Dataset:
             "rebinned": list(self.rebinned),
             "filters": self.filter_spec.model_dump(),
             "filter_rev": self.filter_rev,
+            "alignment": None if self.alignment is None else {
+                **self.alignment,
+                "active": self.aligned_signal is not None and self.signal is self.aligned_signal,
+                "loaded_frames": int(self.loaded_signal.axes_manager.navigation_size),
+            },
+            "derived_from": self.derived_from,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "id": self.id,
             "file_id": self.file_id,
@@ -441,10 +460,12 @@ class Session:
         on_scan = [
             d for d in self.siblings_in_file(si.file_id)
             if d.origin == "file" and d.kind in (DatasetKind.IMAGE, DatasetKind.STACK)
-            and tuple(d.signal.axes_manager.signal_shape) == scan
+            and tuple(d.loaded_signal.axes_manager.signal_shape) == scan
         ]
 
         si.materialise()
+        for d in on_scan:
+            self.remove_alignment(d)  # its shifts are in pixels of the old size
         _rebin_in_place(si, scale)
         for d in on_scan:
             # Natural order: (frames |) x, y.
@@ -509,6 +530,65 @@ class Session:
             if fits:
                 notes.append("Fitted maps were removed: fit every pixel again to fit the processed data")
         return notes
+
+    # ---------- drift correction of stacks ----------
+
+    def _averages(self, stack: Dataset) -> list[Dataset]:
+        return [d for d in self.siblings(stack) if d.derived_from == stack.id and d.origin == "aligned-average"]
+
+    @staticmethod
+    def _view_changed(ds: Dataset) -> None:
+        """The data read from ``ds`` changed: clients refetch (filter_rev),
+        derived arrays are remade."""
+        ds.filter_rev += 1
+        ds.thumbnails.clear()
+        ds.cache.clear()
+
+    def apply_alignment(self, stack: Dataset, applied: dict) -> Dataset:
+        """Store a drift correction with ``stack`` and show it: its frames
+        are then the aligned ones (bad frames left out, cropped to the square
+        inside every frame); the loaded frames are kept, to switch back.
+        ``applied`` is ``RegistrationSession.applied()``. The average is added
+        to the file as an image (replacing an earlier one) and returned."""
+        from .processing.registration import aligned_signals
+
+        original = stack.loaded_signal
+        aligned, mean = aligned_signals(original, applied["stack"], applied["average"], applied["info"]["square"])
+        stack.original_signal = original
+        stack.aligned_signal = aligned
+        stack.alignment = applied["info"]
+        stack.signal = aligned
+        self._view_changed(stack)
+        for d in self._averages(stack):
+            self._remove(d)
+        avg = Dataset(
+            id=_new_id(), file_id=stack.file_id, signal=mean, kind=DatasetKind.IMAGE,
+            origin="aligned-average", derived_from=stack.id,
+        )
+        with self._lock:
+            self.datasets[avg.id] = avg
+            ids = self.files[stack.file_id].dataset_ids
+            ids.insert(ids.index(stack.id) + 1, avg.id)
+        return avg
+
+    def show_alignment(self, stack: Dataset, active: bool) -> None:
+        """Show a stack's frames aligned or as loaded."""
+        if stack.alignment is None:
+            raise ValueError(f"{stack.title} has no alignment")
+        target = stack.aligned_signal if active else stack.original_signal
+        if stack.signal is not target:
+            stack.signal = target
+            self._view_changed(stack)
+
+    def remove_alignment(self, stack: Dataset) -> None:
+        """Drop a stack's alignment (and its average): back to the frames as loaded."""
+        if stack.alignment is None:
+            return
+        stack.signal = stack.original_signal
+        stack.alignment = stack.aligned_signal = stack.original_signal = None
+        self._view_changed(stack)
+        for d in self._averages(stack):
+            self._remove(d)
 
     def siblings_in_file(self, file_id: str) -> list[Dataset]:
         with self._lock:

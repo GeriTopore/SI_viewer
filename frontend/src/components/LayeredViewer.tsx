@@ -65,6 +65,8 @@ interface Props {
   /** Tabs of the pane under the image besides "Line profile" (e.g. the
    * spectrum). Without them the pane only appears for line profiles. */
   bottomTabs?: { id: BottomTab; label: string; content: ReactNode }[];
+  /** Maps can be overlaid here (drop target and hint); default true. */
+  overlays?: boolean;
 }
 
 const BASE = "base";
@@ -72,7 +74,7 @@ const BASE = "base";
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
   viewKey, base, images, geometry, loading, error, children, onRemoveBase, empty, interaction, renderOverlay,
-  lineTool, profilePick, footer, bottomTabs = [],
+  lineTool, profilePick, footer, bottomTabs = [], overlays = true,
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
   const { setFocus, deselect, addToSelection } = useDatasets.getState();
@@ -158,12 +160,12 @@ export function LayeredViewer({
   // Image and stack views: their own tool keys. Any view: T switches tabs.
   useShortcuts({ l: () => setImageTool("line"), h: () => setImageTool("pan") }, lineTool === undefined);
   useShortcuts(
-    { t: () => setBottomTab(activeTab === "spectrum" ? "profile" : "spectrum") },
+    { t: () => setBottomTab(tabs[(tabs.findIndex((x) => x.id === activeTab) + 1) % tabs.length].id) },
     tabs.length > 1,
   );
 
   const [dragOver, setDragOver] = useState(false);
-  const accepts = (e: DragEvent) => e.dataTransfer.types.includes(DATASET_MIME);
+  const accepts = (e: DragEvent) => overlays && e.dataTransfer.types.includes(DATASET_MIME);
   const onDrop = (e: DragEvent) => {
     setDragOver(false);
     const id = e.dataTransfer.getData(DATASET_MIME);
@@ -271,7 +273,7 @@ export function LayeredViewer({
             </>
           )}
           analysisKey={activeLayer?.key}
-          hint={showPanel ? undefined : "click or drag maps to overlay them"}
+          hint={showPanel || !overlays ? undefined : "click or drag maps to overlay them"}
         >
           {children}
         </ImageView>

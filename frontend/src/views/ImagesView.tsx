@@ -3,7 +3,7 @@ import { LayeredViewer } from "../components/LayeredViewer";
 import { planeSize } from "../state/datasets";
 import { imageGeometry } from "./geometry";
 
-/** One or more same-size images, composed additively in their colours. */
+/** An image (or map) on its own: overlays are only made on spectrum images. */
 export function ImagesView({ images }: { images: DatasetSummary[] }) {
   const [w, h] = planeSize(images[0]);
   return (
@@ -14,6 +14,7 @@ export function ImagesView({ images }: { images: DatasetSummary[] }) {
         base={null}
         images={images}
         geometry={imageGeometry(images[0], "signal")}
+        overlays={false}
       />
     </div>
   );

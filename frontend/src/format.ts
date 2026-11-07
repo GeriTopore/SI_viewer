@@ -21,6 +21,10 @@ export function datasetTooltip(d: DatasetSummary): string {
   if (d.origin === "fitted") return `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;
   if (d.origin === "composition") return `${base}\nComposition (at%) per pixel: Cliff-Lorimer on the fitted maps`;
   if (d.is_element_map) return `${base}\nMap stored in the file (may be processed, e.g. quantified or filtered)`;
+  if (d.origin === "aligned-average") return `${base}\nAverage of the stack's frames after drift correction`;
+  if (d.alignment?.active) {
+    return `${base}\nDrift-corrected: ${d.alignment.frames.length} of ${d.alignment.loaded_frames} frames, cropped`;
+  }
   return base;
 }
 

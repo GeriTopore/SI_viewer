@@ -46,7 +46,7 @@ export interface DatasetSummary {
   eds: EdsInfo | null;
   /** "computed": an element map made from a spectrum image (window +
    * background); "fitted"/"composition": from fitting every pixel. */
-  origin: "file" | "computed" | "fitted" | "composition";
+  origin: "file" | "computed" | "fitted" | "composition" | "aligned-average";
   /** Element symbol of an element map. */
   element: string | null;
   /** Spectrum image a computed map was made from. */
@@ -61,6 +61,26 @@ export interface DatasetSummary {
   filter_rev: number;
   /** Line of a computed map, e.g. "Fe_Ka". */
   xray_line: string | null;
+  /** Stacks: an applied drift correction, shown when active (the frames are
+   * then the aligned ones, cropped). */
+  alignment: AppliedAlignment | null;
+  /** A dataset made from another, e.g. a stack's aligned average. */
+  derived_from: string | null;
+}
+
+/** A drift correction stored with a stack (Apply in the Result step). */
+export interface AppliedAlignment {
+  /** Frames kept (loaded numbering, 0-based); bad frames are left out. */
+  frames: number[];
+  first: number;
+  last: number;
+  rect: [number, number, number, number];
+  square: [number, number, number, number];
+  drift: Drift;
+  settings: { mask: MaskSettings; peaks: PeakSettings; outliers: OutlierSettings; bad_frames: number[] };
+  /** The aligned frames are shown (else the frames as loaded). */
+  active: boolean;
+  loaded_frames: number;
 }
 
 export type SpatialFilter = "none" | "gaussian" | "median" | "mean";
@@ -393,6 +413,12 @@ export const api = {
     }),
   startShifts: (id: string) => request<JobSummary>(`/api/datasets/${id}/registration/shifts`, { method: "POST" }),
   registrationResult: (id: string) => request<RegistrationResult>(`/api/datasets/${id}/registration/result`),
+  /** Store the result with the stack (shown aligned) and add the average. */
+  applyAlignment: (id: string) =>
+    request<DatasetAndFile & { average: DatasetSummary }>(`/api/datasets/${id}/registration/apply`, { method: "POST" }),
+  showAlignment: (id: string, active: boolean) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/alignment`, { method: "PUT", body: JSON.stringify({ active }) }),
+  removeAlignment: (id: string) => request<DatasetAndFile>(`/api/datasets/${id}/alignment`, { method: "DELETE" }),
   exportFormats: () => request<Record<string, ExportFormat[]>>("/api/export-formats"),
   listExamples: () => request<ExampleInfo[]>("/api/examples"),
   openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),

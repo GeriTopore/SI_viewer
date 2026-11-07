@@ -60,7 +60,9 @@ export function planeSize(d: DatasetSummary): [number, number] {
   return [shape[0] ?? 0, shape[1] ?? 0];
 }
 
-/** Why ``d`` can't be shown together with ``current``, or null if it can. */
+/** Why ``d`` can't be shown together with ``current``, or null if it can.
+ * Overlays are for EDS: images and maps on a spectrum image. Anything else
+ * is shown alone. */
 function combineError(current: DatasetSummary[], d: DatasetSummary): string | null {
   if (d.kind === "other") return `${d.title} can't be displayed.`;
   const all = [...current, d];
@@ -70,7 +72,10 @@ function combineError(current: DatasetSummary[], d: DatasetSummary): string | nu
   }
   const images = all.filter((x) => x.kind === "image");
   const primary = primaries[0];
-  if (primary?.kind === "spectrum" && images.length) return "Images can't be overlaid on a spectrum.";
+  if (primary && primary.kind !== "spectrum_image" && images.length) {
+    return `Images can't be overlaid on a ${primary.kind}.`;
+  }
+  if (!primary && images.length > 1) return "Images can only be overlaid on a spectrum image.";
   const ref = primary ?? images[0];
   const [w, h] = planeSize(ref);
   for (const im of images) {

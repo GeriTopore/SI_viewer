@@ -3,7 +3,7 @@ import { create } from "zustand";
 export type ListMode = "list" | "grid";
 export type Theme = "light" | "dark";
 export type RightTab = "info" | "quantify" | "process";
-export type BottomTab = "spectrum" | "profile";
+export type BottomTab = "spectrum" | "profile" | "alignment";
 
 // Pane sizes: default and limits (side panes in px, the viewer's bottom pane
 // as a fraction of the viewer's height).

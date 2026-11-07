@@ -641,8 +641,21 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
      - Tested against the package on the notebook's Nb3Cl8 run (average
        and crop) and on a synthetic stack (crop size, the square's place
        on each frame).
-   - Apply (to do): aligned frames on read, the *Original / Aligned* switch
-     on the stack, the average as a new dataset, and the *Alignment* tab.
+   - Apply (done):
+     - Stores the alignment with the stack and shows it: while *Aligned* is
+       on, the stack's data is the aligned stack (kept frames, cropped to
+       the square, image offsets moved to its corner), so the slider,
+       projections, line profiles, FFT, export and thumbnails all use it.
+       The loaded frames are kept; *Original / Aligned* under the image
+       switches (bumping `filter_rev` so views refetch).
+     - The average is added after the stack as an image
+       ("… (aligned average)"); applying again replaces it.
+     - The *Alignment* tab under the stack shows the drift plot and how
+       the correction was made; the Process tab summarises it, with
+       *Remove alignment* (restores the loaded frames, removes the average).
+     - The registration keeps working on the loaded frames, so
+       *Align frames…* refines an applied alignment. Rebinning the scan
+       removes the alignment first (its shifts are in the old pixels).
    - Tests: a synthetic stack with known shifts (under 0.2 px), and the
      sample stacks.
 4. **M9d: extras.**
@@ -679,7 +692,7 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
 | M6 | Line profiles for images and SIs (intensity and element profiles) | Done |
 | M7 | Export, keyboard shortcuts, polish | Done |
 | M8 | pywebview desktop window and installers (deferred until the features are complete) | |
-| M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Result (M9c, done) + Apply (M9c), extras (M9d) | In progress |
+| M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Result + Apply (M9c, done), extras (M9d) | In progress |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

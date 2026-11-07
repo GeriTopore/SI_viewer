@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchFrame, type Frame } from "../api/arrays";
 import { api, type DatasetSummary } from "../api/client";
 import { LayeredViewer } from "../components/LayeredViewer";
+import { AlignmentSummary } from "../components/AlignmentSummary";
 import { useDatasets } from "../state/datasets";
 import { imageGeometry, isAbort } from "./geometry";
 import { isTyping } from "../keyboard";
@@ -109,6 +110,19 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
     if (ds.lazy && loadedFrame) api.getDataset(ds.id).then(updateDataset).catch(() => {});
   }, [ds.id, ds.lazy, loadedFrame, updateDataset]);
 
+  // Drift-corrected stacks: switch between the aligned frames (fewer,
+  // cropped) and the frames as loaded.
+  const replaceFile = useDatasets((s) => s.replaceFile);
+  const alignment = ds.alignment;
+  const showAligned = async (active: boolean) => {
+    try {
+      replaceFile((await api.showAlignment(ds.id, active)).file);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  useEffect(() => setIndex((i) => Math.min(i, n - 1)), [n]);
+
   // ←/→ step through frames (unless typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -125,7 +139,9 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
     return () => window.removeEventListener("keydown", onKey);
   }, [n, projection]);
 
-  const frameLabel = projection === "frame" ? `Frame ${index + 1} / ${n}` : `${projection} of ${n} frames`;
+  const frameLabel =
+    (projection === "frame" ? `Frame ${index + 1} / ${n}` : `${projection} of ${n} frames`) +
+    (alignment?.active ? " · aligned" : "");
 
   const stackBar = (
     <div className="stack-bar">
@@ -158,6 +174,21 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
           </button>
         ))}
       </div>
+      {alignment && (
+        <div className="segmented" role="group" aria-label="Drift correction">
+          {[false, true].map((on) => (
+            <button
+              key={String(on)}
+              className={alignment.active === on ? "active" : undefined}
+              aria-pressed={alignment.active === on}
+              onClick={() => alignment.active !== on && showAligned(on)}
+              title={on ? "Frames after drift correction (cropped)" : "Frames as loaded"}
+            >
+              {on ? "Aligned" : "Original"}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 
@@ -171,6 +202,12 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
         loading={frame ? null : "Loading frame…"}
         error={error}
         footer={stackBar}
+        overlays={false}
+        bottomTabs={
+          alignment
+            ? [{ id: "alignment", label: "Alignment", content: <AlignmentSummary ds={ds} calX={g.calX} /> }]
+            : []
+        }
       >
         <span className="frame-chip">{frameLabel}</span>
       </LayeredViewer>

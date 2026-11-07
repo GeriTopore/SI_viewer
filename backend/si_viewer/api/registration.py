@@ -23,9 +23,10 @@ def _stack(request: Request, dataset_id: str) -> Dataset:
 
 
 def _frames(ds: Dataset):
-    """The stack's frames as loaded (alignment comes before any filter)."""
+    """The stack's frames as loaded (alignment comes before any filter, and
+    an applied alignment is redone from the loaded frames)."""
     ds.materialise()
-    return ds.signal.data
+    return ds.loaded_signal.data
 
 
 def _session(request: Request, dataset_id: str) -> RegistrationSession:
@@ -196,6 +197,39 @@ def get_average(dataset_id: str, request: Request, crop: bool = True) -> Respons
     """The average of the aligned frames, cropped to the square (or whole)."""
     s = _session(request, dataset_id)
     return array_response(_frame_error(s.average, crop))
+
+
+@router.post("/api/datasets/{dataset_id}/registration/apply")
+def post_apply(dataset_id: str, request: Request) -> dict:
+    """Store the result with the stack (shown aligned from now on, the
+    loaded frames kept) and add the average to the file as an image."""
+    ds = _stack(request, dataset_id)
+    s = _session(request, dataset_id)
+    session = request.app.state.session
+    avg = session.apply_alignment(ds, _frame_error(s.applied))
+    return {"dataset": ds.summary(), "average": avg.summary(), "file": session.file_of(ds).summary(session)}
+
+
+class AlignmentView(BaseModel):
+    active: bool
+
+
+@router.put("/api/datasets/{dataset_id}/alignment")
+def put_alignment(dataset_id: str, body: AlignmentView, request: Request) -> dict:
+    """Show the stack's frames aligned (active) or as loaded."""
+    ds = _stack(request, dataset_id)
+    session = request.app.state.session
+    _frame_error(session.show_alignment, ds, body.active)
+    return {"dataset": ds.summary(), "file": session.file_of(ds).summary(session)}
+
+
+@router.delete("/api/datasets/{dataset_id}/alignment")
+def delete_alignment(dataset_id: str, request: Request) -> dict:
+    """Remove the stack's alignment and its average: the frames as loaded."""
+    ds = _stack(request, dataset_id)
+    session = request.app.state.session
+    session.remove_alignment(ds)
+    return {"dataset": ds.summary(), "file": session.file_of(ds).summary(session)}
 
 
 @router.get("/api/datasets/{dataset_id}/registration/matrices")

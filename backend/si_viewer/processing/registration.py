@@ -118,6 +118,27 @@ def normalised(frames: np.ndarray) -> np.ndarray:
     return np.asarray(frames, np.float64) / peak
 
 
+def aligned_signals(original, stack: np.ndarray, average: np.ndarray, square: list[int]):
+    """The aligned stack (frames, side, side) and its average as HyperSpy
+    signals with ``original``'s metadata and calibration, the image axes'
+    offsets moved to the square's corner."""
+    import hyperspy.api as hs
+
+    x, y = square[:2]
+    image_axes = []
+    for ax, start, size in zip(original.axes_manager.signal_axes[::-1], (y, x), stack.shape[1:]):  # array order y, x
+        d = ax.get_axis_dictionary()
+        d.update(offset=ax.offset + start * ax.scale, size=size, navigate=False)
+        image_axes.append(d)
+    frames = original.axes_manager.navigation_axes[0].get_axis_dictionary()
+    frames.update(size=stack.shape[0], navigate=True)
+    meta = {"metadata": original.metadata.as_dictionary(), "original_metadata": original.original_metadata.as_dictionary()}
+    aligned = hs.signals.Signal2D(stack.astype(np.float32), axes=[frames, *image_axes], **meta)
+    mean = hs.signals.Signal2D(average.astype(np.float32), axes=image_axes, **meta)
+    mean.metadata.General.title = f"{original.metadata.General.title} (aligned average)"
+    return aligned, mean
+
+
 class _Progress:
     """Stands in for tqdm inside the package: reports to a callback, which
     may raise to cancel."""
@@ -549,6 +570,25 @@ class RegistrationSession:
     def average(self, crop: bool = True) -> np.ndarray:
         """The average of the aligned frames (cropped to the square)."""
         return self._cropped(self.result()["average"], crop)
+
+    def applied(self) -> dict:
+        """What Apply stores with the stack: the aligned frames (cropped),
+        their average (cropped), and a summary of how they were made."""
+        r = self.result()
+        x, y, w, h = r["square"]
+        return {
+            "stack": np.ascontiguousarray(r["aligned"][:, y:y + h, x:x + w]),
+            "average": self.average(),
+            "info": {
+                "frames": r["frames"],
+                "first": self.first,
+                "last": self.last,
+                "rect": r["rect"],
+                "square": r["square"],
+                "drift": self.drift(),
+                "settings": {**self.correction["shifts"], **{k: self.correction[k] for k in ("outliers", "bad_frames")}},
+            },
+        }
 
     def corrected_matrices(self) -> np.ndarray:
         """Corrected shift matrices (2, frames, frames), Δx then Δy, and which

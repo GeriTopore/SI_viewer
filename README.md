@@ -51,6 +51,12 @@ without changing the loaded data:
   quantification in the Quantify tab.
 - **Images and stacks:** Gaussian, median or mean filters.
 
+### Overlays
+
+Element maps and images of the same scan can be overlaid on a spectrum
+image. Anything else (a stack, a spectrum, an image or a map) is shown on its
+own: clicking another one switches to it.
+
 ### Layout
 
 Drag the gaps beside the side panes to resize them, and the bar between the
@@ -101,6 +107,10 @@ Process tab. So far:
     inside every frame; *Original* shows them as loaded with that square
     drawn on each.
   - Below, the average of the aligned frames (its FFT in the FFT panel).
+  - *Apply* shows the stack aligned and cropped everywhere (slider,
+    projections, profiles, export), with an *Original / Aligned* switch and
+    an *Alignment* tab (drift and settings) under the image, and adds the
+    average as an image. *Remove alignment* in the Process tab undoes it.
 
 The package is installed editable from `../rigidRegistration` (see
 `environment.yml`).

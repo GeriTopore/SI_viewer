@@ -164,15 +164,24 @@ export function ImageView({
     return () => ro.disconnect();
   }, []);
 
+  // A new image size (e.g. a stack shown aligned and cropped) always re-fits:
+  // the old view was of another image.
+  const imageSize = useRef({ w: fullWidth, h: fullHeight });
+
   // Switching to a different view key: restore its saved view, or fit.
   useEffect(() => {
     const saved = useDisplay.getState().views[viewKey];
     fitted.current = !saved;
+    imageSize.current = { w: fullWidth, h: fullHeight };
     setViewState(saved ?? null);
-  }, [viewKey]);
+  }, [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (size.w && fullWidth && (fitted.current || !view)) fit();
+    const resized = imageSize.current.w !== fullWidth || imageSize.current.h !== fullHeight;
+    if (size.w && fullWidth && (fitted.current || !view || resized)) {
+      imageSize.current = { w: fullWidth, h: fullHeight };
+      fit();
+    }
   }, [size.w, size.h, fullWidth, fullHeight]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Upload data and draw on any change, batched into one animation frame.

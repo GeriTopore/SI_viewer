@@ -25,7 +25,7 @@ from typing import Callable, Literal
 import numpy as np
 from pydantic import BaseModel, Field
 
-MaskType = Literal["bandpass", "hann", "gaussian", "hamming", "blackman", "none"]
+MaskType = Literal["bandpass", "hann", "gaussian", "hamming", "blackman", "elliptical", "none"]
 
 # Above this, the FFTs of all frames (complex128) need a warning.
 FFT_MEMORY_WARNING = 1 << 30
@@ -35,6 +35,53 @@ class MaskSettings(BaseModel):
     # Fourier mask: features smaller than ~n pixels are ignored.
     type: MaskType = "hann"
     n: float = Field(6.0, gt=0.5, le=200)
+    # Elliptical Gaussian (``makeFourierMask_eg``): n is the cutoff along the
+    # first axis, n2 along the second, the first axis at theta degrees.
+    n2: float = Field(4.0, gt=0.5, le=200)
+    theta: float = Field(0.0, ge=-360, le=360)
+
+
+def make_mask(target, mask: MaskSettings) -> None:
+    """Set ``mask`` on an ``imstack`` (or a stand-in with its attributes)."""
+    cls = _package().stackregistration.imstack
+    if mask.type == "elliptical":
+        cls.makeFourierMask_eg(target, n1=mask.n, n2=mask.n2, theta=np.radians(mask.theta))
+    else:
+        cls.makeFourierMask(target, mask=mask.type, n=mask.n)
+
+
+CorrelationType = Literal["cc", "mc", "pc"]
+PeakMethod = Literal["pixel", "gf", "com"]
+
+
+class PeakSettings(BaseModel):
+    """How each pair's shift is read from its correlation (the package's
+    ``findImageShifts`` options and Gaussian-fit parameters)."""
+
+    # Cross, mutual or phase correlation.
+    correlation: CorrelationType = "cc"
+    # Brightest pixel, Gaussian fit (subpixel) or centre of mass.
+    method: PeakMethod = "pixel"
+    # Gaussian fit: candidate maxima fitted, starting σ, cut-out radius (px).
+    num_peaks: int = Field(5, ge=1, le=20)
+    sigma_guess: float = Field(2.0, gt=0, le=100)
+    window_radius: int = Field(6, ge=2, le=64)
+
+
+class OutlierSettings(BaseModel):
+    """Which pair shifts are left out as outliers (the package's
+    ``get_outliers`` / ``get_outliers_NN`` and ``mask_off_diagonal``)."""
+
+    # Transitivity: shifts must add up along paths of pairs (i→k→j = i→j).
+    # Neighbours: a shift must agree with the neighbouring matrix entries.
+    method: Literal["transitivity", "neighbours", "none"] = "transitivity"
+    # Transitivity: allowed mismatch (px), averaged over this many paths.
+    threshold: float = Field(10.0, gt=0, le=1000)
+    max_paths: int = Field(5, ge=1, le=50)
+    # Neighbours: allowed difference from neighbouring entries (px).
+    max_shift: float = Field(5.0, gt=0, le=1000)
+    # Use only pairs at most this many frames apart (None: all pairs).
+    off_diagonal: int | None = Field(None, ge=1)
 
 
 def _wisdom_file() -> Path:
@@ -58,6 +105,17 @@ def _package():
     if FFTW.hasfftw:
         stackregistration.FFTW.WrapFFTW = functools.partial(FFTW.WrapFFTW, wisdomfile=str(_wisdom_file()))
     return rigidregistration
+
+
+def normalised(frames: np.ndarray) -> np.ndarray:
+    """Frames scaled into 0–1, as the package's notebooks prepare them ("for
+    best performance, data should be normalized between 0 and 1"): integer
+    data by its type's range (uint16 / 2¹⁶, as in the notebooks), float data
+    by its largest magnitude. The Gaussian peak fit depends on this scale."""
+    if np.issubdtype(frames.dtype, np.integer):
+        return frames / float(2 ** (8 * frames.dtype.itemsize))
+    peak = float(np.max(np.abs(frames))) or 1.0
+    return np.asarray(frames, np.float64) / peak
 
 
 class _Progress:
@@ -93,6 +151,12 @@ class RegistrationSession:
 
     ``frames`` is the stack (frames, rows, cols); only ``first … last - 1``
     are registered. Frame numbers in the API are the stack's own.
+
+    The settings live here; they are put on the package's ``imstack`` only
+    when the shifts are computed (a job). Previews never change the
+    ``imstack``: they use a stand-in (``_ops``) with the package's own methods
+    and their own FFT object (FFTW plans aren't shared between threads), so
+    they can run while a job is computing and give the same numbers.
     """
 
     def __init__(self, frames: np.ndarray, first: int = 0, last: int | None = None, revision: int = 0):
@@ -105,17 +169,28 @@ class RegistrationSession:
         self.first, self.last = first, last
         self.bad_frames: list[int] = []
         self.mask = MaskSettings()
+        self.peaks = PeakSettings()
+        self.outliers = OutlierSettings()
+        # Settings the shift matrices were computed with (None: not yet).
+        self.shifts_settings: dict | None = None
+        # Settings of the last correction (None: not corrected).
+        self.correction: dict | None = None
         self.lock = threading.Lock()
-        sub = np.asarray(frames[first:last], dtype=np.float64)
+        # Previews take turns on their own FFT object.
+        self.preview_lock = threading.Lock()
+        self._preview_fft = None
+        sub = np.asarray(frames[first:last])
         self.frames = sub
         rr = _package()
-        self.imstack = rr.stackregistration.imstack(np.moveaxis(sub, 0, -1))
+        self.imstack = rr.stackregistration.imstack(np.moveaxis(normalised(sub), 0, -1))
         self.imstack.getFFTs()
-        self._apply_mask(self.mask)
 
     @property
     def count(self) -> int:
         return self.last - self.first
+
+    def _settings(self) -> dict:
+        return {"mask": self.mask.model_dump(), "peaks": self.peaks.model_dump()}
 
     def summary(self) -> dict:
         rows, cols = self.frames.shape[1:]
@@ -126,6 +201,13 @@ class RegistrationSession:
             "shape": [rows, cols],
             "bad_frames": self.bad_frames,
             "mask": self.mask.model_dump(),
+            "peaks": self.peaks.model_dump(),
+            "outliers": self.outliers.model_dump(),
+            "shifts": None if self.shifts_settings is None else {
+                **self.shifts_settings,
+                # The mask or peak finding changed since: recompute to use them.
+                "stale": self.shifts_settings != self._settings(),
+            },
             "fft_bytes": int(self.imstack.fftstack.nbytes),
             "fftw": bool(_package().FFTW.hasfftw),
         }
@@ -135,37 +217,284 @@ class RegistrationSession:
             raise ValueError(f"Frame {frame} is outside the frames being registered ({self.first}–{self.last - 1})")
         return frame - self.first
 
-    def _apply_mask(self, mask: MaskSettings) -> None:
-        self.imstack.makeFourierMask(mask=mask.type, n=mask.n)
-
-    def set_settings(self, bad_frames: list[int] | None = None, mask: MaskSettings | None = None) -> None:
-        with self.lock:
-            if bad_frames is not None:
-                self.bad_frames = sorted({f for f in bad_frames if self.first <= f < self.last})
-            if mask is not None:
-                self.mask = mask
-                self._apply_mask(mask)
+    def set_settings(
+        self, bad_frames: list[int] | None = None, mask: MaskSettings | None = None, peaks: PeakSettings | None = None,
+        outliers: OutlierSettings | None = None,
+    ) -> None:
+        if bad_frames is not None:
+            self.bad_frames = sorted({f for f in bad_frames if self.first <= f < self.last})
+        if mask is not None:
+            self.mask = mask
+        if peaks is not None:
+            self.peaks = peaks
+        if outliers is not None:
+            self.outliers = outliers
 
     # ---------- previews ----------
+
+    def _ops(self, mask: MaskSettings, peaks: PeakSettings):
+        """A stand-in for the ``imstack`` with ``mask`` and ``peaks`` applied:
+        the package's methods run on it unchanged, with NumPy FFTs."""
+        from types import SimpleNamespace
+
+        rr = _package()
+        s = self.imstack
+        if self._preview_fft is None:
+            # The same FFT the registration uses (FFTW when available), so
+            # previews give the shift matrices' numbers exactly.
+            self._preview_fft = rr.stackregistration.FFTW.WrapFFTW((s.nx, s.ny))
+        ops = SimpleNamespace(
+            nx=s.nx, ny=s.ny, kx=s.kx, ky=s.ky, kr=s.kr, rx=s.rx, ry=s.ry,
+            fftw=self._preview_fft,
+            num_peaks=peaks.num_peaks, sigma_guess=peaks.sigma_guess, window_radius=peaks.window_radius,
+            num_iter=s.num_iter, min_window_frac=s.min_window_frac,
+        )
+        make_mask(ops, mask)
+        return ops
+
+    def _correlation(self, ops, i: int, j: int, kind: CorrelationType) -> np.ndarray:
+        """Correlation of frames i, j as the package computes it (unshifted)."""
+        cls = type(self.imstack)
+        fn = {
+            "cc": cls.getSingleCrossCorrelation,
+            "mc": cls.getSingleMutualCorrelation,
+            "pc": cls.getSinglePhaseCorrelation,
+        }[kind]
+        fft = self.imstack.fftstack
+        return fn(ops, fft[:, :, self._index(i)], fft[:, :, self._index(j)])
 
     def frame(self, frame: int) -> np.ndarray:
         return self.frames[self._index(frame)].astype(np.float32)
 
-    def correlation(self, i: int, j: int, mask: MaskSettings | None = None) -> np.ndarray:
-        """Cross-correlation of frames i and j with ``mask`` (default: the
+    def correlation(
+        self, i: int, j: int, mask: MaskSettings | None = None, kind: CorrelationType | None = None,
+    ) -> np.ndarray:
+        """Correlation of frames i and j with ``mask`` (default: the
         session's), shifted so zero shift is at the centre (rows // 2, cols // 2)."""
-        with self.lock:
-            changed = mask is not None and mask != self.mask
-            if changed:
-                self._apply_mask(mask)
-            try:
-                s = self.imstack
-                cc = s.getSingleCrossCorrelation(s.fftstack[:, :, self._index(i)], s.fftstack[:, :, self._index(j)])
-            finally:
-                if changed:
-                    self._apply_mask(self.mask)
+        with self.preview_lock:
+            ops = self._ops(mask or self.mask, self.peaks)
+            cc = self._correlation(ops, i, j, kind or self.peaks.correlation)
         return np.fft.fftshift(cc).astype(np.float32)
 
-    def compare_n(self, i: int, j: int, mask_type: MaskType, ns: list[float]) -> np.ndarray:
-        """Cross-correlations of frames i, j for each cutoff n: (len(ns), rows, cols)."""
-        return np.stack([self.correlation(i, j, MaskSettings(type=mask_type, n=n)) for n in ns])
+    def compare_n(self, i: int, j: int, mask: MaskSettings, ns: list[float]) -> np.ndarray:
+        """Cross-correlations of frames i, j for each cutoff n (an elliptical
+        mask keeps its shape: n2 scales with n): (len(ns), rows, cols)."""
+        ratio = mask.n2 / mask.n
+        return np.stack([
+            self.correlation(i, j, mask.model_copy(update={"n": n, "n2": n * ratio}), "cc") for n in ns
+        ])
+
+    def peak(self, i: int, j: int, mask: MaskSettings | None = None, peaks: PeakSettings | None = None) -> dict:
+        """How the shift of frames i, j is found, as the registration will
+        find it: the shift (dx, dy in image pixels), where it is in the
+        centred correlation, and for a Gaussian fit every candidate maximum
+        with its cut-out, fitted model and parameters (``show_Gaussian_fit``).
+        Positions are (x, y) = (column, row) in the centred correlation."""
+        from rigidregistration.utils import fit_gaussian, gauss2d, get_cutout, on_edge
+
+        if i > j:
+            # The registration finds each pair once, for i < j, and takes
+            # shift(i, j) = -shift(j, i); do the same. Correlation (i, j) is
+            # correlation (j, i) mirrored through the centre.
+            p = self.peak(j, i, mask, peaks)
+            rows, cols = self.frames.shape[1:]
+            mx = lambda x: 2 * (cols // 2) - x  # noqa: E731
+            my = lambda y: 2 * (rows // 2) - y  # noqa: E731
+            for c in p["candidates"]:
+                c["x"], c["y"] = mx(c["x"]), my(c["y"])
+                if c["fitted"]:
+                    c["fit_x"], c["fit_y"] = mx(c["fit_x"]), my(c["fit_y"])
+                    c["data"] = [row[::-1] for row in c["data"][::-1]]
+                    c["model"] = [row[::-1] for row in c["model"][::-1]]
+            return {**p, "dx": -p["dx"], "dy": -p["dy"], "x": mx(p["x"]), "y": my(p["y"])}
+
+        peaks = peaks or self.peaks
+        cls = type(self.imstack)
+        with self.preview_lock:
+            ops = self._ops(mask or self.mask, peaks)
+            cc = self._correlation(ops, i, j, peaks.correlation)
+        rows, cols = cc.shape
+        candidates = []
+        if peaks.method == "pixel":
+            r, c = cls.getSingleShift_pixel(ops, cc)
+            # Wrap as findImageShifts does.
+            dr = r if r < rows / 2 else r - rows
+            dc = c if c < cols / 2 else c - cols
+        elif peaks.method == "com":
+            dr, dc = cls.getSingleShift_com(ops, cc)
+        else:
+            centred = np.fft.fftshift(cc)
+            maxima = cls.get_n_cross_correlation_maxima(ops, cc, peaks.num_peaks)
+            rad = peaks.window_radius
+            best, best_score = None, -np.inf
+            for r0, c0 in maxima:
+                cand = {"x": float(c0), "y": float(r0), "fitted": False}
+                if not on_edge(centred, r0, c0, rad):
+                    cutout = get_cutout(centred, r0, c0, rad)
+                    popt, _, ok = fit_gaussian(
+                        rad, rad, peaks.sigma_guess, peaks.sigma_guess, 0, 0, cutout, plot=False, verbose=False,
+                    )
+                    # The fitted model on the cut-out, as getGaussianFitResult draws it.
+                    grid = np.meshgrid(range(cutout.shape[0]), range(cutout.shape[1]))
+                    model = np.reshape(gauss2d(grid, *popt), cutout.shape)
+                    # fit_peaks: (row, col) = popt[1:3] reversed + the window's corner.
+                    fr, fc = popt[2] + r0 - rad, popt[1] + c0 - rad
+                    score = popt[6] + popt[0]  # what getSingleShift_gaussianFit maximises
+                    cand.update({
+                        "fitted": True, "success": bool(ok), "fit_x": float(fc), "fit_y": float(fr),
+                        "amplitude": float(popt[0]), "sigma": [float(abs(popt[3])), float(abs(popt[4]))],
+                        "offset": float(popt[6]),
+                        "data": cutout.astype(np.float32).tolist(), "model": model.astype(np.float32).tolist(),
+                    })
+                    if score > best_score:
+                        best, best_score = len(candidates), score
+                candidates.append(cand)
+            if best is None:
+                raise ValueError("Every candidate peak is too close to the edge to fit: lower the window radius")
+            dr = candidates[best]["fit_y"] - rows / 2
+            dc = candidates[best]["fit_x"] - cols / 2
+            for k, cand in enumerate(candidates):
+                cand["chosen"] = k == best
+        return {
+            "dx": float(dc), "dy": float(dr),
+            "x": float(dc + cols // 2), "y": float(dr + rows // 2),
+            "candidates": candidates,
+        }
+
+    # ---------- shift matrices ----------
+
+    def compute_shifts(self, report: Callable[[float], None]) -> None:
+        """Every pair's shift (the package's ``findImageShifts``) with the
+        current settings. ``report`` gets the progress and may raise to cancel."""
+        with self.lock:
+            settings = self._settings()
+            mask, peaks = self.mask, self.peaks
+            s = self.imstack
+            make_mask(s, mask)
+            s.setGaussianFitParams(num_peaks=peaks.num_peaks, sigma_guess=peaks.sigma_guess, window_radius=peaks.window_radius)
+            _Progress.report = report
+            try:
+                s.findImageShifts(correlationType=peaks.correlation, findMaxima=peaks.method)
+            finally:
+                _Progress.report = None
+            self.shifts_settings = settings
+            self.correction = None
+
+    def _set_mask(self, outliers: OutlierSettings, bad: list[int]) -> None:
+        """Mark the package's ``Rij_mask`` as the user set it (call with the lock)."""
+        s = self.imstack
+        s.outlier_mask = np.ones((s.nz, s.nz), dtype=bool)
+        if outliers.method == "transitivity":
+            s.get_outliers(threshold=outliers.threshold, maxpaths=outliers.max_paths)
+        elif outliers.method == "neighbours":
+            s.get_outliers_NN(outliers.max_shift)
+        s.mask_off_diagonal(outliers.off_diagonal or False)
+        s.set_bad_images([f - self.first for f in bad if self.first <= f < self.last])
+        s.refine_mask()
+
+    def outlier_mask(self, outliers: OutlierSettings | None = None, bad_frames: list[int] | None = None) -> np.ndarray:
+        """Which pair shifts are kept (1) or masked (0), (frames, frames), as
+        the package marks them before correcting: outliers, pairs too far
+        off the diagonal and bad frames' rows and columns; the diagonal of
+        good frames is kept (``refine_mask``)."""
+        if self.shifts_settings is None:
+            raise ValueError("Compute the shifts first")
+        with self.lock:
+            self._set_mask(outliers or self.outliers, self.bad_frames if bad_frames is None else bad_frames)
+            return self.imstack.Rij_mask.astype(np.float32)
+
+    def correct(self, outliers: OutlierSettings | None = None, bad_frames: list[int] | None = None) -> dict:
+        """Fill the masked shifts from paths of good ones (the package's
+        ``make_corrected_Rij``), then each frame's shift as the mean of its
+        row (``get_imshifts``). Returns each frame's measured drift.
+
+        The package's loop runs until every good frame's pairs are filled.
+        A round that fills nothing changes nothing for the next, so where the
+        package repeats such rounds until its 1000th (when it doubles the
+        paths tried), this doubles them at once, with the same result. Its
+        path generator runs past the ends of the stack (frame -1, nz, …);
+        NumPy wraps the negative ones to the last frames, which is still a
+        valid chain of pairs, and the package relies on it. Indices past the
+        end (an IndexError in the package) wrap the same way. With no
+        progress at 640 paths per pair it stops with an error, where the
+        package would loop forever."""
+        from rigidregistration.utils import getpaths
+
+        if self.shifts_settings is None:
+            raise ValueError("Compute the shifts first")
+        o = outliers or self.outliers
+        bad = self.bad_frames if bad_frames is None else bad_frames
+        with self.lock:
+            self._set_mask(o, bad)
+            s = self.imstack
+            nz = s.nz
+            mask = s.Rij_mask
+            good = np.nonzero(np.any(mask, axis=1))[0]
+            known = np.copy(mask)
+            xc = np.where(mask, s.X_ij, np.nan)
+            yc = np.where(mask, s.Y_ij, np.nan)
+            maxpaths = 5
+
+            def paths(i: int, j: int):
+                for p in getpaths(i, j, maxpaths, nz):
+                    yield [(a % nz, b % nz) for a, b in p]
+
+            while not np.all(known[np.ix_(good, good)]):
+                for i in range(nz - 1):
+                    for j in range(i + 1, nz):
+                        if known[i, j]:
+                            continue
+                        n, x, y = 0, 0.0, 0.0
+                        for p in paths(i, j):
+                            if np.all([known[ip] for ip in p]):
+                                x += np.array([xc[ip] for ip in p]).sum()
+                                y += np.array([yc[ip] for ip in p]).sum()
+                                n += 1
+                        if n:
+                            xc[i, j], xc[j, i] = -x / n, x / n
+                            yc[i, j], yc[j, i] = -y / n, y / n
+                filled = ~np.isnan(xc) & ~np.isnan(yc)
+                if np.array_equal(filled, known):
+                    if maxpaths >= 640:
+                        stuck = sorted({int(self.first + k) for k in good if not np.all(filled[k, good])})
+                        raise ValueError(
+                            "Some frames have too few good pairs to correct ("
+                            + ", ".join(map(str, stuck[:12])) + ("…" if len(stuck) > 12 else "")
+                            + "): loosen the outlier mask or mark those frames bad"
+                        )
+                    maxpaths *= 2
+                known = filled
+            s.Rij_mask_c = known
+            s.X_ij_c = np.nan_to_num(xc)
+            s.Y_ij_c = np.nan_to_num(yc)
+            s.get_imshifts()
+            self.correction = {"outliers": o.model_dump(), "bad_frames": list(bad), "shifts": self.shifts_settings}
+            return self.drift()
+
+    def drift(self) -> dict:
+        """Each registered frame's measured position relative to the mean
+        (px, image x right and y down): minus the shift that aligns it. Bad
+        frames (no shift) are left out."""
+        s = self.imstack
+        rows = np.flatnonzero(s.Rij_mask_c.sum(axis=1) > 0)
+        return {
+            "frames": [int(self.first + k) for k in rows],
+            "x": [float(-s.shifts_y[k]) for k in rows],
+            "y": [float(-s.shifts_x[k]) for k in rows],
+        }
+
+    def corrected_matrices(self) -> np.ndarray:
+        """Corrected shift matrices (2, frames, frames), Δx then Δy, and which
+        entries are known (the third plane: 1 known, 0 not)."""
+        if getattr(self, "correction", None) is None:
+            raise ValueError("Correct the shift matrices first")
+        s = self.imstack
+        return np.stack([s.Y_ij_c, s.X_ij_c, s.Rij_mask_c]).astype(np.float32)
+
+    def matrices(self) -> np.ndarray:
+        """The shift matrices as (2, frames, frames): Δx (columns) then Δy
+        (rows) of frame j relative to frame i, in pixels. (The package's X is
+        the row axis.)"""
+        if self.shifts_settings is None:
+            raise ValueError("Compute the shifts first")
+        return np.stack([self.imstack.Y_ij, self.imstack.X_ij]).astype(np.float32)

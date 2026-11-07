@@ -83,6 +83,19 @@ Process tab. So far:
     button hides them.
   - The frame and the cross-correlation of a pair of frames, updating live.
   - Compare several cutoffs side by side.
+- **Peak finding:** a pair's correlation (cross, mutual or phase) and a zoom
+  on its peak, with brightest pixel, Gaussian fit (each candidate's cut-out
+  beside its fitted Gaussian) or centre of mass.
+- **Shift matrices:**
+  - Every pair's shift as Δx and Δy matrices, computed as a background job
+    with progress and Cancel.
+  - Hover a cell for its shift; click it to inspect that pair.
+  - Outliers are masked over the matrices (toggle to hide), set by a
+    transitivity threshold or a neighbour check, and optionally only pairs a
+    few frames apart.
+  - The corrected matrices (masked shifts filled from paths of good pairs)
+    and a 2D plot of the measured drift below them update as the mask
+    changes.
 
 The package is installed editable from `../rigidRegistration` (see
 `environment.yml`).

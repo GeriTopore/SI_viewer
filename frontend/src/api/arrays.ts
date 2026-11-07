@@ -1,4 +1,4 @@
-import { ApiError } from "./client";
+import { ApiError, type MaskSettings } from "./client";
 
 export interface ArrayResult {
   data: Float32Array;
@@ -95,16 +95,50 @@ export async function fetchRegistrationFrame(stack: string, i: number): Promise<
   return { data, height: shape[0], width: shape[1], bin: 1 };
 }
 
-/** Cross-correlation of frames i, j with a Fourier mask (zero shift at the centre). */
-export async function fetchCorrelation(stack: string, i: number, j: number, type: string, n: number): Promise<Frame> {
+/** Correlation of frames i, j with a Fourier mask (zero shift at the centre);
+ * cross (cc), mutual (mc) or phase (pc). */
+export async function fetchCorrelation(
+  stack: string, i: number, j: number, mask: MaskSettings, corr = "cc",
+): Promise<Frame> {
+  const { type, n, n2, theta } = mask;
   const { data, shape } = await fetchArray(
-    `/api/datasets/${stack}/registration/correlation?i=${i}&j=${j}&type=${type}&n=${n}`,
+    `/api/datasets/${stack}/registration/correlation?i=${i}&j=${j}&type=${type}&n=${n}&n2=${n2}&theta=${theta}&corr=${corr}`,
   );
   return { data, height: shape[0], width: shape[1], bin: 1 };
 }
 
-/** Cross-correlations of frames i, j for several cutoffs n. */
-export async function fetchCompareN(stack: string, i: number, j: number, type: string, ns: number[]) {
+/** Which pair shifts the outlier settings keep (1) or mask (0). */
+export async function fetchOutlierMask(stack: string, outliers: object, badFrames: number[]) {
+  const r = await fetchArray(`/api/datasets/${stack}/registration/outlier-mask`, undefined, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ outliers, bad_frames: badFrames }),
+  });
+  const [n] = r.shape;
+  return { kept: r.data, n, masked: Number(r.meta.masked), pairs: Number(r.meta.pairs) };
+}
+
+/** The corrected shift matrices: Δx, Δy and which entries are known (1). */
+export async function fetchCorrectedMatrices(stack: string) {
+  const [dx, dy, known] = splitFrames(await fetchArray(`/api/datasets/${stack}/registration/corrected`));
+  return { dx, dy, known: known.data };
+}
+
+/** The shift matrices of a registration: Δx and Δy (px) of frame j relative to i. */
+export async function fetchShiftMatrices(stack: string) {
+  const r = await fetchArray(`/api/datasets/${stack}/registration/matrices`);
+  const [dx, dy] = splitFrames(r);
+  return { dx, dy, first: Number(r.meta.first) };
+}
+
+/** Cross-correlations of frames i, j for several cutoffs n (an elliptical
+ * mask keeps its shape). */
+export async function fetchCompareN(stack: string, i: number, j: number, mask: MaskSettings, ns: number[]) {
   const q = ns.map((n) => `n=${n}`).join("&");
-  return splitFrames(await fetchArray(`/api/datasets/${stack}/registration/compare-n?i=${i}&j=${j}&type=${type}&${q}`));
+  const { type, n, n2, theta } = mask;
+  return splitFrames(
+    await fetchArray(
+      `/api/datasets/${stack}/registration/compare-n?i=${i}&j=${j}&type=${type}&n1=${n}&n2=${n2}&theta=${theta}&${q}`,
+    ),
+  );
 }

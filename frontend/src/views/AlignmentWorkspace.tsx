@@ -6,11 +6,14 @@ import type { Transform } from "../components/ImageView";
 import { ALIGN_STEPS, clampFrame, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
 import { formatValue } from "../format";
 import { useViewerImage } from "../state/viewerImage";
+import { maskLabel } from "../viewer/fourierMask";
 import { PANE_SIZES, useUi } from "../state/ui";
 import { Splitter } from "../components/Splitter";
 import { useShortcuts } from "../keyboard";
 import { imageGeometry } from "./geometry";
 import { useLatest } from "./useLatest";
+import { MatricesStep } from "./AlignmentMatrices";
+import { PeaksStep } from "./AlignmentPeaks";
 
 /** Guided drift correction of a stack, filling the viewer: a step bar, then
  * the current step's diagnostics. Its parameters are set in the Process tab. */
@@ -71,8 +74,12 @@ export function AlignmentWorkspace({ ds }: { ds: DatasetSummary }) {
         </div>
       ) : a.step === "frames" ? (
         <FramesStep ds={ds} a={a} />
-      ) : (
+      ) : a.step === "mask" ? (
         <MaskStep ds={ds} a={a} />
+      ) : a.step === "peaks" ? (
+        <PeaksStep ds={ds} a={a} />
+      ) : (
+        <MatricesStep ds={ds} a={a} />
       )}
       {a.starting && a.session && <div className="align-busy">Updating the frames…</div>}
     </div>
@@ -204,10 +211,11 @@ function CorrelationPanel({
 
 function MaskStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
   const [i, j] = a.pair;
-  const { type, n } = a.mask;
-  const preview = useLatest(`${a.sessionStamp}:${i}:${j}:${type}:${n}`, () => fetchCorrelation(ds.id, i, j, type, n));
-  const compareKey = a.compare ? `${a.sessionStamp}:${i}:${j}:${type}:${a.compareNs.join(",")}` : null;
-  const compare = useLatest(compareKey, () => fetchCompareN(ds.id, i, j, type, a.compareNs));
+  const preview = useLatest(`${a.sessionStamp}:${i}:${j}:${JSON.stringify(a.mask)}`, () =>
+    fetchCorrelation(ds.id, i, j, a.mask),
+  );
+  const compareKey = a.compare ? `${a.sessionStamp}:${i}:${j}:${JSON.stringify(a.mask)}:${a.compareNs.join(",")}` : null;
+  const compare = useLatest(compareKey, () => fetchCompareN(ds.id, i, j, a.mask, a.compareNs));
 
   // The mask is drawn on the FFT panel (top right) while this step is shown.
   const setFftMask = useViewerImage((s) => s.setFftMask);
@@ -227,7 +235,7 @@ function MaskStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
         <CorrelationPanel
           ds={ds}
           viewKey={`align:${ds.id}:mask-cc`}
-          title={`Cross-correlation ${i} × ${j} (${type}, n = ${formatValue(n)})`}
+          title={`Cross-correlation ${i} × ${j} (${maskLabel(a.mask)})`}
           cc={preview.value}
           version={preview.key ?? ""}
           loading={preview.loading && !preview.value}

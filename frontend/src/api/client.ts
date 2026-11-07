@@ -81,12 +81,77 @@ export interface Filters {
   order: number;
 }
 
-export type MaskType = "bandpass" | "hann" | "gaussian" | "hamming" | "blackman" | "none";
+export type MaskType = "bandpass" | "hann" | "gaussian" | "hamming" | "blackman" | "elliptical" | "none";
 
 /** Fourier mask of a registration: features smaller than ~n px are ignored. */
 export interface MaskSettings {
   type: MaskType;
   n: number;
+  /** Elliptical Gaussian: n is the cutoff along the first axis, n2 along the
+   * second, the first axis at theta degrees. */
+  n2: number;
+  theta: number;
+}
+
+export type CorrelationType = "cc" | "mc" | "pc";
+export type PeakMethod = "pixel" | "gf" | "com";
+
+/** How each pair's shift is read from its correlation. */
+export interface PeakSettings {
+  correlation: CorrelationType;
+  method: PeakMethod;
+  /** Gaussian fit: candidate maxima, starting σ, cut-out radius (px). */
+  num_peaks: number;
+  sigma_guess: number;
+  window_radius: number;
+}
+
+/** Which pair shifts are masked as outliers before correcting. */
+export interface OutlierSettings {
+  /** Transitivity (shifts add up along paths) or neighbours (agree with the
+   * neighbouring matrix entries). */
+  method: "transitivity" | "neighbours" | "none";
+  /** Transitivity: allowed mismatch (px) and how many paths are averaged. */
+  threshold: number;
+  max_paths: number;
+  /** Neighbours: allowed difference (px). */
+  max_shift: number;
+  /** Use only pairs at most this many frames apart (null: all). */
+  off_diagonal: number | null;
+}
+
+/** A candidate maximum of a pair's correlation (Gaussian fit), with its
+ * cut-out and fitted model. Positions are in the centred correlation. */
+export interface PeakCandidate {
+  x: number;
+  y: number;
+  fitted: boolean;
+  chosen?: boolean;
+  success?: boolean;
+  fit_x?: number;
+  fit_y?: number;
+  amplitude?: number;
+  sigma?: [number, number];
+  offset?: number;
+  data?: number[][];
+  model?: number[][];
+}
+
+/** How a pair's shift is found: the shift and where its peak is. */
+export interface PeakResult {
+  dx: number;
+  dy: number;
+  x: number;
+  y: number;
+  candidates: PeakCandidate[];
+}
+
+/** Each registered frame's measured position relative to the mean (px;
+ * image x right, y down), from the corrected shift matrices. */
+export interface Drift {
+  frames: number[];
+  x: number[];
+  y: number[];
 }
 
 /** State of a stack's registration in progress (backend session). */
@@ -99,6 +164,10 @@ export interface RegistrationSummary {
   shape: [number, number];
   bad_frames: number[];
   mask: MaskSettings;
+  peaks: PeakSettings;
+  outliers: OutlierSettings;
+  /** The shift matrices' settings once computed; stale if changed since. */
+  shifts: { mask: MaskSettings; peaks: PeakSettings; stale: boolean } | null;
   /** Memory taken by the FFTs of the frames. */
   fft_bytes: number;
   /** pyfftw is used (faster FFTs). */
@@ -296,9 +365,23 @@ export const api = {
       body: JSON.stringify({ first, last }),
     }),
   getRegistration: (id: string) => request<RegistrationSummary>(`/api/datasets/${id}/registration`),
-  putRegistration: (id: string, settings: { bad_frames?: number[]; mask?: MaskSettings }) =>
+  putRegistration: (
+    id: string,
+    settings: { bad_frames?: number[]; mask?: MaskSettings; peaks?: PeakSettings; outliers?: OutlierSettings },
+  ) =>
     request<RegistrationSummary>(`/api/datasets/${id}/registration`, { method: "PUT", body: JSON.stringify(settings) }),
   endRegistration: (id: string) => request<void>(`/api/datasets/${id}/registration`, { method: "DELETE" }),
+  peakPreview: (id: string, i: number, j: number, mask: MaskSettings, peaks: PeakSettings) =>
+    request<PeakResult>(`/api/datasets/${id}/registration/peak`, {
+      method: "POST",
+      body: JSON.stringify({ i, j, mask, peaks }),
+    }),
+  correctShifts: (id: string, outliers: OutlierSettings, badFrames: number[]) =>
+    request<Drift>(`/api/datasets/${id}/registration/correct`, {
+      method: "POST",
+      body: JSON.stringify({ outliers, bad_frames: badFrames }),
+    }),
+  startShifts: (id: string) => request<JobSummary>(`/api/datasets/${id}/registration/shifts`, { method: "POST" }),
   exportFormats: () => request<Record<string, ExportFormat[]>>("/api/export-formats"),
   listExamples: () => request<ExampleInfo[]>("/api/examples"),
   openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),

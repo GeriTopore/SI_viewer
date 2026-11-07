@@ -5,7 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
-from ..processing.registration import MaskSettings, MaskType, RegistrationSession
+from ..jobs import Job
+from ..processing.registration import (
+    CorrelationType, MaskSettings, MaskType, OutlierSettings, PeakSettings, RegistrationSession,
+)
 from ..session import Dataset, DatasetKind
 from .datasets import _dataset, array_response
 
@@ -75,12 +78,14 @@ def end_registration(dataset_id: str, request: Request) -> None:
 class SettingsBody(BaseModel):
     bad_frames: list[int] | None = None
     mask: MaskSettings | None = None
+    peaks: PeakSettings | None = None
+    outliers: OutlierSettings | None = None
 
 
 @router.put("/api/datasets/{dataset_id}/registration")
 def put_settings(dataset_id: str, body: SettingsBody, request: Request) -> dict:
     s = _session(request, dataset_id)
-    s.set_settings(bad_frames=body.bad_frames, mask=body.mask)
+    s.set_settings(bad_frames=body.bad_frames, mask=body.mask, peaks=body.peaks, outliers=body.outliers)
     return s.summary()
 
 
@@ -94,28 +99,102 @@ def get_frame(dataset_id: str, request: Request, i: int) -> Response:
 @router.get("/api/datasets/{dataset_id}/registration/correlation")
 def get_correlation(
     dataset_id: str, request: Request, i: int, j: int, type: MaskType = "hann", n: float = 6.0,
+    n2: float = 4.0, theta: float = 0.0, corr: CorrelationType = "cc",
 ) -> Response:
-    """Cross-correlation of frames i and j with a Fourier mask (a preview: the
-    session's mask is not changed), zero shift at the centre."""
+    """Correlation (cross, mutual or phase) of frames i and j with a Fourier
+    mask (a preview: the session is not changed), zero shift at the centre."""
     s = _session(request, dataset_id)
     try:
-        mask = MaskSettings(type=type, n=n)
+        mask = MaskSettings(type=type, n=n, n2=n2, theta=theta)
     except ValueError as e:
         raise HTTPException(422, str(e))
-    return array_response(_frame_error(s.correlation, i, j, mask), i=i, j=j)
+    return array_response(_frame_error(s.correlation, i, j, mask, corr), i=i, j=j)
+
+
+class PeakBody(BaseModel):
+    i: int
+    j: int
+    mask: MaskSettings = MaskSettings()
+    peaks: PeakSettings = PeakSettings()
+
+
+@router.post("/api/datasets/{dataset_id}/registration/peak")
+def post_peak(dataset_id: str, body: PeakBody, request: Request) -> dict:
+    """How the shift of frames i, j is found with these settings (a preview):
+    the shift, the peak, and for a Gaussian fit every candidate with its
+    cut-out and fitted model."""
+    s = _session(request, dataset_id)
+    return _frame_error(s.peak, body.i, body.j, body.mask, body.peaks)
+
+
+@router.post("/api/datasets/{dataset_id}/registration/shifts")
+def start_shifts(dataset_id: str, request: Request) -> dict:
+    """Compute every pair's shift with the session's settings, as a job. Its
+    result is the session's state (with the shift matrices computed)."""
+    s = _session(request, dataset_id)
+    pairs = s.count * (s.count - 1) // 2
+
+    def run(job: Job) -> dict:
+        job.report(0, f"Correlating {pairs} pairs of frames")
+        s.compute_shifts(lambda f: job.report(f, f"Correlating pairs of frames ({round(f * pairs)} of {pairs})"))
+        return s.summary()
+
+    ds = _stack(request, dataset_id)
+    return request.app.state.jobs.submit("registration-shifts", f"Shifts of {ds.title}", run).summary()
+
+
+class MaskBody(BaseModel):
+    outliers: OutlierSettings = OutlierSettings()
+    bad_frames: list[int] = []
+
+
+@router.post("/api/datasets/{dataset_id}/registration/outlier-mask")
+def post_outlier_mask(dataset_id: str, body: MaskBody, request: Request) -> Response:
+    """Which pair shifts the outlier settings keep (1) or mask (0), as a
+    (frames, frames) array over the frames registered."""
+    s = _session(request, dataset_id)
+    mask = _frame_error(s.outlier_mask, body.outliers, body.bad_frames)
+    return array_response(mask, masked=int((mask == 0).sum()), pairs=int(mask.size))
+
+
+@router.post("/api/datasets/{dataset_id}/registration/correct")
+def post_correct(dataset_id: str, body: MaskBody, request: Request) -> dict:
+    """Correct the masked shifts (with these outlier settings and bad frames)
+    and return each frame's measured drift (px, image x right, y down)."""
+    s = _session(request, dataset_id)
+    s.set_settings(bad_frames=body.bad_frames, outliers=body.outliers)
+    return _frame_error(s.correct, body.outliers, body.bad_frames)
+
+
+@router.get("/api/datasets/{dataset_id}/registration/corrected")
+def get_corrected(dataset_id: str, request: Request) -> Response:
+    """The corrected shift matrices, (3, frames, frames): Δx, Δy and which
+    entries are known (1) after correction."""
+    s = _session(request, dataset_id)
+    return array_response(_frame_error(s.corrected_matrices), first=s.first)
+
+
+@router.get("/api/datasets/{dataset_id}/registration/matrices")
+def get_matrices(dataset_id: str, request: Request) -> Response:
+    """The shift matrices, (2, frames, frames): Δx then Δy (px) of frame j
+    relative to frame i, for the frames registered (first … last - 1)."""
+    s = _session(request, dataset_id)
+    m = _frame_error(s.matrices)
+    return array_response(m, first=s.first)
 
 
 @router.get("/api/datasets/{dataset_id}/registration/compare-n")
 def get_compare_n(
     dataset_id: str, request: Request, i: int, j: int, type: MaskType = "hann",
-    n: list[float] = Query(...),
+    n: list[float] = Query(...), n1: float = 6.0, n2: float = 4.0, theta: float = 0.0,
 ) -> Response:
-    """Cross-correlations of frames i, j for several cutoffs n: (len(n), rows, cols)."""
+    """Cross-correlations of frames i, j for several cutoffs n: (len(n), rows,
+    cols). An elliptical mask (n1, n2, theta) keeps its shape as n varies."""
     s = _session(request, dataset_id)
     if not 1 <= len(n) <= 8:
         raise HTTPException(422, "Compare between one and eight values of n")
     try:
-        ccs = s.compare_n(i, j, type, n)
+        ccs = s.compare_n(i, j, MaskSettings(type=type, n=n1, n2=n2, theta=theta), n)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return array_response(ccs, i=i, j=j, n=n)

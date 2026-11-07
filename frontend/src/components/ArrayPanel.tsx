@@ -3,7 +3,7 @@ import type { Frame } from "../api/arrays";
 import { useDisplay } from "../state/display";
 import type { DisplayParams } from "../viewer/renderer";
 import { autoContrast } from "../views/useImageDisplay";
-import { ImageView, type AxisCal, type Transform, type ViewLayer } from "./ImageView";
+import { ImageView, type AxisCal, type Interaction, type Transform, type ViewLayer } from "./ImageView";
 
 export interface PanelLayer {
   key: string;
@@ -33,6 +33,8 @@ interface Props {
   loading?: string | null;
   error?: string | null;
   renderOverlay?: (t: Transform) => ReactNode;
+  /** Pointer handling (e.g. hover and click on a matrix cell). */
+  interaction?: Interaction;
   /** Publish to the FFT panel (the workspace's main image only). */
   publish?: boolean;
 }
@@ -41,7 +43,7 @@ interface Props {
  * auto-contrasted whenever its data changes. */
 export function ArrayPanel({
   viewKey, title, subtitle, layers, version, width, height, calX = NO_CAL, calY = NO_CAL, loading, error,
-  renderOverlay, publish = false,
+  renderOverlay, interaction, publish = false,
 }: Props) {
   const displays = useDisplay((s) => s.display);
   useEffect(() => {
@@ -83,6 +85,7 @@ export function ArrayPanel({
         loading={loading}
         error={error}
         renderOverlay={renderOverlay}
+        interaction={interaction}
         publish={publish}
         scaleBar={!!calX.units} // e.g. an FFT: no meaningful scale bar
         readout={false}

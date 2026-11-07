@@ -226,7 +226,7 @@ function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: numbe
           // Tint by the mask's weight at this frequency.
           const u = start + ((cx + 0.5) * span) / d - n / 2;
           const v = start + ((cy + 0.5) * span) / d - n / 2;
-          const a = MASK_ALPHA * maskValue(mask, Math.hypot(u, v) * perPixel);
+          const a = MASK_ALPHA * maskValue(mask, u * perPixel, v * perPixel);
           img.data[o] = g * (1 - a) + MASK_RGB[0] * a;
           img.data[o + 1] = g * (1 - a) + MASK_RGB[1] * a;
           img.data[o + 2] = g * (1 - a) + MASK_RGB[2] * a;
@@ -254,15 +254,18 @@ function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: numbe
   const k = freq && Math.hypot(freq.kx, freq.ky);
   // Screen radius and position of the hovered frequency (for the ring).
   const toScreen = (u: number) => (shown ? (u / (shown.result.n / zoom) + 0.5) * side : 0);
-  // The mask's cutoff ring: f_c cycles per frame pixel is f_c·n·bin FFT pixels.
+  // The mask's cutoff ring (an ellipse for an elliptical mask): f cycles
+  // per frame pixel is f·n·bin FFT pixels, i.e. f·bin·zoom·side on screen.
   const fc = mask && maskCutoff(mask);
-  const ringR = p && fc ? toScreen(fc * shown!.result.n * p.bin) - side / 2 : null;
-  const ringLabel =
-    p && mask && fc
-      ? `n = ${formatValue(mask.n)} · ${formatValue(2 * mask.n)} px${
+  const ring = p && fc ? { rx: fc.r1 * p.bin * zoom * side, ry: fc.r2 * p.bin * zoom * side, angle: fc.angle } : null;
+  const ringR = ring ? Math.max(ring.rx, ring.ry) : null;
+  const ringLabel = !p || !mask || !fc
+    ? ""
+    : mask.type === "elliptical"
+      ? `n1 = ${formatValue(mask.n)} · n2 = ${formatValue(mask.n2)} · θ = ${formatValue(mask.theta)}°`
+      : `n = ${formatValue(mask.n)} · ${formatValue(2 * mask.n)} px${
           p.units !== "px" ? ` (${formatValue((2 * mask.n * p.px) / p.bin)} ${p.units})` : ""
-        }`
-      : "";
+        }`;
 
   let readout: React.ReactNode;
   if (!image) readout = <span className="muted">No image in the viewer</span>;
@@ -297,10 +300,16 @@ function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: numbe
         title={p ? `FFT of ${p.label}` : undefined}
       >
         <canvas ref={canvasRef} style={{ width: side, height: side }} />
-        {ringR !== null && ringR > 0 && (
+        {ring && ringR !== null && ringR > 0 && (
           <svg className="fft-overlay" width={side} height={side}>
             <g className="align-ring">
-              <circle cx={side / 2} cy={side / 2} r={ringR} />
+              <ellipse
+                cx={side / 2}
+                cy={side / 2}
+                rx={ring.rx}
+                ry={ring.ry}
+                transform={`rotate(${ring.angle} ${side / 2} ${side / 2})`}
+              />
               <text x={Math.min(side - 4, side / 2 + ringR * 0.71 + 4)} y={Math.max(12, side / 2 - ringR * 0.71 - 4)} textAnchor={side / 2 + ringR * 0.71 + 120 > side ? "end" : "start"}>
                 {ringLabel}
               </text>

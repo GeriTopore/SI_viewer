@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { DatasetSummary, MaskType } from "../api/client";
+import type {
+  CorrelationType, DatasetSummary, MaskSettings, MaskType, OutlierSettings, PeakMethod, PeakSettings,
+} from "../api/client";
+import { maskLabel } from "../viewer/fourierMask";
 import { ALIGN_STEPS, clampFrame, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
 import { useDatasets } from "../state/datasets";
-import { formatValue } from "../format";
 
 const MASKS: { id: MaskType; label: string }[] = [
   { id: "hann", label: "Hann (lowpass, cos²)" },
@@ -10,8 +12,41 @@ const MASKS: { id: MaskType; label: string }[] = [
   { id: "gaussian", label: "Gaussian (cutoff at 3σ)" },
   { id: "hamming", label: "Hamming" },
   { id: "blackman", label: "Blackman" },
+  { id: "elliptical", label: "Elliptical Gaussian" },
   { id: "none", label: "None" },
 ];
+
+/** A slider with a number box for one parameter. */
+function SliderNumber({
+  label, title, value, min, max, step, onChange, disabled,
+}: {
+  label: string;
+  title: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label title={title}>
+      {label}
+      <span className="q-inline process-slider">
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          disabled={disabled}
+        />
+        <input type="number" step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} disabled={disabled} />
+      </span>
+    </label>
+  );
+}
 
 // Mask changes are stored with the session this long after the last one.
 const SAVE_MS = 400;
@@ -44,7 +79,16 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
       </>
     );
   }
-  return a.step === "frames" ? <FramesControls d={d} a={a} /> : <MaskControls d={d} a={a} />;
+  switch (a.step) {
+    case "frames":
+      return <FramesControls d={d} a={a} />;
+    case "mask":
+      return <MaskControls d={d} a={a} />;
+    case "peaks":
+      return <PeaksControls d={d} a={a} />;
+    default:
+      return <MatricesControls d={d} a={a} />;
+  }
 }
 
 function FramesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
@@ -145,11 +189,10 @@ function FramesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
 
 function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   const { patch, save } = useAlignment.getState();
-  const [i, j] = a.pair;
   const [ns, setNs] = useState(a.compareNs.join(", "));
 
   // The mask is stored with the session shortly after it last changed.
-  const maskKey = `${a.mask.type}:${a.mask.n}`;
+  const maskKey = JSON.stringify(a.mask);
   const firstRun = useRef(true);
   useEffect(() => {
     if (firstRun.current) {
@@ -160,12 +203,9 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
     return () => clearTimeout(t);
   }, [maskKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const setPair = (k: 0 | 1, v: string) => {
-    const pair: [number, number] = [...a.pair];
-    pair[k] = clampFrame(a, Number(v) || 0);
-    patch(d.id, { pair });
-  };
-  const setN = (v: number) => v > 0.5 && patch(d.id, { mask: { ...a.mask, n: Math.min(200, v) } });
+  const setMask = (m: Partial<MaskSettings>) => patch(d.id, { mask: { ...a.mask, ...m } });
+  const cutoff = (field: "n" | "n2") => (v: number) => v > 0.5 && setMask({ [field]: Math.min(200, v) });
+  const elliptical = a.mask.type === "elliptical";
   const applyNs = () => {
     const values = ns
       .split(/[,\s]+/)
@@ -186,14 +226,7 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
         sit at the information limit. The cross-correlation should show one sharp, isolated peak; check several
         pairs, especially frames far apart.
       </p>
-      <label title="The pair of frames previewed: FFT of the first, cross-correlation of both">
-        Frames
-        <span className="q-inline">
-          <input type="number" min={a.first} max={a.last - 1} value={i} onChange={(e) => setPair(0, e.target.value)} />
-          and
-          <input type="number" min={a.first} max={a.last - 1} value={j} onChange={(e) => setPair(1, e.target.value)} />
-        </span>
-      </label>
+      <PairInputs d={d} a={a} />
       <label>
         Mask
         <select value={a.mask.type} onChange={(e) => patch(d.id, { mask: { ...a.mask, type: e.target.value as MaskType } })}>
@@ -204,29 +237,42 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
           ))}
         </select>
       </label>
-      <label title="Cutoff: features smaller than about n pixels are ignored">
-        Cutoff n
-        <span className="q-inline process-slider">
-          <input
-            type="range"
+      <SliderNumber
+        label={elliptical ? "Cutoff n1" : "Cutoff n"}
+        title={
+          elliptical
+            ? "Cutoff along the first axis: features smaller than about n1 pixels along it are ignored"
+            : "Cutoff: features smaller than about n pixels are ignored"
+        }
+        value={a.mask.n}
+        min={1}
+        max={30}
+        step={0.1}
+        onChange={cutoff("n")}
+        disabled={a.mask.type === "none"}
+      />
+      {elliptical && (
+        <>
+          <SliderNumber
+            label="Cutoff n2"
+            title="Cutoff along the second axis (n1 / n2 is the ellipticity)"
+            value={a.mask.n2}
             min={1}
             max={30}
             step={0.1}
-            value={a.mask.n}
-            onChange={(e) => setN(Number(e.target.value))}
-            disabled={a.mask.type === "none"}
+            onChange={cutoff("n2")}
           />
-          <input
-            type="number"
-            min={0.6}
-            max={200}
-            step={0.1}
-            value={a.mask.n}
-            onChange={(e) => setN(Number(e.target.value))}
-            disabled={a.mask.type === "none"}
+          <SliderNumber
+            label="Angle θ (°)"
+            title="Direction of the first axis (the package's theta, in degrees)"
+            value={a.mask.theta}
+            min={-90}
+            max={90}
+            step={0.5}
+            onChange={(v) => Number.isFinite(v) && Math.abs(v) <= 360 && setMask({ theta: v })}
           />
-        </span>
-      </label>
+        </>
+      )}
       <label className="q-check" title="Show the cross-correlation for several cutoffs side by side">
         <input type="checkbox" checked={a.compare} onChange={(e) => patch(d.id, { compare: e.target.checked })} />
         Compare cutoffs n =
@@ -239,11 +285,291 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
           onKeyDown={(e) => e.key === "Enter" && applyNs()}
         />
       </label>
+      <p className="muted small process-note">Current mask: {maskLabel(a.mask)}.</p>
+      <NextStep d={d} a={a} />
+    </section>
+  );
+}
+
+/** The pair of frames previewed (mask and peak steps). */
+function PairInputs({ d, a }: { d: DatasetSummary; a: Alignment }) {
+  const { patch } = useAlignment.getState();
+  const setPair = (k: 0 | 1, v: string) => {
+    const pair: [number, number] = [...a.pair];
+    pair[k] = clampFrame(a, Number(v) || 0);
+    patch(d.id, { pair });
+  };
+  return (
+    <label title="The pair of frames previewed">
+      Frames
+      <span className="q-inline">
+        <input type="number" min={a.first} max={a.last - 1} value={a.pair[0]} onChange={(e) => setPair(0, e.target.value)} />
+        and
+        <input type="number" min={a.first} max={a.last - 1} value={a.pair[1]} onChange={(e) => setPair(1, e.target.value)} />
+      </span>
+    </label>
+  );
+}
+
+const PEAK_METHODS: { id: PeakMethod; label: string; title: string }[] = [
+  { id: "pixel", label: "Brightest pixel", title: "Fastest; whole-pixel shifts" },
+  {
+    id: "gf",
+    label: "Gaussian fit",
+    title: "Fits Gaussians to the brightest pixels and uses the best fit: subpixel, and robust to unit-cell jumps in atomic-resolution data",
+  },
+  { id: "com", label: "Centre of mass", title: "Centre of mass of the correlation, refined around the first estimate" },
+];
+
+function PeaksControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
+  const { patch, save } = useAlignment.getState();
+  const p = a.peaks;
+  const set = (patchP: Partial<PeakSettings>) => patch(d.id, { peaks: { ...p, ...patchP } });
+
+  // Stored with the session shortly after the last change.
+  const key = JSON.stringify(p);
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    const t = setTimeout(() => save(d.id), SAVE_MS);
+    return () => clearTimeout(t);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const num = (field: "num_peaks" | "sigma_guess" | "window_radius", v: string, min: number, max: number, int = true) => {
+    const x = Number(v);
+    if (Number.isFinite(x) && x >= min && x <= max) set({ [field]: int ? Math.round(x) : x });
+  };
+
+  return (
+    <section className="q-form">
+      <h4 className="process-heading">Step 3 · Peak finding</h4>
       <p className="muted small process-note">
-        Current mask: {a.mask.type}
-        {a.mask.type !== "none" && `, n = ${formatValue(a.mask.n)}`}. Peak finding, the shift matrices and outlier
-        correction come next (in development).
+        Each pair's shift is the position of its correlation peak. Check that the peak used (red) is the true one
+        and not a neighbouring lattice maximum, for several pairs (or click cells of the shift matrices).
       </p>
+      <PairInputs d={d} a={a} />
+      <label title="Cross-correlation is the usual choice; mutual and phase correlation sharpen the peak by normalising the spectrum">
+        Correlation
+        <select value={p.correlation} onChange={(e) => set({ correlation: e.target.value as CorrelationType })}>
+          <option value="cc">Cross-correlation</option>
+          <option value="mc">Mutual correlation</option>
+          <option value="pc">Phase correlation</option>
+        </select>
+      </label>
+      <div className="segmented process-choice" role="group" aria-label="Peak finding">
+        {PEAK_METHODS.map((m) => (
+          <button
+            key={m.id}
+            className={p.method === m.id ? "active" : undefined}
+            aria-pressed={p.method === m.id}
+            title={m.title}
+            onClick={() => set({ method: m.id })}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {p.method === "gf" && (
+        <>
+          <label title="How many of the brightest pixels get a Gaussian fitted">
+            Candidates
+            <input type="number" min={1} max={20} value={p.num_peaks} onChange={(e) => num("num_peaks", e.target.value, 1, 20)} />
+          </label>
+          <label title="Starting width of each Gaussian (px)">
+            σ guess
+            <input
+              type="number"
+              min={0.5}
+              max={100}
+              step={0.5}
+              value={p.sigma_guess}
+              onChange={(e) => num("sigma_guess", e.target.value, 0.1, 100, false)}
+            />
+          </label>
+          <label title="Half-size of the cut-out each Gaussian is fitted to (px)">
+            Window radius
+            <input type="number" min={2} max={64} value={p.window_radius} onChange={(e) => num("window_radius", e.target.value, 2, 64)} />
+          </label>
+        </>
+      )}
+      <NextStep d={d} a={a} />
+    </section>
+  );
+}
+
+const OUTLIER_METHODS: { id: OutlierSettings["method"]; label: string; title: string }[] = [
+  {
+    id: "transitivity",
+    label: "Transitivity",
+    title: "Shifts must add up along paths of pairs (i→k→j equals i→j); entries that don't, within the threshold, are masked",
+  },
+  {
+    id: "neighbours",
+    label: "Neighbours",
+    title: "An entry differing from too many of its neighbouring entries by more than the maximum shift is masked",
+  },
+  { id: "none", label: "None", title: "Mask no outliers (only bad frames and far pairs)" },
+];
+
+function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
+  const { computeShifts, cancelShifts, patch, save } = useAlignment.getState();
+  const n = a.last - a.first;
+  const running = !!a.job && (a.job.status === "queued" || a.job.status === "running");
+  const shifts = a.session?.shifts;
+  const method = PEAK_METHODS.find((m) => m.id === a.peaks.method)?.label;
+  const o = a.outliers;
+  const set = (patchO: Partial<OutlierSettings>) => patch(d.id, { outliers: { ...o, ...patchO } });
+
+  // Stored with the session shortly after the last change.
+  const key = JSON.stringify(o);
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    const t = setTimeout(() => save(d.id), SAVE_MS);
+    return () => clearTimeout(t);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const num = (field: "threshold" | "max_paths" | "max_shift", v: string, min: number, max: number, int = false) => {
+    const x = Number(v);
+    if (Number.isFinite(x) && x >= min && x <= max) set({ [field]: int ? Math.round(x) : x });
+  };
+
+  return (
+    <section className="q-form">
+      <h4 className="process-heading">Step 4 · Shift matrices</h4>
+      <p className="muted small process-note">
+        Every pair of the {n} frames ({(n * (n - 1)) / 2} pairs) is correlated: row i, column j is the shift of frame
+        j relative to frame i. Correct shifts change smoothly across the matrix; isolated jumps are wrong pairs. Mask
+        them as outliers below (dark cells): the corrected matrices fill them from paths through good pairs, and
+        the drift plot shows each frame's position from those. Click a cell to inspect that pair.
+      </p>
+      <p className="muted small process-note">
+        With: {maskLabel(a.mask)} mask; {method}
+        {a.peaks.correlation !== "cc" ? ` (${a.peaks.correlation === "mc" ? "mutual" : "phase"} correlation)` : ""}.
+      </p>
+      {running ? (
+        <div className="q-job-row">
+          <span>{a.job!.message}</span>
+          <button className="link-button" onClick={() => cancelShifts(d.id)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button className="primary" onClick={() => computeShifts(d.id)}>
+          {shifts ? (shifts.stale ? "Compute again (settings changed)" : "Compute again") : "Compute shifts"}
+        </button>
+      )}
+      {running && (
+        <div className="q-progress">
+          <div style={{ width: `${Math.round(a.job!.progress * 100)}%` }} />
+        </div>
+      )}
+      {a.job?.status === "cancelled" && <p className="muted small process-note">Cancelled.</p>}
+
+      {shifts && (
+        <>
+          <h4 className="process-heading">Outliers</h4>
+          <div className="segmented process-choice" role="group" aria-label="Outlier detection">
+            {OUTLIER_METHODS.map((m) => (
+              <button
+                key={m.id}
+                className={o.method === m.id ? "active" : undefined}
+                aria-pressed={o.method === m.id}
+                title={m.title}
+                onClick={() => set({ method: m.id })}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          {o.method === "transitivity" && (
+            <>
+              <label title="Allowed mismatch of a shift with the paths through other frames (px); lower masks more">
+                Threshold (px)
+                <span className="q-inline process-slider">
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={30}
+                    step={0.5}
+                    value={o.threshold}
+                    onChange={(e) => num("threshold", e.target.value, 0.1, 1000)}
+                  />
+                  <input
+                    type="number"
+                    min={0.1}
+                    step={0.5}
+                    value={o.threshold}
+                    onChange={(e) => num("threshold", e.target.value, 0.1, 1000)}
+                  />
+                </span>
+              </label>
+              <label title="How many paths through other frames each shift is checked against">
+                Paths
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={o.max_paths}
+                  onChange={(e) => num("max_paths", e.target.value, 1, 50, true)}
+                />
+              </label>
+            </>
+          )}
+          {o.method === "neighbours" && (
+            <label title="Allowed difference from neighbouring entries (px); lower masks more">
+              Max shift (px)
+              <span className="q-inline process-slider">
+                <input
+                  type="range"
+                  min={0.5}
+                  max={30}
+                  step={0.5}
+                  value={o.max_shift}
+                  onChange={(e) => num("max_shift", e.target.value, 0.1, 1000)}
+                />
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.5}
+                  value={o.max_shift}
+                  onChange={(e) => num("max_shift", e.target.value, 0.1, 1000)}
+                />
+              </span>
+            </label>
+          )}
+          <label className="q-check" title="Leave out pairs of frames far apart in time (e.g. when the sample changes)">
+            <input
+              type="checkbox"
+              checked={o.off_diagonal !== null}
+              onChange={(e) => set({ off_diagonal: e.target.checked ? Math.max(1, Math.min(n - 1, 10)) : null })}
+            />
+            Only pairs at most
+            <input
+              type="number"
+              className="align-ns"
+              min={1}
+              max={n - 1}
+              value={o.off_diagonal ?? 10}
+              disabled={o.off_diagonal === null}
+              onChange={(e) => {
+                const v = Math.round(Number(e.target.value));
+                if (v >= 1 && v <= n - 1) set({ off_diagonal: v });
+              }}
+            />
+            frames apart
+          </label>
+          <p className="muted small process-note">
+            Bad frames ({a.badFrames.length ? a.badFrames.join(", ") : "none"}) are masked too; set them in step 1.
+          </p>
+        </>
+      )}
       <NextStep d={d} a={a} />
     </section>
   );

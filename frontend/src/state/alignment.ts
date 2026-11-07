@@ -1,15 +1,16 @@
 import { create } from "zustand";
-import { api, type MaskSettings, type RegistrationSummary } from "../api/client";
+import {
+  api, type JobSummary, type MaskSettings, type OutlierSettings, type PeakSettings, type RegistrationSummary,
+} from "../api/client";
 
 /** Steps of the guided registration (docs/PLAN.md 4.10). */
-export type AlignStep = "frames" | "mask" | "peaks" | "matrices" | "outliers" | "result";
+export type AlignStep = "frames" | "mask" | "peaks" | "matrices" | "result";
 
 export const ALIGN_STEPS: { id: AlignStep; label: string; ready: boolean }[] = [
   { id: "frames", label: "Frames", ready: true },
   { id: "mask", label: "Fourier mask", ready: true },
-  { id: "peaks", label: "Peak finding", ready: false },
-  { id: "matrices", label: "Shift matrices", ready: false },
-  { id: "outliers", label: "Outliers", ready: false },
+  { id: "peaks", label: "Peak finding", ready: true },
+  { id: "matrices", label: "Shift matrices", ready: true },
   { id: "result", label: "Result", ready: false },
 ];
 
@@ -25,6 +26,10 @@ export interface Alignment {
   /** Frames whose FFT and cross-correlation are previewed. */
   pair: [number, number];
   mask: MaskSettings;
+  peaks: PeakSettings;
+  outliers: OutlierSettings;
+  /** Draw the outlier mask over the shift matrices. */
+  showOutlierMask: boolean;
   /** Show the cross-correlation for several cutoffs side by side. */
   compare: boolean;
   compareNs: number[];
@@ -34,6 +39,10 @@ export interface Alignment {
   sessionStamp: number;
   starting: boolean;
   error: string | null;
+  /** The shift-matrix job, while it runs (and its last state). */
+  job: JobSummary | null;
+  /** Bumped when the shift matrices are (re)computed: they refetch. */
+  matricesStamp: number;
 }
 
 interface AlignmentStore {
@@ -45,8 +54,11 @@ interface AlignmentStore {
   patch: (stack: string, patch: Partial<Alignment>) => void;
   /** (Re)start the backend session with the current frame range. */
   start: (stack: string) => Promise<void>;
-  /** Store the mask and bad frames with the session. */
+  /** Store the mask, peak finding and bad frames with the session. */
   save: (stack: string) => Promise<void>;
+  /** Compute every pair's shift (a job), then show the matrices. */
+  computeShifts: (stack: string) => Promise<void>;
+  cancelShifts: (stack: string) => Promise<void>;
 }
 
 const initial = (frames: number): Alignment => ({
@@ -56,14 +68,22 @@ const initial = (frames: number): Alignment => ({
   last: frames,
   badFrames: [],
   pair: [0, Math.min(frames - 1, 4)],
-  mask: { type: "hann", n: 6 },
+  mask: { type: "hann", n: 6, n2: 4, theta: 0 },
+  peaks: { correlation: "cc", method: "pixel", num_peaks: 5, sigma_guess: 2, window_radius: 6 },
+  outliers: { method: "transitivity", threshold: 10, max_paths: 5, max_shift: 5, off_diagonal: null },
+  showOutlierMask: true,
   compare: false,
   compareNs: [3, 4, 6, 8, 12],
   session: null,
   sessionStamp: 0,
   starting: false,
   error: null,
+  job: null,
+  matricesStamp: 0,
 });
+
+const ACTIVE = new Set(["queued", "running"]);
+const POLL_MS = 300;
 
 export const useAlignment = create<AlignmentStore>((set, get) => {
   const patch = (stack: string, p: Partial<Alignment>) =>
@@ -86,7 +106,10 @@ export const useAlignment = create<AlignmentStore>((set, get) => {
       try {
         let session = await api.startRegistration(stack, a.first, a.last);
         // A new session keeps the settings of the old one; a first one gets ours.
-        session = await api.putRegistration(stack, { mask: get().byStack[stack].mask, bad_frames: a.badFrames });
+        const cur = get().byStack[stack];
+        session = await api.putRegistration(stack, {
+          mask: cur.mask, peaks: cur.peaks, outliers: cur.outliers, bad_frames: a.badFrames,
+        });
         patch(stack, { session, starting: false, sessionStamp: get().byStack[stack].sessionStamp + 1 });
       } catch (e) {
         patch(stack, { starting: false, error: (e as Error).message });
@@ -96,10 +119,36 @@ export const useAlignment = create<AlignmentStore>((set, get) => {
       const a = get().byStack[stack];
       if (!a?.session) return;
       try {
-        patch(stack, { session: await api.putRegistration(stack, { mask: a.mask, bad_frames: a.badFrames }) });
+        patch(stack, {
+          session: await api.putRegistration(stack, {
+            mask: a.mask, peaks: a.peaks, outliers: a.outliers, bad_frames: a.badFrames,
+          }),
+        });
       } catch (e) {
         patch(stack, { error: (e as Error).message });
       }
+    },
+    computeShifts: async (stack) => {
+      await get().save(stack); // the job uses the session's settings
+      try {
+        let job = await api.startShifts(stack);
+        patch(stack, { job, error: null });
+        while (ACTIVE.has(job.status)) {
+          await new Promise((r) => setTimeout(r, POLL_MS));
+          job = await api.getJob(job.id);
+          patch(stack, { job });
+        }
+        if (job.status === "done" && job.result) {
+          const a = get().byStack[stack];
+          patch(stack, { session: job.result as unknown as RegistrationSummary, matricesStamp: (a?.matricesStamp ?? 0) + 1 });
+        } else if (job.status === "failed") patch(stack, { error: job.error ?? "Computing the shifts failed" });
+      } catch (e) {
+        patch(stack, { error: (e as Error).message });
+      }
+    },
+    cancelShifts: async (stack) => {
+      const job = get().byStack[stack]?.job;
+      if (job && ACTIVE.has(job.status)) await api.cancelJob(job.id).catch(() => {});
     },
   };
 });

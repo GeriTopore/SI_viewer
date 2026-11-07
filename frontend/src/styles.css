@@ -2646,7 +2646,8 @@ kbd {
   text-overflow: ellipsis;
 }
 
-.align-ring circle {
+.align-ring circle,
+.align-ring ellipse {
   fill: none;
   stroke: #00e5ff;
   stroke-width: 1.5;
@@ -2713,4 +2714,239 @@ kbd {
 .fft-mask-toggle.active {
   border-color: #ff961e;
   color: #ff961e;
+}
+
+/* Peak finding */
+.align-peaks,
+.align-matrices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.align-candidate {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 1.5;
+}
+
+.align-fit {
+  stroke: #ffd60a;
+  stroke-width: 1.5;
+}
+
+.align-candidates {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  flex: none;
+}
+
+.align-candidate-card {
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+  flex: none;
+}
+
+.align-candidate-card.chosen {
+  border-color: #ff453a;
+}
+
+.align-candidate-images {
+  display: flex;
+  gap: 4px;
+}
+
+.align-candidate-text {
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.mini-image {
+  position: relative;
+  display: inline-block;
+  flex: none;
+}
+
+.mini-image canvas,
+.mini-image svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.align-result {
+  flex: none;
+  min-height: 18px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shift matrices */
+.align-matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.align-matrix .array-panel {
+  flex: 1;
+}
+
+.align-colorbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.align-colorbar-bar {
+  flex: 0 1 140px;
+  min-width: 24px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.align-matrix-overlay rect {
+  fill: none;
+}
+
+.align-matrix-overlay .align-masked {
+  fill: rgba(0, 0, 0, 0.72);
+}
+
+.align-matrix-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.align-matrix-bar .fft-mask-toggle {
+  margin: 0;
+}
+
+.align-pair-cell {
+  stroke: #ffd60a;
+  stroke-width: 2;
+}
+
+.align-hover-cell {
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
+.align-stale {
+  flex: none;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+  background: rgba(217, 119, 6, 0.12);
+  font-size: 12px;
+}
+
+.align-progress {
+  width: 260px;
+}
+
+/* Shift matrices: measured Δx, Δy above, corrected below, and the drift
+   centred under them; squares as large as the width (two across) and
+   height (three down, less titles and colour bars) allow. */
+.align-matrix-area {
+  flex: 1;
+  min-height: 0;
+  container-type: size;
+}
+
+.align-matrix-grid {
+  --side: min((100cqw - 8px) / 2, (100cqh - 16px - 160px) / 3);
+  display: grid;
+  grid-template-columns: repeat(2, var(--side));
+  grid-template-rows: repeat(2, calc(var(--side) + 48px)) calc(var(--side) + 64px);
+  justify-content: center;
+  align-content: start;
+  gap: 8px;
+}
+
+/* The drift plot's frame matches a matrix square: the panel adds the plot's
+   margins (44px left, 12px right, 44px top and bottom with the title), and
+   the right margin shifts it so the frame, not the panel, is centred. */
+.align-drift {
+  grid-column: 1 / span 2;
+  justify-self: center;
+  width: calc(var(--side) + 56px);
+  margin-right: 32px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.drift-plot {
+  flex: 1;
+  min-height: 0;
+}
+
+.drift-frame {
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+}
+
+.drift-zero {
+  stroke: var(--muted);
+  stroke-width: 2;
+  opacity: 0.6;
+}
+
+.drift-tick text,
+.drift-label,
+.drift-hover {
+  fill: var(--text);
+  font-size: 11px;
+}
+
+.drift-label {
+  font-size: 12px;
+}
+
+.drift-path {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+
+.drift-point {
+  opacity: 0.85;
+}
+
+.drift-highlight {
+  fill: none;
+  stroke: #ffd60a;
+  stroke-width: 2;
+}
+
+.drift-arrow line {
+  stroke: var(--text);
+  stroke-width: 2;
+}
+
+.drift-arrow text {
+  fill: var(--text);
+  font-size: 12px;
+}
+
+.drift-head {
+  fill: var(--text);
 }

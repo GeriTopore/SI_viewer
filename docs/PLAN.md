@@ -568,7 +568,62 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
    - The registration session API.
    - The workspace shell with the stepper, and steps 1–2 with live mask
      previews and *Compare n*.
-2. **M9b: Peak finding and Shift matrices.**
+2. **M9b: Peak finding and Shift matrices** (done).
+   - Previews run the package's own methods on a stand-in object with its
+     own FFTW plan. They never touch the `imstack` that the shift job uses,
+     and they give the job's numbers exactly (tested to 1e-5 px for pixel,
+     Gaussian fit and centre of mass).
+   - For i > j the preview analyses (j, i) and mirrors it, as the package
+     fills the lower triangle by negation.
+   - The Gaussian fit's candidates are the package's n brightest pixels
+     (often neighbours on one ridge), each shown with its cut-out and fit.
+   - Matrices use a diverging RdBu colormap with a symmetric range.
+   - After review, the outlier masking moved into the Shift matrices step
+     (steps 4 and 5 merged).
+     - The mask (outliers, pairs too far off the diagonal, bad frames) is
+       drawn over both matrices as dark cells, with a *Mask* toggle to hide
+       it.
+     - Its settings are in the Process tab: transitivity threshold and
+       paths, or the neighbour check's maximum shift, and the off-diagonal
+       limit.
+     - It uses the package's `get_outliers` / `get_outliers_NN`,
+       `mask_off_diagonal`, `set_bad_images` and `refine_mask`, and updates
+       live (0.2 s for 122 frames).
+     - The steps are now Frames, Fourier mask, Peak finding, Shift matrices
+       and Result.
+   - Correction also happens in step 4, and re-runs live when the mask
+     changes.
+     - Masked shifts are filled from paths of good pairs (the package's
+       `make_corrected_Rij`), and each frame's shift is the mean of its row
+       (`get_imshifts`).
+     - The step shows the measured Δx/Δy (mask overlaid) above the corrected
+       ones (same colour range), with a 2D drift plot centred below.
+     - The drift plot shows each frame's position relative to the mean,
+       shaded from the first frame to the last, with equal axes (Å when
+       calibrated) and a net drift arrow.
+     - The correction loop is the package's, with two safety changes. Rounds
+       that fill nothing double the paths at once, where the package waits
+       until its 1000th round. Paths through frames that don't exist (its
+       generator overruns small stacks) are skipped. Past 640 paths per pair
+       it stops with an error naming the frames, where the package would
+       loop forever (e.g. a group of frames with no good pair to the rest).
+   - Reproducing the DetailedWalkThrough notebook on Nb₃Cl₈ led to these
+     changes. With them the app gives the notebook's shift matrices (to
+     4e-6 px), outlier mask and drift exactly; this is tested.
+     - The elliptical Gaussian mask (`makeFourierMask_eg`: n1, n2, θ in
+       degrees) was added. Its cutoff is drawn as a rotated ellipse on the
+       FFT panel.
+     - Frames are normalised to 0–1 before registration, as the notebooks
+       do (uint16 / 2¹⁶; floats by their maximum). The Gaussian peak fit
+       depends on the data scale, and raw counts changed some pair shifts by
+       tens of pixels.
+     - The correction wraps path indices that run past the stack's ends, as
+       NumPy does in the package, instead of dropping those paths. They are
+       still valid chains of pairs, and the package relies on them near the
+       first frames.
+     - The notebook's hand edits of single mask entries aren't supported
+       yet; on this data they don't change the drift.
+   - The Result step (M9c) shifts, averages and applies.
    - Step 3 (pair cross-correlation, peaks, Gaussian-fit cut-outs).
    - Step 4 (the *Compute shifts* job, interactive Xᵢⱼ/Yᵢⱼ heatmaps, click
      a cell to inspect the pair).
@@ -580,8 +635,10 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
    - Tests: a synthetic stack with known shifts (under 0.2 px), and the
      sample stacks.
 4. **M9d: extras.**
-   - The dual mask (two-pass registration), elliptical masks and the
-     clipping dimension.
+   - The dual mask (two-pass registration) and the clipping dimension
+     (elliptical masks are done).
+   - Editing single entries or blocks of the outlier mask by hand, as the
+     notebook does.
    - Apply the shifts to other stacks of the same scan.
    - Save the shifts (CSV) and a report (PNG/PDF of the steps).
 
@@ -611,7 +668,7 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
 | M6 | Line profiles for images and SIs (intensity and element profiles) | Done |
 | M7 | Export, keyboard shortcuts, polish | Done |
 | M8 | pywebview desktop window and installers (deferred until the features are complete) | |
-| M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b), Outliers + Result + Apply (M9c), extras (M9d) | In progress |
+| M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Outliers + Result + Apply (M9c), extras (M9d) | In progress |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

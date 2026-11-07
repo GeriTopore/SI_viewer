@@ -5,6 +5,7 @@ import { useDisplay } from "../state/display";
 import { useSi } from "../state/si";
 import { useUi } from "../state/ui";
 import { formatValue } from "../format";
+import { downloadBlob, downloadCsv, safeFileName } from "../download";
 
 export interface SpectrumSeries {
   label: string;
@@ -55,6 +56,8 @@ interface Props {
   toolbar?: ReactNode;
   /** Shown under the toolbar (e.g. a legend of series). */
   legend?: ReactNode;
+  /** Base name of saved files (CSV, PNG). */
+  name?: string;
 }
 
 const cssVar = (name: string) =>
@@ -64,6 +67,7 @@ const cssVar = (name: string) =>
  * zoom, double-click to reset. X-ray lines are drawn as markers. */
 export function SpectrumPlot({
   x, series, xLabel, xUnits, loading, error, markers = [], window, onWindow, onMarkerClick, toolbar, legend,
+  name = "spectrum",
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
@@ -317,6 +321,31 @@ export function SpectrumPlot({
   };
   const resetZoom = () => plotRef.current && resetScales(plotRef.current);
 
+  /** Every series shown, one column each, against energy. */
+  const saveCsv = () =>
+    downloadCsv(
+      [
+        [xUnits ? `${xLabel} (${xUnits})` : xLabel, ...series.map((s) => s.label)],
+        ...Array.from(x, (v, i) => [v, ...series.map((s) => s.data[i])]),
+      ],
+      `${safeFileName(name)}.csv`,
+    );
+
+  /** The plot as drawn (current zoom), on the panel colour. */
+  const savePng = () => {
+    const plot = plotRef.current;
+    if (!plot) return;
+    const src = plot.ctx.canvas;
+    const out = document.createElement("canvas");
+    out.width = src.width;
+    out.height = src.height;
+    const ctx = out.getContext("2d")!;
+    ctx.fillStyle = cssVar("--panel") || "#fff";
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(src, 0, 0);
+    out.toBlob((b) => b && downloadBlob(b, `${safeFileName(name)}.png`), "image/png");
+  };
+
   return (
     <div className="spectrum-view">
       <div className="spectrum-toolbar">
@@ -355,6 +384,18 @@ export function SpectrumPlot({
           title="Full energy range and automatic counts range (or double-click the plot)"
         >
           Reset zoom
+        </button>
+        <span className="toolbar-spacer" />
+        <button
+          className="link-button"
+          onClick={saveCsv}
+          disabled={!series.length}
+          title="Save every spectrum shown as CSV (one column each)"
+        >
+          CSV
+        </button>
+        <button className="link-button" onClick={savePng} disabled={!series.length} title="Save the plot as shown as PNG">
+          PNG
         </button>
       </div>
       {legend}

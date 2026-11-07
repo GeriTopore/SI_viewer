@@ -1157,6 +1157,14 @@ button.primary:disabled {
   font-size: 12px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   cursor: default;
+  /* See-through over the image until pointed at (or used from the keyboard). */
+  opacity: 0.3;
+  transition: opacity 0.15s;
+}
+
+.layers-panel:hover,
+.layers-panel:has(:focus-visible) {
+  opacity: 1;
 }
 
 .layers-panel ul {
@@ -2376,4 +2384,90 @@ body.resizing-row,
 body.resizing-row * {
   cursor: row-resize !important;
   user-select: none;
+}
+
+/* ---------- Saving ---------- */
+.toolbar-spacer {
+  flex: 1;
+}
+
+.inspector-save {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.inspector-save h3 {
+  margin: 0 0 4px;
+}
+
+.inspector-save p {
+  margin: 0 0 8px;
+}
+
+.inspector-save-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Any disabled button looks it (plain and link buttons included). */
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.link-button:disabled:hover {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+/* ---------- Keyboard shortcuts ---------- */
+.shortcuts-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  padding: 18px 20px;
+}
+
+.shortcuts-dialog h2 {
+  margin: 0 0 12px;
+}
+
+.shortcuts-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 8px 24px;
+}
+
+.shortcuts-groups h3 {
+  margin: 4px 0 6px;
+}
+
+.shortcuts-groups dl {
+  margin: 0;
+}
+
+.shortcut-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.shortcut-row dt,
+.shortcut-row dd {
+  margin: 0;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
 }

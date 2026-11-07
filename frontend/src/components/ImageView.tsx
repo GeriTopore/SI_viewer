@@ -4,7 +4,10 @@ import { useDisplay } from "../state/display";
 import { useViewerImage } from "../state/viewerImage";
 import { ImageRenderer, type DisplayParams, type ViewTransform } from "../viewer/renderer";
 import { formatValue, niceScaleBar } from "../format";
-import { isTyping } from "../keyboard";
+import { isTyping, useShortcuts } from "../keyboard";
+import { downloadBlob, safeFileName } from "../download";
+import { compositePng } from "../viewer/snapshot";
+import { useLayers } from "../state/layers";
 
 export interface AxisCal {
   scale: number;
@@ -298,6 +301,33 @@ export function ImageView({
 
   const bar = view && niceScaleBar(calX.scale / view.zoom, calX.units);
 
+  useShortcuts({ f: () => fit(), "1": () => view && setView({ ...view, zoom: 1 }) });
+  // ⌘/Ctrl+S saves the image (instead of the browser saving the page).
+  const save = useRef<() => void>(() => {});
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        save.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const saveImage = () => {
+    const shown = layers.filter((l) => l.visible && l.frame && l.display);
+    if (!shown.length) return;
+    const name = `${safeFileName(shown.map((l) => l.label).join("+"))}.png`;
+    compositePng(
+      shown.map((l) => ({ key: l.key, frame: l.frame!, display: l.display!, opacity: l.opacity })),
+      fullWidth, fullHeight, calX,
+    )
+      .then((blob) => downloadBlob(blob, name))
+      .catch((e) => useLayers.getState().notify(`Could not save the image: ${(e as Error).message}`));
+  };
+  save.current = saveImage;
+
   return (
     <div className="image-view">
       <div
@@ -391,6 +421,14 @@ export function ImageView({
             title="One screen pixel per data pixel"
           >
             1:1
+          </button>
+          <button
+            className="link-button"
+            onClick={saveImage}
+            disabled={!anyFrame}
+            title="Save the whole image as shown (layers, colours, contrast) at full resolution, with a scale bar, as PNG"
+          >
+            Save PNG
           </button>
         </span>
       </div>

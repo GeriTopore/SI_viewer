@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, type DatasetSummary } from "../api/client";
+import { api, exportUrl, mapsZipUrl, type DatasetSummary } from "../api/client";
+import { downloadUrl, useExportFormats } from "../download";
 import { useDatasets, useFocusedDataset } from "../state/datasets";
 import { bytesLabel, filterLabel, kindLabel, shapeLabel } from "../format";
 
@@ -40,7 +41,36 @@ export function Inspector() {
         )}
       </dl>
       <AxesTable key={d.id} d={d} />
+      <SaveButtons d={d} />
     </div>
+  );
+}
+
+/** Buttons saving the dataset in each format it supports. */
+function SaveButtons({ d }: { d: DatasetSummary }) {
+  const formats = useExportFormats()[d.kind] ?? [];
+  if (!formats.length) return null;
+  return (
+    <section className="inspector-save">
+      <h3>Save</h3>
+      <p className="muted small">
+        {d.kind === "spectrum_image"
+          ? "Saved as loaded (rebinned, if it was); its processing settings are recorded in the metadata."
+          : "Saved as shown, with any filters applied."}
+      </p>
+      <div className="inspector-save-buttons">
+        {formats.map((f) => (
+          <button key={f.format} onClick={() => downloadUrl(exportUrl(d.id, f.format))} title={`Save as ${f.label}`}>
+            {f.label.split(" (")[0]}
+          </button>
+        ))}
+        {d.is_element_map && (
+          <button onClick={() => downloadUrl(mapsZipUrl(d.file_id))} title="Every element map of this file as TIFFs in a zip">
+            All maps (.zip)
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

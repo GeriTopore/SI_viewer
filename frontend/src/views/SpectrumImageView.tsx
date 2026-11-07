@@ -18,6 +18,7 @@ import { useNavigatorTools } from "./si/useNavigatorTools";
 import { CURSOR_CHANNEL, LINE_CHANNEL, useSiSpectra, type LineBand } from "./si/useSiSpectra";
 import { useViewProfiles } from "../state/profiles";
 import { useUi } from "../state/ui";
+import { useShortcuts } from "../keyboard";
 import { bandPolygon, pixelLength, pointAt } from "../viewer/profile";
 import { fwhmAt, useLineMarkers } from "./si/xray";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
@@ -70,6 +71,14 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     }
   }, [ds.id, g.width, g.height, patch]);
   const tools = useNavigatorTools(ds.id, g.width, g.height);
+  useShortcuts({
+    c: () => setTool("cursor"),
+    r: () => setTool("rect"),
+    e: () => setTool("ellipse"),
+    p: () => setTool("polygon"),
+    l: () => setTool("line"),
+    h: () => setTool("pan"),
+  });
   // Cursor and region tools bring the spectrum tab back (the line tool shows profiles).
   const setBottomTab = useUi((s) => s.setBottomTab);
   useEffect(() => {
@@ -216,6 +225,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
 
   const spectrumPlot = (
     <SpectrumPlot
+      name={`${ds.title}_spectra`}
       x={axis.x}
       series={series}
       xLabel={axis.label}

@@ -340,8 +340,8 @@ viewer's active layer.
   - Per-pixel model fit as a background job with progress and cancel, with an
     optional rebin first.
   - Quantified composition maps, with a vacuum mask (`vacuum_mask`).
-- Results export: CSV for spectra and tables, TIFF/PNG for maps, and `.hspy`
-  for processed signals.
+- Results export (M7, done): CSV for spectra and tables, TIFF/PNG for maps,
+  and `.hspy` for signals (see 4.8).
 
 ### 4.7 Line profiles (M6, done)
 - **Line tool** on every image view: the ╱ button beside Pan on images and
@@ -375,7 +375,34 @@ viewer's active layer.
   - The pick is kept as fractions of the line, so it follows the line when it
     moves.
 
-### 4.8 Later (not in the first draft)
+### 4.8 Saving and shortcuts (M7, done)
+- **Datasets** (right-click → Save as…, or Save in the Info tab;
+  `processing/export.py`):
+  - Images and maps: TIFF (32-bit float, calibrated), `.hspy`, CSV.
+  - Stacks: TIFF stack, `.hspy`.
+  - Spectra: EMSA/MSA, CSV, `.hspy`.
+  - Spectrum images: `.hspy`.
+  - Data is saved as shown, filters applied. A spectrum image is saved as
+    loaded (rebinned, if it was); its processing settings go into the
+    metadata (`Processing.si_viewer`), as applying them would need a
+    processed copy of the cube.
+  - "All maps (.zip)" saves every element map of a file as TIFFs.
+  - Velox/exSpy dates like 14.10.2014 are made ISO for the EMSA writer.
+- **In the browser:**
+  - **Save PNG** under the image saves the whole image as shown (layers,
+    colours, contrast) at full resolution with a scale bar. Small scans are
+    enlarged by a whole factor to about 1024 px.
+  - The spectrum plot saves CSV (every series shown) and PNG.
+  - The quantification table and line profiles save as CSV.
+- **Keyboard shortcuts** (`?` or the ? button lists them):
+  - Tools: C, R, E, P, L, H.
+  - View: F to fit, 1 for 1:1, ⌘/Ctrl S to save the PNG.
+  - Panes: [ and ] fold the side panes; T switches the bottom tab.
+  - Stacks: Home and End for the first and last frame.
+  - Existing keys: arrows, Delete, Esc, Space-drag and ⌘/Ctrl O.
+- The window title names the dataset in focus.
+
+### 4.9 Later (not in the first draft)
 EELS SIs (`exspy.signals.EELSSpectrum`, background power law, edges), PCA/NMF
 denoising (`decomposition`), drift correction from the SI HAADF stack, batch
 processing recipes across files, and saved sessions.
@@ -404,7 +431,8 @@ processing recipes across files, and saved sessions.
 | M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | Done |
 | M5 | Pre-processing tab (right side): non-destructive filters (Gaussian/median/box blur) for images and maps; binning and spectral smoothing for spectrum images; live FFT of the viewer with d-spacing readout | Done |
 | M6 | Line profiles for images and SIs (intensity and element profiles) | Done |
-| M7 | Export, keyboard shortcuts, pywebview desktop window, polish | |
+| M7 | Export, keyboard shortcuts, polish | Done |
+| M8 | pywebview desktop window and installers (deferred until the features are complete) | |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

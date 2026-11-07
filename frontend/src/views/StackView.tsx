@@ -116,6 +116,8 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
       if (projection !== "frame") return;
       if (e.key === "ArrowRight") setIndex((i) => Math.min(n - 1, i + 1));
       else if (e.key === "ArrowLeft") setIndex((i) => Math.max(0, i - 1));
+      else if (e.key === "Home") setIndex(0);
+      else if (e.key === "End") setIndex(n - 1);
       else return;
       e.preventDefault();
     };

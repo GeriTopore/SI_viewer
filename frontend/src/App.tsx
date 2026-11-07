@@ -7,11 +7,12 @@ import { RightPanel } from "./components/RightPanel";
 import { OpenFile } from "./components/OpenFile";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { Toast } from "./components/Toast";
-import { useDatasets } from "./state/datasets";
+import { useDatasets, useFocusedDataset } from "./state/datasets";
 import { PANE_SIZES, useUi } from "./state/ui";
 import { Splitter } from "./components/Splitter";
+import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { MainView } from "./views/MainView";
-import { isTyping } from "./keyboard";
+import { isTyping, useShortcuts } from "./keyboard";
 
 // Width of a folded side pane.
 const COLLAPSED = 34;
@@ -25,6 +26,11 @@ export function App() {
   const rightWidth = useUi((s) => s.rightWidth);
   const setPaneWidth = useUi((s) => s.setPaneWidth);
   const sideRef = useRef<HTMLElement>(null);
+  const setCollapsed = useUi((s) => s.setCollapsed);
+  useShortcuts({
+    "[": () => setCollapsed("left", !leftCollapsed),
+    "]": () => setCollapsed("right", !rightCollapsed),
+  });
   const inspRef = useRef<HTMLElement>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [backendDown, setBackendDown] = useState(false);
@@ -38,6 +44,12 @@ export function App() {
       })
       .catch(() => setBackendDown(true));
   }, [refresh]);
+
+  // The window title names the dataset in focus.
+  const focused = useFocusedDataset();
+  useEffect(() => {
+    document.title = focused ? `${focused.title} — SI Viewer` : "SI Viewer";
+  }, [focused?.title]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Up/down arrows switch datasets, unless typing in a field or a dialog is open.
   useEffect(() => {
@@ -64,6 +76,7 @@ export function App() {
         <span className="app-name">SI Viewer</span>
         <OpenFile />
         <span className="topbar-spacer" />
+        <ShortcutsHelp />
         <ThemeToggle />
       </header>
 

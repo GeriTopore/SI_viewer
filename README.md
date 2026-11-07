@@ -69,6 +69,25 @@ and drag across the image:
 - On a spectrum image, click or drag on the profile to see the spectrum of
   that part of the line.
 
+### Saving
+
+- Right-click a dataset (or use Save in the Info tab) to save it:
+  - images and maps as TIFF, `.hspy` or CSV;
+  - spectra as EMSA/MSA, CSV or `.hspy`;
+  - stacks and spectrum images as `.hspy` (stacks also as TIFF);
+  - all of a file's maps as a zip of TIFFs.
+- **Save PNG** under the image saves the composite as shown, with a scale
+  bar.
+- The spectrum plot, the quantification table and line profiles save as CSV
+  (the plot also as PNG).
+
+### Keyboard shortcuts
+
+Press `?` (or the ? button) for the list. Highlights:
+- tools C/R/E/P/L/H;
+- F to fit, 1 for 1:1, ⌘/Ctrl S to save the image;
+- [ and ] to fold the side panes, T to switch the tab under the image.
+
 ### Frontend development (hot reload)
 
 Run the backend and the Vite dev server side by side; Vite proxies `/api` to

@@ -50,6 +50,7 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
   return (
     <div className="view">
       <SpectrumPlot
+        name={ds.title}
         x={axis.x}
         series={series}
         xLabel={axis.label}

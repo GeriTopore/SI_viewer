@@ -18,6 +18,7 @@ import { useProfiles, useViewProfiles } from "../state/profiles";
 import { useLineTool } from "../views/useLineTool";
 import { PANE_SIZES, useUi, type BottomTab } from "../state/ui";
 import { Splitter } from "./Splitter";
+import { useShortcuts } from "../keyboard";
 
 /** Drag-and-drop type for datasets dragged from the sidebar. */
 export const DATASET_MIME = "application/x-si-viewer-dataset";
@@ -154,6 +155,12 @@ export function LayeredViewer({
   ];
   const activeTab = tabs.find((t) => t.id === bottomTab)?.id ?? tabs[0]?.id;
   const viewerRef = useRef<HTMLDivElement>(null);
+  // Image and stack views: their own tool keys. Any view: T switches tabs.
+  useShortcuts({ l: () => setImageTool("line"), h: () => setImageTool("pan") }, lineTool === undefined);
+  useShortcuts(
+    { t: () => setBottomTab(activeTab === "spectrum" ? "profile" : "spectrum") },
+    tabs.length > 1,
+  );
 
   const [dragOver, setDragOver] = useState(false);
   const accepts = (e: DragEvent) => e.dataTransfer.types.includes(DATASET_MIME);

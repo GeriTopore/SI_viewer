@@ -1,5 +1,5 @@
 import { useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { thumbnailUrl, type DatasetSummary } from "../api/client";
+import { exportUrl, mapsZipUrl, thumbnailUrl, type DatasetSummary } from "../api/client";
 import { canDelete, elementOf, setMapColour, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
@@ -9,6 +9,7 @@ import { ContextMenu } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
 import { RebinDialog, canRebin } from "./RebinDialog";
+import { downloadUrl, useExportFormats } from "../download";
 
 const badgeClass = (d: DatasetSummary) => `badge badge-${d.is_element_map ? "map" : d.kind}`;
 
@@ -25,6 +26,7 @@ export function DatasetList() {
   // Right-click menu (Rebin…, Delete) and the rebin dialog it opens.
   const [menu, setMenu] = useState<{ x: number; y: number; d: DatasetSummary } | null>(null);
   const [rebinTarget, setRebinTarget] = useState<DatasetSummary | null>(null);
+  const exportFormats = useExportFormats();
   const highlighted = new Set(selection);
 
   // Rows are div[role=button] (not <button>) so the colour picker can sit inside.
@@ -139,6 +141,13 @@ export function DatasetList() {
           onClose={() => setMenu(null)}
           items={[
             ...(canRebin(menu.d) ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
+            ...(exportFormats[menu.d.kind] ?? []).map((f) => ({
+              label: `Save as ${f.label}`,
+              onSelect: () => downloadUrl(exportUrl(menu.d.id, f.format)),
+            })),
+            ...(menu.d.is_element_map
+              ? [{ label: "Save all maps of this file (TIFF, .zip)", onSelect: () => downloadUrl(mapsZipUrl(menu.d.file_id)) }]
+              : []),
             ...(canDelete(menu.d) ? [{ label: "Delete", danger: true, onSelect: () => deleteDataset(menu.d) }] : []),
           ]}
         />

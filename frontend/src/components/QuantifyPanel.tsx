@@ -5,6 +5,7 @@ import { cliffLorimer, datasetKey, useQuant, type SourceChoice } from "../state/
 import { shapeToRegion, useSi, useSiState } from "../state/si";
 import { lineLabel, useElementTable } from "../views/si/xray";
 import { filterLabel, formatValue } from "../format";
+import { downloadCsv, safeFileName } from "../download";
 import { FitMapsSection } from "./FitMapsSection";
 
 /** The EDS spectrum image or spectrum shown in the viewer, if any. */
@@ -88,6 +89,23 @@ function QuantifyTarget({ ds }: { ds: DatasetSummary }) {
     return cliffLorimer(rows, q.kfactors, atomicWeights).map((r, i) => ({ ...r, lines: rows[i].lines }));
   }, [fit, q.lineChoice, q.excluded, q.kfactors, atomicWeights, key]);
   const uncalibrated = composition.some((r) => r.included && r.uncalibrated);
+
+  // The quantification table, with what it was fitted from.
+  const saveTable = () =>
+    fit &&
+    downloadCsv(
+      [
+        ["source", fit.label],
+        ...(filterLabel(ds.filters) ? [["processing", filterLabel(ds.filters)]] : []),
+        [],
+        ["element", "line", "intensity", "k-factor", "k-factor set", "included", "wt%", "at%"],
+        ...composition.map((r) => [
+          r.element, r.line, r.intensity, r.k, r.uncalibrated ? "no (default 1)" : "yes", r.included ? "yes" : "no",
+          r.wt, r.at,
+        ]),
+      ],
+      `${safeFileName(ds.title)}_quantification.csv`,
+    );
 
   return (
     <div className="quantify">
@@ -270,7 +288,12 @@ function QuantifyTarget({ ds }: { ds: DatasetSummary }) {
                 composition. Enter k-factors for your microscope (or load a preset).
               </p>
             )}
-            <p className="muted small">Cliff-Lorimer, normalised over the ticked elements; no absorption correction.</p>
+            <p className="muted small">
+              Cliff-Lorimer, normalised over the ticked elements; no absorption correction.{" "}
+              <button className="link-button" onClick={saveTable} title="Save this table as CSV">
+                Save CSV
+              </button>
+            </p>
           </section>
 
           <KFactorPresets />

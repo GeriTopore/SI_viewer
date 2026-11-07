@@ -3,6 +3,7 @@ import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from 
 import { isColour } from "../viewer/colormaps";
 import { calibratedLength, sampleProfile } from "../viewer/profile";
 import { formatValue } from "../format";
+import { downloadCsv, safeFileName } from "../download";
 import type { AxisCal, ViewLayer } from "./ImageView";
 import { ProfilePlot, type DistanceRange, type ProfileSeries, type ProfileTable } from "./ProfilePlot";
 
@@ -86,19 +87,14 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
     patch(view, { pick: { line: line.id, t0: clamp(Math.min(d0, d1)), t1: clamp(Math.max(d0, d1)) } });
   };
 
-  const exportCsv = () => {
-    const header = ["line", `distance (${units})`, ...drawn.map((l) => l.label)];
-    const rows = tables.flatMap((t, li) =>
-      Array.from(t.x, (d, i) => [shown[li].name, formatCsv(d), ...t.series.map((s) => formatCsv(s.values[i]))]),
+  const exportCsv = () =>
+    downloadCsv(
+      [
+        ["line", `distance (${units})`, ...drawn.map((l) => l.label)],
+        ...tables.flatMap((t, li) => Array.from(t.x, (d, i) => [shown[li].name, d, ...t.series.map((s) => s.values[i])])),
+      ],
+      `${safeFileName(title)}_profile${normalise ? "_normalised" : ""}.csv`,
     );
-    const csv = [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title.replace(/[^\w.-]+/g, "_")}_profile${normalise ? "_normalised" : ""}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   return (
     <div className="profile-panel">
@@ -210,6 +206,3 @@ function LineChip({
     </span>
   );
 }
-
-const formatCsv = (v: number) => (Number.isFinite(v) ? String(v) : "");
-const csvCell = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);

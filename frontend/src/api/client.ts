@@ -81,6 +81,20 @@ export interface Filters {
   order: number;
 }
 
+/** A file format a dataset can be saved in. */
+export interface ExportFormat {
+  format: string;
+  extension: string;
+  label: string;
+}
+
+/** Download URL of a dataset saved as ``format`` (the data as shown). */
+export const exportUrl = (id: string, format: string) =>
+  `/api/datasets/${id}/export?format=${encodeURIComponent(format)}`;
+
+/** Download URL of a zip of every element map of a file. */
+export const mapsZipUrl = (fileId: string) => `/api/files/${fileId}/maps`;
+
 /** Changes whenever the data shown for a dataset does (recomputed, rebinned
  * or filtered), for cache keys. */
 export const dataVersion = (d: { revision: number; filter_rev: number }) => `${d.revision}.${d.filter_rev}`;
@@ -252,6 +266,7 @@ export const api = {
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<JobSummary>(`/api/jobs/${id}/cancel`, { method: "POST" }),
+  exportFormats: () => request<Record<string, ExportFormat[]>>("/api/export-formats"),
   listExamples: () => request<ExampleInfo[]>("/api/examples"),
   openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),
   listDir: (path?: string) =>

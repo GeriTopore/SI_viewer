@@ -77,7 +77,7 @@ export function useNavigatorTools(si: string, width: number, height: number) {
     cursor: tool === "pan" ? "grab" : tool === "cursor" ? "crosshair" : "cell",
 
     onDown(p, _e, t) {
-      if (tool === "pan") return false;
+      if (tool === "pan" || tool === "line") return false; // lines: the viewer's line tool
       const s = getSiState(si);
       const selected = s.rois.find((r) => r.id === s.selected && r.visible);
       if (selected && tool !== "polygon") {

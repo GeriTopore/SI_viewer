@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type DatasetSummary, type Filters, type SpatialFilter, type SpectralFilter } from "../api/client";
-import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
+import { allDatasets, useDatasets } from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { filterLabel } from "../format";
 import { RebinDialog, canRebin } from "./RebinDialog";
@@ -23,10 +23,26 @@ const SAVGOL_WINDOWS = [5, 7, 9, 11, 15, 21, 31];
 // Filters are sent this long after the last change (e.g. while dragging σ).
 const DEBOUNCE_MS = 250;
 
+/** What the Process tab works on: the spectrum image in the viewer, whatever
+ * is overlaid on it (its processing covers all its maps); else the focused
+ * dataset, or for a map made from a spectrum image, that spectrum image. */
+function useProcessTarget(): DatasetSummary | undefined {
+  const files = useDatasets((s) => s.files);
+  const selection = useDatasets((s) => s.selection);
+  const focusId = useDatasets((s) => s.focusId);
+  return useMemo(() => {
+    const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
+    const shownSi = selection.map((id) => byId.get(id)).find((d) => d?.kind === "spectrum_image");
+    if (shownSi) return shownSi;
+    const focused = focusId ? byId.get(focusId) : undefined;
+    return (focused?.parent_id && byId.get(focused.parent_id)) || focused;
+  }, [files, selection, focusId]);
+}
+
 /** Process tab, in workflow order: rebinning (spectrum images), then
- * non-destructive filters of the focused dataset. */
+ * non-destructive filters. */
 export function ProcessPanel() {
-  const d = useFocusedDataset();
+  const d = useProcessTarget();
   if (!d) return <p className="muted">Select a dataset to filter it.</p>;
   if (d.kind === "other") return <p className="muted">{d.title} can't be filtered.</p>;
   return <ProcessTarget key={d.id} d={d} />;
@@ -97,8 +113,9 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   const spectral = d.kind === "spectrum" || isSi;
   // A median isn't linear, so it can't be carried over to an SI's maps and spectra.
   const spatialChoices = isSi ? SPATIAL.filter((s) => s.id !== "median") : SPATIAL;
+  // Maps loaded from a file (no spectrum image to follow) can share a filter.
   const otherMaps = d.is_element_map
-    ? allDatasets(files).filter((x) => x.file_id === d.file_id && x.is_element_map && x.id !== d.id)
+    ? allDatasets(files).filter((x) => x.file_id === d.file_id && x.is_element_map && !x.parent_id && x.id !== d.id)
     : [];
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
@@ -107,6 +124,12 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
     <div className="quantify process">
       <section>
         <h3 className="q-title">{d.title}</h3>
+        {isSi && (
+          <p className="muted small q-elements">
+            Processing the spectrum image: it applies to all its spectra, fits and element maps, whichever are
+            overlaid in the viewer.
+          </p>
+        )}
       </section>
 
       {canRebin(d) && (
@@ -183,9 +206,9 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
           )}
           {isSi && (
             <p className="muted small process-note">
-              Applies to pixel spectra, the total-counts and energy-window maps, and the element maps (computed
-              maps are remade; fitted maps need fitting again). Region and summed spectra keep the raw counts,
-              which a blur doesn't change, and fits always use raw counts.
+              Blurs the whole spectrum image: cursor and region spectra, the total-counts and energy-window maps,
+              and every element map (also ones added later from the periodic table). Fits and quantification use
+              the blurred data; fitted maps are removed when the processing changes, so fit again.
             </p>
           )}
         </section>
@@ -254,7 +277,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
               </label>
             </>
           )}
-          <p className="muted small process-note">Smooths the spectra shown; fits and maps use raw counts.</p>
+          <p className="muted small process-note">
+            {isSi
+              ? "Smooths every spectrum of the spectrum image, and the maps and fits made from them."
+              : "Smooths the spectrum; fits use the smoothed spectrum."}
+          </p>
         </section>
       )}
 

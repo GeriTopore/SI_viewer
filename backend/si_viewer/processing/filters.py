@@ -6,10 +6,15 @@ loaded data stays untouched and a filter can be changed or removed at any time.
 - **Spatial** (images, stacks, spectrum images): Gaussian, median or mean
   (box) blur. On a spectrum image only the linear ones (Gaussian, mean) are
   offered: they commute with summing channels, so a map of the blurred
-  spectrum image is simply the blurred map, and a pixel spectrum is a weighted
-  sum of its neighbours. Nothing needs a blurred copy of the whole cube.
+  spectrum image is simply the blurred map, and the summed spectrum of any
+  pixels of it is a weighted sum of the raw spectra (``spatial_weights``).
 - **Spectral** (spectra, spectrum images): Gaussian or Savitzky–Golay smoothing
-  along the energy axis, applied to the spectra shown.
+  along the energy axis. A weighted sum of the channels of smoothed spectra is
+  a weighted sum of the raw channels (``spectral_adjoint``), so maps and
+  per-pixel fits of a smoothed spectrum image need no smoothed copy either.
+
+A spectrum image's filters are its processing: its spectra, maps and fits all
+use the processed data.
 """
 
 from __future__ import annotations
@@ -50,14 +55,6 @@ class Filters(BaseModel):
     @property
     def has_spectral(self) -> bool:
         return self.spectral != "none"
-
-    def spatial_key(self) -> tuple:
-        """Changes only when the spatial filter does."""
-        if self.spatial == "gaussian":
-            return ("gaussian", self.sigma)
-        if self.spatial in ("median", "mean"):
-            return (self.spatial, self.size)
-        return ("none",)
 
     def describe(self) -> str:
         """e.g. "Gaussian σ 1.5 px; Savitzky–Golay 7 ch, order 2" ("" if none)."""
@@ -118,46 +115,81 @@ def filter_image(arr: np.ndarray, f: Filters) -> np.ndarray:
     return out
 
 
-def spatial_kernel(f: Filters) -> np.ndarray:
-    """The (linear) spatial filter as a normalised 2D kernel."""
+def _kernel1d(f: Filters) -> np.ndarray:
+    """The (separable, linear) spatial filter along one axis, as scipy applies it."""
     if f.spatial == "gaussian":
-        r = max(1, int(np.ceil(4 * f.sigma)))  # as scipy's gaussian_filter
+        r = int(4.0 * f.sigma + 0.5)  # scipy's truncate=4
         t = np.arange(-r, r + 1)
-        g = np.exp(-0.5 * (t / f.sigma) ** 2)
-        k = np.outer(g, g)
-    elif f.spatial == "mean":
-        k = np.ones((f.size, f.size))
-    else:
-        raise ValueError(f"No linear kernel for {f.spatial}")
-    return k / k.sum()
+        k = np.exp(-0.5 * (t / f.sigma) ** 2)
+        return k / k.sum()
+    if f.spatial == "mean":
+        return np.full(f.size, 1.0 / f.size)
+    raise ValueError(f"No linear kernel for {f.spatial}")
 
 
-def filtered_pixel_spectrum(
-    data: np.ndarray, x: int, y: int, size: int, f: Filters
-) -> tuple[np.ndarray, int]:
-    """Summed spectrum of the size × size block centred on (x, y) of the
-    spatially filtered spectrum image: a weighted sum of the raw spectra
-    around it. Weights falling outside the scan are dropped and the rest
-    rescaled, so the block still counts as ``n`` pixels."""
-    from scipy.signal import convolve2d
+def _adjoint_1d(a: np.ndarray, k: np.ndarray, axis: int) -> np.ndarray:
+    """Transpose of filtering along ``axis`` with kernel ``k`` (symmetric) and
+    scipy's "reflect" edges: spread each value over the padded axis, then fold
+    the padding back onto the pixels it was copied from."""
+    from scipy.ndimage import convolve1d
 
-    h, w = data.shape[:2]
-    half = (size - 1) // 2
-    bx0, by0 = max(0, x - half), max(0, y - half)
-    bx1, by1 = min(w, bx0 + size), min(h, by0 + size)
-    n = (bx1 - bx0) * (by1 - by0)
-    if n == 0 or not (0 <= x < w and 0 <= y < h):
-        raise IndexError(f"Pixel ({x}, {y}) is outside the {w}×{h} scan")
-    kernel = spatial_kernel(f)
-    r = kernel.shape[0] // 2
-    weights = convolve2d(np.ones((by1 - by0, bx1 - bx0)), kernel)  # block ⊛ kernel
-    wx0, wy0 = bx0 - r, by0 - r
-    cx0, cy0 = max(0, wx0), max(0, wy0)
-    cx1, cy1 = min(w, wx0 + weights.shape[1]), min(h, wy0 + weights.shape[0])
-    weights = weights[cy0 - wy0 : cy1 - wy0, cx0 - wx0 : cx1 - wx0]
-    weights *= n / weights.sum()
-    window = data[cy0:cy1, cx0:cx1].astype(np.float64)
-    return np.tensordot(weights, window, axes=([0, 1], [0, 1])), n
+    r = len(k) // 2
+    n = a.shape[axis]
+    pad = [(0, 0)] * a.ndim
+    pad[axis] = (r, r)
+    ext = convolve1d(np.pad(a, pad), k, axis=axis, mode="constant")
+    p = np.mod(np.arange(-r, n + r), 2 * n)
+    src = np.where(p < n, p, 2 * n - 1 - p)  # (d c b a | a b c d | d c b a)
+    out = np.zeros_like(a)
+    np.add.at(np.moveaxis(out, axis, 0), src, np.moveaxis(ext, axis, 0))
+    return out
+
+
+def spatial_weights(mask: np.ndarray, f: Filters) -> np.ndarray:
+    """Weights w (same shape as ``mask``) such that summing the spatially
+    filtered image over ``mask`` equals Σ w·(raw image), for any image (and so
+    for every channel of a spectrum image)."""
+    k = _kernel1d(f)
+    return _adjoint_1d(_adjoint_1d(np.asarray(mask, np.float64), k, 0), k, 1)
+
+
+def filtered_sum(data: np.ndarray, mask: np.ndarray, raw_sum: np.ndarray, f: Filters, chunk: int = 2048) -> np.ndarray:
+    """Summed spectrum over ``mask`` (full scan shape) of the spatially
+    filtered spectrum image, from the raw sum over it: only pixels whose
+    weight differs from the mask (near its edge) need adding."""
+    delta = spatial_weights(mask, f) - mask
+    ys, xs = np.nonzero(np.abs(delta) > 1e-12)
+    out = np.asarray(raw_sum, np.float64).copy()
+    for i in range(0, len(ys), chunk):
+        y, x = ys[i : i + chunk], xs[i : i + chunk]
+        out += delta[y, x] @ data[y, x].astype(np.float32)
+    return out
+
+
+def spectral_adjoint(weights: np.ndarray, f: Filters, n_channels: int, offset: int = 0, chunk: int = 256) -> np.ndarray:
+    """Channel weights for the raw spectrum equivalent to ``weights`` (n × k,
+    on channels offset … offset + n) applied to the smoothed spectrum: the
+    (n_channels × k) matrix Sᵀ·W, where S is the smoothing."""
+    weights = np.asarray(weights, np.float64)
+    n = weights.shape[0]
+    out = np.empty((n_channels, weights.shape[1]))
+    for i in range(0, n_channels, chunk):
+        rows = np.zeros((min(chunk, n_channels - i), n_channels))
+        rows[np.arange(len(rows)), np.arange(i, i + len(rows))] = 1
+        smoothed = filter_spectrum(rows, f)  # row j: S applied to unit channel i + j
+        out[i : i + len(rows)] = smoothed[:, offset : offset + n] @ weights
+    return out
+
+
+def weighted_channel_map(data, weights: np.ndarray, f: Filters) -> np.ndarray:
+    """Σ_c weights[c]·(spectrally smoothed spectrum)[c] at every pixel: a
+    window map of the smoothed spectrum image, from the raw channels near the
+    windows only."""
+    v = spectral_adjoint(np.asarray(weights)[:, None], f, len(weights))[:, 0] if f.has_spectral else np.asarray(weights)
+    nz = np.flatnonzero(np.abs(v) > 1e-9 * np.abs(v).max()) if np.any(v) else np.array([0])
+    lo, hi = nz[0], nz[-1] + 1
+    result = np.tensordot(data[..., lo:hi], v[lo:hi].astype(np.float32), axes=([-1], [0]))
+    return np.asarray(result.compute() if hasattr(result, "compute") else result, np.float32)
 
 
 def filter_spectrum(spectrum: np.ndarray, f: Filters) -> np.ndarray:

@@ -326,7 +326,9 @@ class Session:
         from .processing.element_maps import MapOptions, compute_map
         from .processing.filters import filter_image
 
-        signal = compute_map(si.signal, element, MapOptions(**si.map_options))
+        # The map of the processed spectrum image: smoothed spectra, then the
+        # spatial filter on the map (they commute).
+        signal = compute_map(si.signal, element, MapOptions(**si.map_options), si.filter_spec)
         if signal is not None and si.filter_spec.has_spatial:
             signal.data = filter_image(signal.data, si.filter_spec)
         return signal
@@ -471,11 +473,20 @@ class Session:
 
     def set_filters(self, dataset: Dataset, filters: dict) -> list[str]:
         """Set a dataset's filters (applied whenever its data is read; the
-        loaded data is unchanged). A spectrum image's spatial filter also
-        applies to its maps: computed maps are recomputed, and per-pixel fit
-        results, which can't be, are removed. Returns notes for the user."""
+        loaded data is unchanged).
+
+        A spectrum image's filters are the processing of all its data: its
+        spectra, fits and every map made from it. Computed maps are remade;
+        per-pixel fit results, made from the old processing, are removed.
+        Those maps can't be filtered on their own. Returns notes for the user.
+        """
         from .processing.filters import Filters, check_applicable
 
+        if dataset.parent_id is not None and dataset.parent_id in self.datasets:
+            parent = self.datasets[dataset.parent_id]
+            raise ValueError(
+                f"{dataset.title} follows the processing of {parent.title}: filter the spectrum image instead"
+            )
         new = Filters(**filters)
         check_applicable(dataset.kind.value, new)
         old = dataset.filter_spec
@@ -486,7 +497,7 @@ class Session:
             del dataset.cache[key]  # filtered results (raw ones are kept)
 
         notes = []
-        if dataset.kind is DatasetKind.SPECTRUM_IMAGE and new.spatial_key() != old.spatial_key():
+        if dataset.kind is DatasetKind.SPECTRUM_IMAGE and new != old:
             dataset.materialise()
             for m in self.computed_maps(dataset):
                 signal = self._make_map(dataset, m.element)
@@ -496,7 +507,7 @@ class Session:
             for d in fits:
                 self._remove(d)
             if fits:
-                notes.append("Fitted maps were removed: fit every pixel again to include the filter")
+                notes.append("Fitted maps were removed: fit every pixel again to fit the processed data")
         return notes
 
     def siblings_in_file(self, file_id: str) -> list[Dataset]:

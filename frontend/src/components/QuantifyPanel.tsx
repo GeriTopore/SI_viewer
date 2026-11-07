@@ -4,7 +4,7 @@ import { allDatasets, useDatasets } from "../state/datasets";
 import { cliffLorimer, datasetKey, useQuant, type SourceChoice } from "../state/quant";
 import { shapeToRegion, useSi, useSiState } from "../state/si";
 import { lineLabel, useElementTable } from "../views/si/xray";
-import { formatValue } from "../format";
+import { filterLabel, formatValue } from "../format";
 import { FitMapsSection } from "./FitMapsSection";
 
 /** The EDS spectrum image or spectrum shown in the viewer, if any. */
@@ -97,6 +97,11 @@ function QuantifyTarget({ ds }: { ds: DatasetSummary }) {
           Elements: {ds.eds?.elements.length ? ds.eds.elements.join(", ") : "none"} — change them with
           the Elements button above the spectrum.
         </p>
+        {filterLabel(ds.filters) && (
+          <p className="muted small q-elements" title="Set in the Process tab">
+            Fits use the processed data: {filterLabel(ds.filters)}.
+          </p>
+        )}
       </section>
 
       <section className="q-form">

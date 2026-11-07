@@ -138,9 +138,17 @@ SI_viewer/
 - **Stacks:** a slider bar under the image, dragged to scrub through the frames,
   with a frame number readout (no playback). Neighbouring frames are prefetched
   so scrubbing stays smooth. Sum or mean projection is available as an option.
-- **SI layout:** navigator image on the left, spectrum on the right. The
-  navigator can be the simultaneous HAADF, the SI total counts, or any
-  energy-window or element map.
+- **SI layout:** navigator image on top, with a tabbed pane under it:
+  **Spectrum** and **Line profile**. The navigator can be the simultaneous
+  HAADF, the SI total counts, or any energy-window or element map.
+  - Drawing or dragging a profile line switches to the profile tab.
+    Picking the cursor or region tools brings back the spectrum.
+  - Image and stack views get the same pane for line profiles only, once the
+    line tool is picked or a line exists.
+- **Resizable panes:** drag the gaps beside the side panes to set their
+  widths, and the bar between the image and the pane below to set its
+  height. Double-click a handle to reset it. Sizes and the active tab are
+  remembered in the browser.
 - **Spectrum plot:** log/linear y, zoom/pan, auto-range, an energy readout
   under the mouse, and overlay of several spectra with a colour per ROI.
 - **Composite maps:** RGB/CMY overlay of up to 3 to 6 element maps on the HAADF.
@@ -204,31 +212,45 @@ image, and that map appears in the dataset pane like any other.
 
 ### 4.5 Pre-processing tab and FFT (M5, done)
 
-The **Process** tab on the right filters the focused dataset. Filters are
-non-destructive: they are stored with the dataset and applied whenever its
-data is read, so the loaded data is never changed and a filter can be changed
-or removed at any time (`PUT /api/datasets/{id}/filters`,
-`processing/filters.py`).
+The **Process** tab on the right (before Quantify) processes the data in
+view. Filters are non-destructive: they are stored with the dataset and
+applied whenever its data is read, so the loaded data is never changed and a
+filter can be changed or removed at any time
+(`PUT /api/datasets/{id}/filters`, `processing/filters.py`).
 
-- **Images, maps and stacks:** Gaussian (σ), median or mean (box) filter.
-  NaN pixels (masked composition) stay NaN and don't spread. Stacks are
-  filtered frame by frame. "Apply to all maps" copies a map's filter to every
-  map of its file.
+- **What the tab works on:**
+  - With a spectrum image in the viewer, always that spectrum image,
+    whichever maps are overlaid or focused.
+  - With a map of a spectrum image shown alone, its spectrum image.
+  - Otherwise, the focused dataset.
 - **Spectrum images:** Gaussian or mean spatial filter, and Gaussian or
-  Savitzky–Golay smoothing along energy.
-  - Only linear spatial filters are offered. They commute with summing
-    channels, so no blurred copy of the cube is needed. A map of the blurred
-    SI is the blurred map. A pixel spectrum is a weighted sum of its
-    neighbours.
-  - The spatial filter reaches pixel spectra, the total-counts and
-    energy-window navigators and the element maps. Computed maps are remade.
-    Per-pixel fit results are removed when it changes; a new fit blurs the
-    fitted intensities before computing composition.
-  - Region and summed spectra keep the raw counts, since a blur doesn't
-    change them (bar edge effects).
-  - Spectral smoothing applies to every spectrum shown. Fits always use raw
-    counts.
-- **Spectra:** spectral smoothing.
+  Savitzky–Golay smoothing along energy. The processing is global: everything
+  made from the spectrum image uses the processed data.
+  - It reaches cursor and region spectra, the total-counts and energy-window
+    navigators, and every element map, including maps added later from the
+    periodic table.
+  - It also reaches single-spectrum fits, per-pixel fitted maps and
+    composition maps.
+  - Computed maps are remade when the processing changes. Per-pixel fit
+    results are removed and need fitting again.
+  - Maps of a spectrum image have no filters of their own; the backend
+    refuses them.
+- **How the processed data is computed** (no processed copy of the cube):
+  - Only linear spatial filters are offered. Summing the filtered image over
+    any pixels equals a weighted sum of the raw spectra; the weights are the
+    filter's transpose, with scipy's reflecting edges (`spatial_weights`).
+    Only pixels near a region's edge need extra work.
+  - A weighted sum of the channels of smoothed spectra is a weighted sum of
+    the raw channels (`spectral_adjoint`). Window maps and the per-pixel
+    fit's solve matrix absorb the smoothing that way.
+  - Tests check pixel and region spectra and window maps, edges included,
+    against a brute-force processed cube.
+- **Images and stacks** (not maps of a spectrum image): Gaussian (σ), median
+  or mean (box) filter.
+  - NaN pixels (masked composition) stay NaN and don't spread.
+  - Stacks are filtered frame by frame.
+  - "Apply to all maps" copies a filter between maps loaded from a file.
+- **Spectra:** spectral smoothing, also used by their fits.
 - **Rebin** (destructive) is in the tab and the dataset context menu. It is
   offered for spectrum images only, and always takes the whole scan. The
   spectrum image is binned by the chosen factors. The file's images and stacks
@@ -321,18 +343,37 @@ viewer's active layer.
 - Results export: CSV for spectra and tables, TIFF/PNG for maps, and `.hspy`
   for processed signals.
 
-### 4.7 Line profiles
-- A line tool on any image or navigator, with draggable endpoints, an
-  adjustable width (integration perpendicular to the line) and the length shown
-  in calibrated units.
-- **Image profile:** intensity vs distance, updated live while dragging.
-- **SI profile:** uses `hs.roi.Line2DROI(linewidth=…)` to give a
-  distance × energy signal. From that:
-  - Element line-intensity profiles (window method at first, model fit later).
-  - Composition profile after quantification.
-  - The spectrum at any position along the line, via a cursor on the profile
-    plot.
-- Several profiles at once, overlaid. Export to CSV.
+### 4.7 Line profiles (M6, done)
+- **Line tool** on every image view: the ╱ button beside Pan on images and
+  stacks, or in the spectrum-image navigator's tools.
+  - Drag to draw a line; Shift snaps the angle to 15°.
+  - Drag an endpoint or the line itself to change it. Delete removes the
+    selected line.
+  - Each line shows its length in calibrated units, and its width as a band
+    when the width is over 1 px.
+  - Lines belong to their view and are cleared when the data is rebinned.
+- **Profiles** are computed in the browser from the frames already shown, so
+  they update live while dragging, with no network calls (`viewer/profile.ts`).
+  - About one sample per pixel along the line, bilinear between pixel
+    centres. Each sample is the mean across the line's width.
+  - Masked (NaN) pixels and samples off the image are left out.
+- **Profile panel** (the Line profile tab under the image), one series per
+  visible layer and line.
+  - Overlaying element maps (computed, fitted or composition) gives element
+    or composition profiles beside the HAADF. No distance × energy cube is
+    needed: maps and window sums are linear in the counts.
+  - Maps use their element colour. The base image is grey, on its own
+    right-hand axis.
+  - Further lines are dashed.
+  - Options: per-line width and visibility, Normalise (max = 1) and CSV
+    export.
+  - Hovering the plot marks the position on the lines.
+- **Spectrum along the line** (spectrum images): click the profile for the
+  spectrum at that point, or drag for a stretch of it.
+  - The spectrum is summed over the line's band (a point covers 1 px along
+    the line) and drawn in the line's colour on the spectrum plot.
+  - The pick is kept as fractions of the line, so it follows the line when it
+    moves.
 
 ### 4.8 Later (not in the first draft)
 EELS SIs (`exspy.signals.EELSSpectrum`, background power law, edges), PCA/NMF
@@ -362,7 +403,7 @@ processing recipes across files, and saved sessions.
 | M3 | Element maps from the periodic table: ticking an element computes its map (window + background) into the dataset pane, unticking removes it, maps can be deleted from the pane (unticking the element); map options (background, width, binning) | Done |
 | M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | Done |
 | M5 | Pre-processing tab (right side): non-destructive filters (Gaussian/median/box blur) for images and maps; binning and spectral smoothing for spectrum images; live FFT of the viewer with d-spacing readout | Done |
-| M6 | Line profiles for images and SIs (intensity and element profiles) | |
+| M6 | Line profiles for images and SIs (intensity and element profiles) | Done |
 | M7 | Export, keyboard shortcuts, pywebview desktop window, polish | |
 
 ## 7. Verification

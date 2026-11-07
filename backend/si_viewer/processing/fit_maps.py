@@ -15,6 +15,7 @@ from typing import Callable
 
 import numpy as np
 
+from .filters import Filters, spectral_adjoint
 from .fitting import FitOptions, FittedModel
 
 
@@ -55,10 +56,15 @@ def fit_pixels(
     options: FitOptions,
     report: Callable[[float], None] = lambda f: None,
     chunk: int = 4096,
+    filters: Filters | None = None,
 ) -> dict[str, np.ndarray]:
-    """Fitted intensity map (y, x) for every line family of ``fitted``."""
+    """Fitted intensity map (y, x) for every line family of ``fitted``. With
+    spectral smoothing in ``filters``, each pixel's smoothed spectrum is
+    fitted (the smoothing folded into the solve matrix). A spatial filter is
+    applied to the maps afterwards by the caller: being linear, that equals
+    fitting the filtered pixels."""
     names, matrix = design_matrix(fitted, options)
-    solve = np.linalg.pinv(matrix).T.astype(np.float32)  # (channels, columns)
+    solve = np.linalg.pinv(matrix).T  # (channels, columns)
 
     full_axis = si_signal.axes_manager.signal_axes[0]
     x0 = fitted.spectrum.axes_manager.signal_axes[0].axis[0]
@@ -66,12 +72,19 @@ def fit_pixels(
     n = matrix.shape[0]
     data = si_signal.data
     h, w = data.shape[:2]
-    flat = data.reshape(h * w, data.shape[-1])
+    channels = data.shape[-1]
+    flat = data.reshape(h * w, channels)
+    if filters is not None and filters.has_spectral:
+        solve = spectral_adjoint(solve, filters, channels, i0)  # (all channels, columns)
+        lo, hi = 0, channels
+    else:
+        lo, hi = i0, i0 + n
+    solve = solve.astype(np.float32)
 
     coeffs = np.empty((h * w, len(names)), np.float32)
     for start in range(0, h * w, chunk):
         stop = min(start + chunk, h * w)
-        block = flat[start:stop, i0:i0 + n].astype(np.float32)
+        block = flat[start:stop, lo:hi].astype(np.float32)
         coeffs[start:stop] = (block @ solve)[:, : len(names)]
         report(stop / (h * w))
     return {name: coeffs[:, j].reshape(h, w) for j, name in enumerate(names)}

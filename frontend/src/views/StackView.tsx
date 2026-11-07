@@ -125,6 +125,40 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
 
   const frameLabel = projection === "frame" ? `Frame ${index + 1} / ${n}` : `${projection} of ${n} frames`;
 
+  const stackBar = (
+    <div className="stack-bar">
+      <input
+        type="range"
+        className="stack-slider"
+        min={0}
+        max={n - 1}
+        step={1}
+        value={index}
+        disabled={projection !== "frame"}
+        onChange={(e) => setIndex(Number(e.target.value))}
+        onPointerDown={() => setScrubbing(true)}
+        onPointerUp={() => setScrubbing(false)}
+        onBlur={() => setScrubbing(false)}
+        aria-label="Frame"
+      />
+      <span className="stack-index">
+        {index + 1} / {n}
+      </span>
+      <div className="segmented" role="group" aria-label="Projection">
+        {(["frame", "mean", "sum"] as Projection[]).map((p) => (
+          <button
+            key={p}
+            className={projection === p ? "active" : undefined}
+            aria-pressed={projection === p}
+            onClick={() => setProjection(p)}
+          >
+            {p === "frame" ? "Frame" : p === "mean" ? "Mean" : "Sum"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <div className="view">
       <LayeredViewer
@@ -134,40 +168,10 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
         geometry={g}
         loading={frame ? null : "Loading frame…"}
         error={error}
+        footer={stackBar}
       >
         <span className="frame-chip">{frameLabel}</span>
       </LayeredViewer>
-      <div className="stack-bar">
-        <input
-          type="range"
-          className="stack-slider"
-          min={0}
-          max={n - 1}
-          step={1}
-          value={index}
-          disabled={projection !== "frame"}
-          onChange={(e) => setIndex(Number(e.target.value))}
-          onPointerDown={() => setScrubbing(true)}
-          onPointerUp={() => setScrubbing(false)}
-          onBlur={() => setScrubbing(false)}
-          aria-label="Frame"
-        />
-        <span className="stack-index">
-          {index + 1} / {n}
-        </span>
-        <div className="segmented" role="group" aria-label="Projection">
-          {(["frame", "mean", "sum"] as Projection[]).map((p) => (
-            <button
-              key={p}
-              className={projection === p ? "active" : undefined}
-              aria-pressed={projection === p}
-              onClick={() => setProjection(p)}
-            >
-              {p === "frame" ? "Frame" : p === "mean" ? "Mean" : "Sum"}
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

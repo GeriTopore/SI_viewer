@@ -1,4 +1,4 @@
-import { useEffect, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import type { Frame } from "../api/arrays";
 import { dataVersion, type DatasetSummary } from "../api/client";
 import { allDatasets, initialColormap, setMapColour, useDatasets } from "../state/datasets";
@@ -12,6 +12,12 @@ import { useOverlayFrames } from "../views/useOverlayFrames";
 import { ContrastControls } from "./ContrastControls";
 import { ImageView, type Interaction, type Transform, type ViewLayer } from "./ImageView";
 import { LayersPanel } from "./LayersPanel";
+import { LineOverlay } from "./LineOverlay";
+import { ProfilePanel } from "./ProfilePanel";
+import { useProfiles, useViewProfiles } from "../state/profiles";
+import { useLineTool } from "../views/useLineTool";
+import { PANE_SIZES, useUi, type BottomTab } from "../state/ui";
+import { Splitter } from "./Splitter";
 
 /** Drag-and-drop type for datasets dragged from the sidebar. */
 export const DATASET_MIME = "application/x-si-viewer-dataset";
@@ -48,6 +54,16 @@ interface Props {
   /** Pointer tool and SVG overlay passed to the image view. */
   interaction?: Interaction;
   renderOverlay?: (t: Transform) => ReactNode;
+  /** The line (profile) tool is active. Without this prop the viewer offers
+   * its own Pan / Line tool buttons. */
+  lineTool?: boolean;
+  /** Points picked on the profile plot (spectrum images: their spectrum). */
+  profilePick?: boolean;
+  /** Shown right under the image (e.g. a stack's frame slider). */
+  footer?: ReactNode;
+  /** Tabs of the pane under the image besides "Line profile" (e.g. the
+   * spectrum). Without them the pane only appears for line profiles. */
+  bottomTabs?: { id: BottomTab; label: string; content: ReactNode }[];
 }
 
 const BASE = "base";
@@ -55,6 +71,7 @@ const BASE = "base";
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
   viewKey, base, images, geometry, loading, error, children, onRemoveBase, empty, interaction, renderOverlay,
+  lineTool, profilePick, footer, bottomTabs = [],
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
   const { setFocus, deselect, addToSelection } = useDatasets.getState();
@@ -117,6 +134,27 @@ export function LayeredViewer({
     } else setDisplay(key, patch);
   };
 
+  // Profile lines: drawn with the line tool, profiled below the image.
+  const imageTool = useProfiles((s) => s.imageTool);
+  const setImageTool = useProfiles((s) => s.setImageTool);
+  const drawingLines = lineTool ?? imageTool === "line";
+  const lineInteraction = useLineTool(viewKey);
+  const hasLines = useViewProfiles(viewKey).lines.length > 0;
+
+  // Pane under the image: the given tabs, plus line profiles (with the line
+  // tool, or once there are lines). Its height is a fraction of the viewer.
+  const bottomTab = useUi((s) => s.bottomTab);
+  const setBottomTab = useUi((s) => s.setBottomTab);
+  const bottomFraction = useUi((s) => s.bottomFraction);
+  const setBottomFraction = useUi((s) => s.setBottomFraction);
+  const showProfiles = hasLines || drawingLines || bottomTabs.length > 0;
+  const tabs = [
+    ...bottomTabs.map((t) => ({ id: t.id, label: t.label })),
+    ...(showProfiles ? [{ id: "profile" as const, label: "Line profile" }] : []),
+  ];
+  const activeTab = tabs.find((t) => t.id === bottomTab)?.id ?? tabs[0]?.id;
+  const viewerRef = useRef<HTMLDivElement>(null);
+
   const [dragOver, setDragOver] = useState(false);
   const accepts = (e: DragEvent) => e.dataTransfer.types.includes(DATASET_MIME);
   const onDrop = (e: DragEvent) => {
@@ -158,6 +196,7 @@ export function LayeredViewer({
 
   return (
     <div
+      ref={viewerRef}
       className={`layered-viewer${dragOver ? " drop-target" : ""}`}
       onDragOver={(e) => {
         if (!accepts(e)) return;
@@ -170,41 +209,114 @@ export function LayeredViewer({
       }}
       onDrop={onDrop}
     >
-      <div className="layer-toolbar">
-        {showPanel && activeLayer && (
-          <span className="editing-chip" title="Layer being edited (pick another in the Layers panel)">
-            <span
-              className="editing-swatch"
-              style={{ background: swatchBackground(activeLayer.display?.colormap ?? DEFAULT_COLORMAP) }}
-            />
-            {activeLayer.label}
-          </span>
-        )}
-        <ContrastControls
-          frame={activeLayer?.frame ?? null}
-          display={activeLayer?.display}
-          onChange={onDisplayChange}
-        />
+      <div className="viewer-top">
+        <div className="layer-toolbar">
+          {lineTool === undefined && (
+            <div className="segmented tool-buttons" role="group" aria-label="Image tool">
+              {(["pan", "line"] as const).map((t) => (
+                <button
+                  key={t}
+                  className={imageTool === t ? "active" : undefined}
+                  aria-pressed={imageTool === t}
+                  onClick={() => setImageTool(t)}
+                  title={
+                    t === "pan"
+                      ? "Pan (or hold Space / middle-drag with any tool)"
+                      : "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it"
+                  }
+                >
+                  {t === "pan" ? "✋" : "╱"}
+                </button>
+              ))}
+            </div>
+          )}
+          {showPanel && activeLayer && (
+            <span className="editing-chip" title="Layer being edited (pick another in the Layers panel)">
+              <span
+                className="editing-swatch"
+                style={{ background: swatchBackground(activeLayer.display?.colormap ?? DEFAULT_COLORMAP) }}
+              />
+              {activeLayer.label}
+            </span>
+          )}
+          <ContrastControls
+            frame={activeLayer?.frame ?? null}
+            display={activeLayer?.display}
+            onChange={onDisplayChange}
+          />
+        </div>
+        <ImageView
+          viewKey={viewKey}
+          layers={layers}
+          fullWidth={geometry.width}
+          fullHeight={geometry.height}
+          calX={geometry.calX}
+          calY={geometry.calY}
+          loading={loading}
+          error={error}
+          empty={layers.length ? null : (empty ?? null)}
+          panel={panel}
+          interaction={drawingLines ? lineInteraction : interaction}
+          renderOverlay={(t) => (
+            <>
+              {renderOverlay?.(t)}
+              <LineOverlay t={t} view={viewKey} calX={geometry.calX} calY={geometry.calY} />
+            </>
+          )}
+          analysisKey={activeLayer?.key}
+          hint={showPanel ? undefined : "click or drag maps to overlay them"}
+        >
+          {children}
+        </ImageView>
+        {footer}
+        {dragOver && <div className="drop-hint">Drop to overlay</div>}
       </div>
-      <ImageView
-        viewKey={viewKey}
-        layers={layers}
-        fullWidth={geometry.width}
-        fullHeight={geometry.height}
-        calX={geometry.calX}
-        calY={geometry.calY}
-        loading={loading}
-        error={error}
-        empty={layers.length ? null : (empty ?? null)}
-        panel={panel}
-        interaction={interaction}
-        renderOverlay={renderOverlay}
-        analysisKey={activeLayer?.key}
-        hint={showPanel ? undefined : "click or drag maps to overlay them"}
-      >
-        {children}
-      </ImageView>
-      {dragOver && <div className="drop-hint">Drop to overlay</div>}
+      {activeTab && (
+        <>
+          <Splitter
+            direction="row"
+            className="viewer-resizer"
+            label="Resize the image and the pane below it"
+            onDrag={(y) => {
+              const r = viewerRef.current!.getBoundingClientRect();
+              setBottomFraction((r.bottom - y) / r.height);
+            }}
+            onReset={() => setBottomFraction(PANE_SIZES.bottom.initial)}
+          />
+          <div className="viewer-bottom" style={{ flexBasis: `${bottomFraction * 100}%` }}>
+            <div className="viewer-tabs" role="tablist">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  role="tab"
+                  aria-selected={t.id === activeTab}
+                  className={t.id === activeTab ? "active" : undefined}
+                  onClick={() => setBottomTab(t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <div className="viewer-tab-body">
+              {activeTab === "profile" ? (
+                <ProfilePanel
+                  view={viewKey}
+                  layers={layers}
+                  calX={geometry.calX}
+                  calY={geometry.calY}
+                  title={base?.label ?? images[0]?.title ?? "image"}
+                  pickable={profilePick}
+                  onShowSpectrum={
+                    bottomTabs.some((t) => t.id === "spectrum") ? () => setBottomTab("spectrum") : undefined
+                  }
+                />
+              ) : (
+                bottomTabs.find((t) => t.id === activeTab)?.content
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

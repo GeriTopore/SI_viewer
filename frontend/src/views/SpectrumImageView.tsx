@@ -15,7 +15,10 @@ import { isColour } from "../viewer/colormaps";
 import { bytesLabel, formatValue } from "../format";
 import { imageGeometry, isAbort } from "./geometry";
 import { useNavigatorTools } from "./si/useNavigatorTools";
-import { CURSOR_CHANNEL, useSiSpectra } from "./si/useSiSpectra";
+import { CURSOR_CHANNEL, LINE_CHANNEL, useSiSpectra, type LineBand } from "./si/useSiSpectra";
+import { useViewProfiles } from "../state/profiles";
+import { useUi } from "../state/ui";
+import { bandPolygon, pixelLength, pointAt } from "../viewer/profile";
 import { fwhmAt, useLineMarkers } from "./si/xray";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
 import { useFitSeries } from "./useFitSeries";
@@ -30,6 +33,11 @@ const TOOLS: { tool: Tool; label: string; title: string }[] = [
   { tool: "rect", label: "▭", title: "Rectangle region: drag to draw, drag inside to move" },
   { tool: "ellipse", label: "◯", title: "Ellipse region: drag to draw, drag inside to move" },
   { tool: "polygon", label: "⬠", title: "Polygon region: click vertices; click the first, double-click or Enter to close" },
+  {
+    tool: "line",
+    label: "╱",
+    title: "Line profile: drag to draw (Shift snaps the angle); click on the profile for the spectrum there",
+  },
   { tool: "pan", label: "✋", title: "Pan (or hold Space / middle-drag with any tool)" },
 ];
 
@@ -62,6 +70,11 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     }
   }, [ds.id, g.width, g.height, patch]);
   const tools = useNavigatorTools(ds.id, g.width, g.height);
+  // Cursor and region tools bring the spectrum tab back (the line tool shows profiles).
+  const setBottomTab = useUi((s) => s.setBottomTab);
+  useEffect(() => {
+    if (tool !== "line" && tool !== "pan") setBottomTab("spectrum");
+  }, [tool, setBottomTab]);
 
   // ---------- navigator ----------
   const [sources, setSources] = useState<NavigatorSource[]>([]);
@@ -151,7 +164,21 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // ---------- spectra ----------
   const axis = useEnergyAxis(ds);
   const whole = useSpectrum(ds, ready);
-  const spectra = useSiSpectra(ds.id, dataVersion(ds), st, cursorSize, ready);
+  // A point or stretch picked on a line's profile: its spectrum (the band
+  // across the line's width; a point covers one pixel along it).
+  const navView = `${ds.id}:nav`;
+  const profiles = useViewProfiles(navView);
+  const pickLine = profiles.pick && profiles.lines.find((l) => l.id === profiles.pick!.line && l.visible);
+  const lineBand = useMemo<LineBand | null>(() => {
+    if (!pickLine || !profiles.pick) return null;
+    let { t0, t1 } = profiles.pick;
+    const half = 0.5 / Math.max(1, pixelLength(pickLine));
+    if (t1 - t0 < 2 * half) [t0, t1] = [(t0 + t1) / 2 - half, (t0 + t1) / 2 + half];
+    const [x, y] = pointAt(pickLine, (t0 + t1) / 2);
+    const clamp = (v: number, n: number) => Math.min(n - 1, Math.max(0, Math.floor(v)));
+    return { points: bandPolygon(pickLine, Math.max(1, pickLine.width), t0, t1), pixel: [clamp(x, g.width), clamp(y, g.height)] };
+  }, [pickLine, profiles.pick, g.width, g.height]);
+  const spectra = useSiSpectra(ds.id, dataVersion(ds), st, cursorSize, ready, lineBand);
   const totalPixels = g.width * g.height;
   const fitSeries = useFitSeries(ds, axis.x, reduce === "mean");
   const series = useMemo<SpectrumSeries[]>(() => {
@@ -164,10 +191,14 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       const s: PixelsSpectrum | undefined = spectra[r.id];
       if (r.visible && s && s.pixels > 0) out.push({ label: r.name, data: scaled(s.data, k(s.pixels)), color: r.color });
     }
+    const ls = spectra[LINE_CHANNEL];
+    if (pickLine && lineBand && ls) {
+      out.push({ label: `${pickLine.name} (profile)`, data: scaled(ls.data, k(ls.pixels)), color: pickLine.color });
+    }
     const c = spectra[CURSOR_CHANNEL];
     if (st.showCursor && st.cursor && c) out.push({ label: "Cursor", data: scaled(c.data, k(c.pixels)), color: CURSOR_COLOR });
     return [...out, ...fitSeries];
-  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, totalPixels, fitSeries]);
+  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, totalPixels, fitSeries, pickLine, lineBand]);
 
   // ---------- elements, line markers and energy windows ----------
   const [preview, setPreview] = useState<string | null>(null);
@@ -183,112 +214,114 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
 
   const loadingMsg = `Loading spectrum image into memory (${bytesLabel(ds.nbytes)})…`;
 
+  const spectrumPlot = (
+    <SpectrumPlot
+      x={axis.x}
+      series={series}
+      xLabel={axis.label}
+      xUnits={axis.units}
+      loading={whole.data ? null : ready ? "Summing spectra…" : loadingMsg}
+      error={whole.error ?? loadError}
+      markers={markers}
+      window={win}
+      onWindow={(range) => showWindow(range)}
+      onMarkerClick={onMarkerClick}
+      toolbar={
+        <>
+          <ElementsPicker ds={ds} onPreview={setPreview} />
+          <div className="segmented" role="group" aria-label="Spectrum normalisation">
+            {(["mean", "sum"] as Reduce[]).map((r) => (
+              <button
+                key={r}
+                className={reduce === r ? "active" : undefined}
+                aria-pressed={reduce === r}
+                onClick={() => setReduce(r)}
+                title={r === "mean" ? "Average spectrum per pixel (comparable across regions)" : "Summed counts"}
+              >
+                {r === "mean" ? "Mean" : "Sum"}
+              </button>
+            ))}
+          </div>
+        </>
+      }
+      legend={
+        <SeriesLegend
+          si={ds.id}
+          state={st}
+          spectra={spectra}
+          totalPixels={totalPixels}
+          wholeColor={SPECTRUM_COLOR}
+        />
+      }
+    />
+  );
+
   return (
     <div className="view si-view">
-      <div className="si-layout">
-        <section className="si-pane">
-          <div className="si-pane-header">
-            <label className="field">
-              Navigator
-              <select value={sourceId ?? ""} onChange={(e) => setSourceId(e.target.value)}>
-                {sourceOptions.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
-                ))}
-                <option value={NONE}>None (maps only)</option>
-              </select>
-            </label>
-            <div className="segmented tool-buttons" role="group" aria-label="Navigator tool">
-              {TOOLS.map((t) => (
-                <button
-                  key={t.tool}
-                  className={tool === t.tool ? "active" : undefined}
-                  aria-pressed={tool === t.tool}
-                  title={t.title}
-                  onClick={() => setTool(t.tool)}
-                >
-                  {t.label}
-                </button>
+      <section className="si-pane">
+        <div className="si-pane-header">
+          <label className="field">
+            Navigator
+            <select value={sourceId ?? ""} onChange={(e) => setSourceId(e.target.value)}>
+              {sourceOptions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
               ))}
-            </div>
+              <option value={NONE}>None (maps only)</option>
+            </select>
+          </label>
+          <div className="segmented tool-buttons" role="group" aria-label="Navigator tool">
+            {TOOLS.map((t) => (
+              <button
+                key={t.tool}
+                className={tool === t.tool ? "active" : undefined}
+                aria-pressed={tool === t.tool}
+                title={t.title}
+                onClick={() => setTool(t.tool)}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
-          <LayeredViewer
-            viewKey={`${ds.id}:nav`}
-            base={
-              sourceId === NONE
-                ? null
-                : {
-                    key: navKey,
-                    label:
-                      sourceId === WINDOW
-                        ? windowLabel
-                        : (sources.find((s) => s.id === sourceId)?.label ?? "Navigator"),
-                    frame: navFrame,
-                    dataset: sourceDataset,
-                    version: sourceVersion,
-                  }
-            }
-            onRemoveBase={() => setSourceId(NONE)}
-            images={images.filter((d) => d.id !== sourceId)}
-            geometry={g}
-            loading={
-              navFrame || sourceId === NONE
-                ? null
-                : (sourceId === ds.id || sourceId === WINDOW) && !ready
-                  ? loadingMsg
-                  : "Loading navigator…"
-            }
-            error={navError ?? loadError}
-            empty="No navigator image. Click element maps in the dataset pane to show them here."
-            interaction={tools.interaction}
-            renderOverlay={(t) => (
-              <RoiOverlay t={t} state={st} cursorSize={cursorSize} draft={tools.draft} hover={tools.hover} />
-            )}
-          />
-        </section>
-        <section className="si-pane">
-          <SpectrumPlot
-            x={axis.x}
-            series={series}
-            xLabel={axis.label}
-            xUnits={axis.units}
-            loading={whole.data ? null : ready ? "Summing spectra…" : loadingMsg}
-            error={whole.error ?? loadError}
-            markers={markers}
-            window={win}
-            onWindow={(range) => showWindow(range)}
-            onMarkerClick={onMarkerClick}
-            toolbar={
-              <>
-                <ElementsPicker ds={ds} onPreview={setPreview} />
-                <div className="segmented" role="group" aria-label="Spectrum normalisation">
-                  {(["mean", "sum"] as Reduce[]).map((r) => (
-                    <button
-                      key={r}
-                      className={reduce === r ? "active" : undefined}
-                      aria-pressed={reduce === r}
-                      onClick={() => setReduce(r)}
-                      title={r === "mean" ? "Average spectrum per pixel (comparable across regions)" : "Summed counts"}
-                    >
-                      {r === "mean" ? "Mean" : "Sum"}
-                    </button>
-                  ))}
-                </div>
-              </>
-            }
-            legend={
-              <SeriesLegend
-                si={ds.id}
-                state={st}
-                spectra={spectra}
-                totalPixels={totalPixels}
-                wholeColor={SPECTRUM_COLOR}
-              />
-            }
-          />
-        </section>
-      </div>
+        </div>
+        <LayeredViewer
+          viewKey={navView}
+          lineTool={tool === "line"}
+          profilePick
+          base={
+            sourceId === NONE
+              ? null
+              : {
+                  key: navKey,
+                  label:
+                    sourceId === WINDOW
+                      ? windowLabel
+                      : (sources.find((s) => s.id === sourceId)?.label ?? "Navigator"),
+                  frame: navFrame,
+                  dataset: sourceDataset,
+                  version: sourceVersion,
+                }
+          }
+          onRemoveBase={() => setSourceId(NONE)}
+          images={images.filter((d) => d.id !== sourceId)}
+          geometry={g}
+          loading={
+            navFrame || sourceId === NONE
+              ? null
+              : (sourceId === ds.id || sourceId === WINDOW) && !ready
+                ? loadingMsg
+                : "Loading navigator…"
+          }
+          error={navError ?? loadError}
+          empty="No navigator image. Click element maps in the dataset pane to show them here."
+          interaction={tools.interaction}
+          renderOverlay={(t) => (
+            <RoiOverlay t={t} state={st} cursorSize={cursorSize} draft={tools.draft} hover={tools.hover} />
+          )}
+          bottomTabs={[{ id: "spectrum", label: "Spectrum", content: spectrumPlot }]}
+        />
+      </section>
     </div>
   );
 }

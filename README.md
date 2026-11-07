@@ -43,10 +43,31 @@ spectrum, with Poisson noise). They are defined in
 The right-hand column shows a live FFT of the visible part of the image in the
 viewer. Hover over it to read the spatial frequency and the matching spacing
 (d = 1/|k|) in ångström, e.g. to check resolution or lattice
-spacings. Below it, the **Process** tab filters the selected dataset without
-changing the loaded data:
-- Gaussian, median or mean filters for images, maps and stacks;
-- Gaussian or mean spatial filters and spectral smoothing for spectrum images.
+spacings. Below it, the **Process** tab rebins and filters the data in view
+without changing the loaded data:
+- **Spectrum images:** Gaussian or mean spatial filters and spectral
+  smoothing. They apply to the whole spectrum image, whatever maps are
+  overlaid: its spectra, all its element maps, and the fits and
+  quantification in the Quantify tab.
+- **Images and stacks:** Gaussian, median or mean filters.
+
+### Layout
+
+Drag the gaps beside the side panes to resize them, and the bar between the
+image and the Spectrum / Line profile tabs to change their heights.
+Double-click a handle to reset it.
+
+### Line profiles
+
+Pick the ╱ tool (beside Pan, or among the spectrum-image navigator's tools)
+and drag across the image:
+- The **Line profile** tab under the image plots the profile of every image
+  layer shown (spectrum images also have a **Spectrum** tab there). Overlay
+  element maps to get element or composition profiles.
+- Set the width to average across the line, normalise, or export the profiles
+  as CSV.
+- On a spectrum image, click or drag on the profile to see the spectrum of
+  that part of the line.
 
 ### Frontend development (hot reload)
 

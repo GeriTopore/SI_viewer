@@ -931,22 +931,8 @@ button.primary:disabled {
   container-type: inline-size;
 }
 
-.si-layout {
-  flex: 1;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  min-height: 0;
-}
-
-@container (min-width: 760px) {
-  .si-layout {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
-  }
-}
-
 .si-pane {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1032,9 +1018,70 @@ button.primary:disabled {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
   min-height: 0;
   min-width: 0;
+}
+
+/* Image (with its toolbar) above, tabbed spectrum / profile pane below. */
+.viewer-top {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 80px;
+}
+
+.viewer-resizer {
+  flex: none;
+  height: 10px;
+  display: flex;
+  align-items: center;
+}
+
+.viewer-resizer::after {
+  width: 100%;
+  height: 3px;
+}
+
+.viewer-bottom {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.viewer-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.viewer-tabs button {
+  padding: 4px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.viewer-tabs button:hover {
+  color: var(--text);
+}
+
+.viewer-tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.viewer-tab-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .layered-viewer.drop-target .image-canvas-wrap {
@@ -1891,18 +1938,6 @@ button.primary:disabled {
 }
 
 /* ---------- Collapsible side panes ---------- */
-.app.left-collapsed {
-  grid-template-columns: 34px 1fr 330px;
-}
-
-.app.right-collapsed {
-  grid-template-columns: 280px 1fr 34px;
-}
-
-.app.left-collapsed.right-collapsed {
-  grid-template-columns: 34px 1fr 34px;
-}
-
 .panel.collapsed {
   padding: 0;
   overflow: hidden;
@@ -2161,4 +2196,184 @@ button.primary:disabled {
 .rebin-also {
   margin: 10px 0 0;
   line-height: 1.4;
+}
+
+/* ---------- Line profiles ---------- */
+.line-shadow {
+  stroke: rgba(0, 0, 0, 0.6);
+  stroke-width: 3.5;
+}
+
+.line-handle {
+  fill: rgba(0, 0, 0, 0.5);
+  stroke-width: 1.5;
+}
+
+.line-label {
+  font-size: 11px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.75);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.profile-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+
+.profile-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.profile-lines {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.profile-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 4px 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.profile-line.selected {
+  border-color: var(--accent);
+}
+
+.profile-line-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.profile-width {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted);
+}
+
+.profile-width input {
+  width: 44px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.profile-spacer {
+  flex: 1;
+}
+
+.profile-pick,
+.profile-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.profile-plot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.profile-readout {
+  min-height: 16px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.profile-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.profile-empty {
+  margin: 8px 0;
+}
+
+/* ---------- Resizable panes ---------- */
+.splitter {
+  z-index: 5;
+  touch-action: none;
+}
+
+.splitter.col {
+  cursor: col-resize;
+}
+
+.splitter.row {
+  cursor: row-resize;
+}
+
+.splitter::after {
+  content: "";
+  display: block;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.splitter:hover::after,
+.splitter:active::after {
+  background: var(--accent);
+}
+
+/* Side panes: the handle fills the gap beside the pane. */
+.pane-resizer {
+  grid-row: 3;
+  width: 8px;
+  display: flex;
+  justify-content: center;
+}
+
+.pane-resizer::after {
+  width: 3px;
+  height: 100%;
+}
+
+.pane-resizer.left {
+  grid-column: 1;
+  justify-self: end;
+  margin-right: -8px;
+}
+
+.pane-resizer.right {
+  grid-column: 3;
+  justify-self: start;
+  margin-left: -8px;
+}
+
+body.resizing-col,
+body.resizing-col * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+body.resizing-row,
+body.resizing-row * {
+  cursor: row-resize !important;
+  user-select: none;
 }

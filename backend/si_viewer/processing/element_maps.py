@@ -11,6 +11,8 @@ from __future__ import annotations
 import numpy as np
 from pydantic import BaseModel, Field
 
+from .filters import Filters, weighted_channel_map
+
 MIN_LINE_ENERGY = 0.1  # keV: lines below this sit in the noise peak
 
 _GREEK = {"a": "α", "b": "β", "g": "γ", "z": "ζ", "n": "η", "l": "ℓ"}
@@ -54,11 +56,16 @@ def line_windows(signal, line: str, options: MapOptions) -> tuple[list[float], l
     return [float(v) for v in integration], background
 
 
-def line_intensity(signal, integration: list[float], background: list[float] | None) -> np.ndarray:
-    """Net counts per pixel, with exSpy's channel conventions (value2index)."""
+def line_intensity(
+    signal, integration: list[float], background: list[float] | None, filters: Filters | None = None,
+) -> np.ndarray:
+    """Net counts per pixel, with exSpy's channel conventions (value2index).
+    With spectral smoothing in ``filters``, the counts of the smoothed spectra."""
     axis = signal.axes_manager.signal_axes[0]
     data = signal.data
     idx = lambda e: int(axis.value2index(min(max(e, axis.low_value), axis.high_value)))  # noqa: E731
+    if filters is not None and filters.has_spectral:
+        return weighted_channel_map(data, _window_weights(axis.size, idx, integration, background), filters)
 
     def window_sum(lo: float, hi: float) -> tuple[np.ndarray, int]:
         i0, i1 = idx(lo), idx(hi)
@@ -77,6 +84,27 @@ def line_intensity(signal, integration: list[float], background: list[float] | N
     return np.asarray(result.compute() if hasattr(result, "compute") else result)
 
 
+def _window_weights(n: int, idx, integration: list[float], background: list[float] | None) -> np.ndarray:
+    """``line_intensity`` as weights on the channels (same conventions)."""
+
+    def window(lo: float, hi: float) -> tuple[np.ndarray, int]:
+        w = np.zeros(n)
+        i0, i1 = idx(lo), idx(hi)
+        if i0 == i1:
+            w[i0] = 1
+            return w, 0
+        w[i0:i1] = 1
+        return w, i1 - i0
+
+    weights, width = window(*integration)
+    if background is not None:
+        b1, n1 = window(background[0], background[1])
+        b2, n2 = window(background[2], background[3])
+        if n1 + n2:
+            weights = weights - (b1 + b2) * (width / (n1 + n2))
+    return weights
+
+
 def scan_image(si_signal, data: np.ndarray, title: str):
     """A Signal2D on the spectrum image's scan grid (same calibration)."""
     import hyperspy.api as hs
@@ -91,8 +119,9 @@ def scan_image(si_signal, data: np.ndarray, title: str):
     return out
 
 
-def compute_map(signal, element: str, options: MapOptions):
-    """The element's map as a HyperSpy Signal2D (None if it has no usable line)."""
+def compute_map(signal, element: str, options: MapOptions, filters: Filters | None = None):
+    """The element's map as a HyperSpy Signal2D (None if it has no usable
+    line), from the spectra smoothed by ``filters`` if they say so."""
     import hyperspy.api as hs
     from scipy.ndimage import uniform_filter
 
@@ -100,7 +129,7 @@ def compute_map(signal, element: str, options: MapOptions):
     if line is None:
         return None
     integration, background = line_windows(signal, line, options)
-    data = line_intensity(signal, integration, background)
+    data = line_intensity(signal, integration, background, filters)
     if options.smoothing > 1:
         data = uniform_filter(data, size=options.smoothing, mode="nearest")
 

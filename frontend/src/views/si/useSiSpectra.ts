@@ -5,11 +5,21 @@ import { shapeToRegion, type SiState } from "../../state/si";
 import { useLayers } from "../../state/layers";
 
 export const CURSOR_CHANNEL = "cursor";
+export const LINE_CHANNEL = "line";
 
-/** Spectra for the cursor and each visible region of a spectrum image,
- * refetched (latest-only) whenever their geometry or the data ``version``
- * (e.g. its filters) changes. */
-export function useSiSpectra(si: string, version: string, state: SiState, cursorSize: number, ready: boolean) {
+/** Part of a profile line whose spectrum is shown: the band's polygon, and
+ * the pixel to use if the band holds no pixel centre. */
+export interface LineBand {
+  points: [number, number][];
+  pixel: [number, number];
+}
+
+/** Spectra for the cursor, each visible region and a picked part of a
+ * profile line of a spectrum image, refetched (latest-only) whenever their
+ * geometry or the data ``version`` (e.g. its filters) changes. */
+export function useSiSpectra(
+  si: string, version: string, state: SiState, cursorSize: number, ready: boolean, line: LineBand | null = null,
+) {
   const [spectra, setSpectra] = useState<Record<string, PixelsSpectrum>>({});
   const coalescer = useRef<Coalescer<PixelsSpectrum>>();
   if (!coalescer.current) {
@@ -34,16 +44,26 @@ export function useSiSpectra(si: string, version: string, state: SiState, cursor
     }
   }, [si, version, ready, cursor, showCursor, cursorSize, rois]);
 
-  // Drop results for regions that no longer exist.
+  const lineKey = line && JSON.stringify(line);
   useEffect(() => {
-    const alive = new Set([CURSOR_CHANNEL, ...rois.map((r) => r.id)]);
+    if (!ready || !line) return;
+    const region = { kind: "polygon", points: line.points };
+    coalescer.current!.request(LINE_CHANNEL, `${lineKey}@${version}`, async () => {
+      const r = await fetchRegionSpectrum(si, region);
+      return r.pixels > 0 ? r : fetchPixelSpectrum(si, line.pixel[0], line.pixel[1], 1);
+    });
+  }, [si, version, ready, lineKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drop results for regions (or a line pick) that no longer exist.
+  useEffect(() => {
+    const alive = new Set([CURSOR_CHANNEL, ...rois.map((r) => r.id), ...(line ? [LINE_CHANNEL] : [])]);
     setSpectra((prev) => {
       const stale = Object.keys(prev).filter((k) => !alive.has(k));
       if (!stale.length) return prev;
       stale.forEach((k) => coalescer.current!.forget(k));
       return Object.fromEntries(Object.entries(prev).filter(([k]) => alive.has(k)));
     });
-  }, [rois]);
+  }, [rois, !line]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return spectra;
 }

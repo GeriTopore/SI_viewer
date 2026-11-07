@@ -16,7 +16,8 @@ from typing import Callable, Literal
 import numpy as np
 from pydantic import BaseModel, Field
 
-from .regions import Region, pixel_spectrum, region_spectrum
+from .filters import filter_spectrum
+from .regions import Region, processed_pixel_spectrum, processed_region_spectrum
 
 
 class FitOptions(BaseModel):
@@ -38,13 +39,16 @@ class FitSource(BaseModel):
 
 
 def source_spectrum(dataset, source: FitSource):
-    """The 1D EDS signal to fit (summed counts) and how many pixels it sums."""
+    """The 1D EDS signal to fit (summed counts of the processed data: the
+    dataset's filters applied) and how many pixels it sums."""
     from ..session import DatasetKind
 
+    f = dataset.filter_spec
     if dataset.kind is DatasetKind.SPECTRUM:
         dataset.materialise()
         spec = dataset.signal.deepcopy()
         spec.change_dtype("float64")
+        spec.data[:] = filter_spectrum(spec.data, f)
         return spec, 1
     if dataset.kind is not DatasetKind.SPECTRUM_IMAGE:
         raise ValueError(f"{dataset.title} is not a spectrum or spectrum image")
@@ -52,15 +56,17 @@ def source_spectrum(dataset, source: FitSource):
     dataset.materialise()
     data = dataset.signal.data
     if source.type == "pixel":
-        counts, n = pixel_spectrum(data, source.x, source.y, source.size)
+        counts, n = processed_pixel_spectrum(data, source.x, source.y, source.size, f)
     elif source.type == "region":
         if source.region is None:
             raise ValueError("A region source needs a region")
-        counts, n = region_spectrum(data, source.region)
+        counts, n = processed_region_spectrum(data, source.region, f)
         if n == 0:
             raise ValueError("The region contains no pixels")
     else:
-        counts, n = data.sum(axis=(0, 1), dtype=np.float64), data.shape[0] * data.shape[1]
+        # A spatial filter keeps the total counts (reflecting edges).
+        counts = filter_spectrum(data.sum(axis=(0, 1), dtype=np.float64), f)
+        n = data.shape[0] * data.shape[1]
     # A 1D signal with the spectrum image's metadata (elements, detector, …).
     spec = dataset.signal.inav[0, 0].deepcopy()
     spec.change_dtype("float64")

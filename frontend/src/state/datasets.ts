@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api, type DatasetSummary, type FileSummary } from "../api/client";
 import { DEFAULT_COLORMAP, useDisplay } from "./display";
+import { useProfiles } from "./profiles";
 import { useLayers } from "./layers";
 import { useSi } from "./si";
 
@@ -182,6 +183,7 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       const changed = sorted.datasets.filter((d) => before.has(d.id) && before.get(d.id) !== d.revision);
       if (changed.length) {
         useDisplay.getState().resetDisplay(changed.map((d) => d.id));
+        useProfiles.getState().reset(changed.map((d) => d.id));
         changed.forEach((d) => d.kind === "spectrum_image" && useSi.getState().reset(d.id));
       }
       const files = get().files.map((f) => (f.id === file.id ? sorted : f));

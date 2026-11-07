@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, type Health } from "./api/client";
 import { DatasetList, DatasetListHeader } from "./components/DatasetList";
 import { FileBrowser } from "./components/FileBrowser";
@@ -8,15 +8,24 @@ import { OpenFile } from "./components/OpenFile";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { Toast } from "./components/Toast";
 import { useDatasets } from "./state/datasets";
-import { useUi } from "./state/ui";
+import { PANE_SIZES, useUi } from "./state/ui";
+import { Splitter } from "./components/Splitter";
 import { MainView } from "./views/MainView";
 import { isTyping } from "./keyboard";
+
+// Width of a folded side pane.
+const COLLAPSED = 34;
 
 export function App() {
   const { refresh, selectRelative, errors, clearErrors } = useDatasets();
   const browserOpen = useUi((s) => s.browserOpen);
   const leftCollapsed = useUi((s) => s.leftCollapsed);
   const rightCollapsed = useUi((s) => s.rightCollapsed);
+  const leftWidth = useUi((s) => s.leftWidth);
+  const rightWidth = useUi((s) => s.rightWidth);
+  const setPaneWidth = useUi((s) => s.setPaneWidth);
+  const sideRef = useRef<HTMLElement>(null);
+  const inspRef = useRef<HTMLElement>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [backendDown, setBackendDown] = useState(false);
 
@@ -45,7 +54,12 @@ export function App() {
   }, [selectRelative]);
 
   return (
-    <div className={`app${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}`}>
+    <div
+      className="app"
+      style={{
+        gridTemplateColumns: `${leftCollapsed ? COLLAPSED : leftWidth}px minmax(0, 1fr) ${rightCollapsed ? COLLAPSED : rightWidth}px`,
+      }}
+    >
       <header className="topbar">
         <span className="app-name">SI Viewer</span>
         <OpenFile />
@@ -66,7 +80,7 @@ export function App() {
         </div>
       )}
 
-      <aside className={`sidebar panel${leftCollapsed ? " collapsed" : ""}`}>
+      <aside ref={sideRef} className={`sidebar panel${leftCollapsed ? " collapsed" : ""}`}>
         {leftCollapsed ? (
           <CollapsedStrip side="left" label="Datasets" />
         ) : (
@@ -81,7 +95,26 @@ export function App() {
         <MainView />
       </main>
 
-      <aside className={`inspector-panel panel${rightCollapsed ? " collapsed" : ""}`}>
+      {!leftCollapsed && (
+        <Splitter
+          direction="col"
+          className="pane-resizer left"
+          label="Resize the datasets pane"
+          onDrag={(x) => setPaneWidth("left", x - sideRef.current!.getBoundingClientRect().left)}
+          onReset={() => setPaneWidth("left", PANE_SIZES.left.initial)}
+        />
+      )}
+      {!rightCollapsed && (
+        <Splitter
+          direction="col"
+          className="pane-resizer right"
+          label="Resize the right-hand pane"
+          onDrag={(x) => setPaneWidth("right", inspRef.current!.getBoundingClientRect().right - x)}
+          onReset={() => setPaneWidth("right", PANE_SIZES.right.initial)}
+        />
+      )}
+
+      <aside ref={inspRef} className={`inspector-panel panel${rightCollapsed ? " collapsed" : ""}`}>
         {rightCollapsed ? <CollapsedStrip side="right" label="FFT · Info · Quantify · Process" /> : <RightPanel />}
       </aside>
 

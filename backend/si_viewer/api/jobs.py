@@ -52,13 +52,16 @@ def start_fit_maps(dataset_id: str, body: FitMapsBody, request: Request) -> dict
             spec, body.options, lambda f, step: job.report(0.02 + 0.28 * f, f"Summed spectrum: {step}")
         )
         job.report(0.3, "Fitting each pixel")
-        intensities = fit_pixels(si.signal, fitted, body.options, lambda f: job.report(0.3 + 0.6 * f))
+        # The processed data is fitted: spectral smoothing inside the fit; the
+        # spatial filter on the (linear) fitted intensities, which equals
+        # fitting the filtered pixels.
+        processing = si.filter_spec
+        intensities = fit_pixels(
+            si.signal, fitted, body.options, lambda f: job.report(0.3 + 0.6 * f), filters=processing,
+        )
         job.report(0.92, "Making maps")
-        # The spectrum image's spatial filter applies to its maps; blurring the
-        # (linear) fitted intensities equals fitting the blurred pixels.
-        spatial = si.filter_spec
-        if spatial.has_spatial:
-            intensities = {line: filter_image(data, spatial) for line, data in intensities.items()}
+        if processing.has_spatial:
+            intensities = {line: filter_image(data, processing) for line, data in intensities.items()}
 
         # One map per element: the chosen line (default: its analysis line).
         per_element = {}

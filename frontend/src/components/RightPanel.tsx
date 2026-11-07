@@ -7,12 +7,12 @@ import { QuantifyPanel } from "./QuantifyPanel";
 
 const TABS: { id: RightTab; label: string }[] = [
   { id: "info", label: "Info" },
-  { id: "quantify", label: "Quantify" },
   { id: "process", label: "Process" },
+  { id: "quantify", label: "Quantify" },
 ];
 
 /** Right-hand column: the FFT of the viewer's image, then Info (dataset
- * details), Quantify (fitting) and Process (filters) tabs. */
+ * details), Process (rebin, filters) and Quantify (fitting) tabs. */
 export function RightPanel() {
   const { rightTab, setRightTab } = useUi();
   return (

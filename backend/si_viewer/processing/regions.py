@@ -12,6 +12,8 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel
 
+from .filters import Filters, filter_image, filter_spectrum, filtered_sum, weighted_channel_map
+
 
 class Region(BaseModel):
     kind: Literal["rect", "ellipse", "polygon"]
@@ -120,3 +122,45 @@ def energy_map(data: np.ndarray, offset: float, scale: float, lo: float, hi: flo
     i0 = int(np.clip(np.floor((lo - offset) / scale), 0, n - 1))
     i1 = int(np.clip(np.ceil((hi - offset) / scale), i0 + 1, n))
     return data[..., i0:i1].sum(axis=-1, dtype=np.float32)
+
+
+# ---------- spectra of the processed (filtered) spectrum image ----------
+
+
+def processed_pixel_spectrum(data: np.ndarray, x: int, y: int, size: int, f: Filters) -> tuple[np.ndarray, int]:
+    """``pixel_spectrum`` of the spectrum image with its filters applied."""
+    raw, n = pixel_spectrum(data, x, y, size)
+    if f.has_spatial:
+        h, w = data.shape[:2]
+        half = (size - 1) // 2
+        x0, y0 = max(0, x - half), max(0, y - half)
+        mask = np.zeros((h, w))
+        mask[y0 : min(h, y0 + size), x0 : min(w, x0 + size)] = 1
+        raw = filtered_sum(data, mask, raw, f)
+    return filter_spectrum(raw, f), n
+
+
+def processed_region_spectrum(data: np.ndarray, region: Region, f: Filters) -> tuple[np.ndarray, int]:
+    """``region_spectrum`` of the spectrum image with its filters applied."""
+    raw, n = region_spectrum(data, region)
+    if f.has_spatial and n:
+        ys, xs, crop = region_mask(data.shape[:2], region)
+        mask = np.zeros(data.shape[:2])
+        mask[ys, xs] = crop
+        raw = filtered_sum(data, mask, raw, f)
+    return filter_spectrum(raw, f), n
+
+
+def processed_energy_map(data: np.ndarray, offset: float, scale: float, lo: float, hi: float, f: Filters) -> np.ndarray:
+    """``energy_map`` of the spectrum image with its filters applied."""
+    if f.has_spectral:
+        lo, hi = sorted((lo, hi))
+        n = data.shape[-1]
+        i0 = int(np.clip(np.floor((lo - offset) / scale), 0, n - 1))
+        i1 = int(np.clip(np.ceil((hi - offset) / scale), i0 + 1, n))
+        weights = np.zeros(n)
+        weights[i0:i1] = 1
+        counts = weighted_channel_map(data, weights, f)
+    else:
+        counts = energy_map(data, offset, scale, lo, hi)
+    return filter_image(counts, f)

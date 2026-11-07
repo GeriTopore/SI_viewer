@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Tool = "cursor" | "rect" | "ellipse" | "polygon" | "pan";
+export type Tool = "cursor" | "rect" | "ellipse" | "polygon" | "line" | "pan";
 export type Reduce = "mean" | "sum";
 export type SpectrumDrag = "zoom" | "window";
 

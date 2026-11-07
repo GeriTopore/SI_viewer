@@ -1,14 +1,13 @@
 import { useEffect, useState, type DragEvent, type ReactNode } from "react";
 import type { Frame } from "../api/arrays";
-import type { DatasetSummary } from "../api/client";
+import { dataVersion, type DatasetSummary } from "../api/client";
 import { allDatasets, initialColormap, setMapColour, useDatasets } from "../state/datasets";
 import { DEFAULT_COLORMAP, useDisplay } from "../state/display";
 import { DEFAULT_LAYER, baseLayerKey, useLayers } from "../state/layers";
-import { autoRange, sortedSample } from "../viewer/contrast";
 import { isColour, swatchBackground } from "../viewer/colormaps";
 import type { DisplayParams } from "../viewer/renderer";
 import type { ImageGeometry } from "../views/geometry";
-import { useImageDisplay } from "../views/useImageDisplay";
+import { autoContrast, useImageDisplay } from "../views/useImageDisplay";
 import { useOverlayFrames } from "../views/useOverlayFrames";
 import { ContrastControls } from "./ContrastControls";
 import { ImageView, type Interaction, type Transform, type ViewLayer } from "./ImageView";
@@ -27,6 +26,8 @@ export interface BaseImage {
   /** The image dataset shown as the base, if it is one (e.g. a map as SI
    * navigator): it then keeps its own contrast and element colour. */
   dataset?: DatasetSummary;
+  /** Version of the data in ``frame``: contrast is redone when it changes. */
+  version?: string;
 }
 
 interface Props {
@@ -69,16 +70,15 @@ export function LayeredViewer({
     base?.key ?? `${viewKey}:none`,
     base?.frame ?? null,
     baseDataset ? () => initialColormap(baseDataset) : undefined,
+    base?.version ?? (baseDataset && dataVersion(baseDataset)),
   );
 
-  // Each image gets auto contrast (and its element colour) once its data arrives.
+  // Each image gets auto contrast (and its element colour) once its data
+  // arrives, and again when it's filtered.
   useEffect(() => {
     for (const d of images) {
       const f = frames[d.id];
-      if (f && !useDisplay.getState().display[d.id]) {
-        const [lo, hi] = autoRange(sortedSample(f.data));
-        useDisplay.getState().initDisplay(d.id, { lo, hi, gamma: 1, colormap: initialColormap(d) });
-      }
+      if (f) autoContrast(d.id, f, dataVersion(d), () => initialColormap(d));
     }
   }, [frames, images]);
 
@@ -199,6 +199,7 @@ export function LayeredViewer({
         panel={panel}
         interaction={interaction}
         renderOverlay={renderOverlay}
+        analysisKey={activeLayer?.key}
         hint={showPanel ? undefined : "click or drag maps to overlay them"}
       >
         {children}

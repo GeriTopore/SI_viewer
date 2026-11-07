@@ -34,8 +34,10 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
   // projections (with different ranges) get their own. The shown image is
   // kept with its projection, so right after switching the previous one isn't
   // used (e.g. to auto-contrast the new projection).
-  const [shown, setShown] = useState<{ projection: Projection; frame: Frame } | null>(null);
-  const frame = shown && shown.projection === projection ? shown.frame : null;
+  // Frames are also kept with the filters they were made with.
+  const [shown, setShown] = useState<{ projection: Projection; filterRev: number; frame: Frame } | null>(null);
+  const frame = shown && shown.projection === projection && shown.filterRev === ds.filter_rev ? shown.frame : null;
+  const filterRev = useRef(ds.filter_rev);
 
   // At most one request in flight; when it lands, fetch whatever is wanted now.
   // Every frame that arrives is shown, so dragging stays responsive.
@@ -56,24 +58,32 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
     if (inFlight.current) return;
     const r = wanted.current;
     const key = keyOf(r);
+    const rev = filterRev.current;
     const hit = cache.current.get(key);
     if (hit) {
-      setShown({ projection: r.projection, frame: hit });
+      setShown({ projection: r.projection, filterRev: rev, frame: hit });
       return;
     }
     inFlight.current = true;
     try {
       const f = await get(r);
+      if (rev !== filterRev.current) return; // filtered differently meanwhile
       remember(key, f);
-      setShown({ projection: r.projection, frame: f });
+      setShown({ projection: r.projection, filterRev: rev, frame: f });
       setError(null);
     } catch (e) {
       if (!isAbort(e)) setError((e as Error).message);
     } finally {
       inFlight.current = false;
-      if (keyOf(wanted.current) !== key) pump();
+      if (keyOf(wanted.current) !== key || rev !== filterRev.current) pump();
     }
   }, [ds.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // New filters: cached frames are stale.
+  if (filterRev.current !== ds.filter_rev) {
+    filterRev.current = ds.filter_rev;
+    cache.current.clear();
+  }
 
   useEffect(() => {
     const bin = scrubbing ? previewBin : 1;
@@ -84,11 +94,12 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
       for (const i of [index + 1, index - 1]) {
         const r = { index: i, projection, bin: 1 } as Request;
         if (i >= 0 && i < n && !cache.current.has(keyOf(r))) {
-          get(r).then((f) => remember(keyOf(r), f)).catch(() => {});
+          const rev = filterRev.current;
+          get(r).then((f) => rev === filterRev.current && remember(keyOf(r), f)).catch(() => {});
         }
       }
     }
-  }, [index, projection, scrubbing, previewBin, n, pump]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [index, projection, scrubbing, previewBin, n, pump, ds.filter_rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The backend loads small stacks into memory on the first frame request;
   // refresh the summary so the Inspector says so.
@@ -118,7 +129,7 @@ export function StackView({ ds, images }: { ds: DatasetSummary; images: DatasetS
     <div className="view">
       <LayeredViewer
         viewKey={ds.id}
-        base={{ key: `${ds.id}:${projection}`, label: ds.title, frame }}
+        base={{ key: `${ds.id}:${projection}`, label: ds.title, frame, version: String(ds.filter_rev) }}
         images={images}
         geometry={g}
         loading={frame ? null : "Loading frame…"}

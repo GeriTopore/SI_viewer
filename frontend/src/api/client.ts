@@ -55,9 +55,35 @@ export interface DatasetSummary {
   revision: number;
   /** Rebinning applied to the loaded data, e.g. ["x×2, y×2"]. */
   rebinned: string[];
+  /** Non-destructive filters applied whenever the data is shown. */
+  filters: Filters;
+  /** Bumped whenever the filters change. */
+  filter_rev: number;
   /** Line of a computed map, e.g. "Fe_Ka". */
   xray_line: string | null;
 }
+
+export type SpatialFilter = "none" | "gaussian" | "median" | "mean";
+export type SpectralFilter = "none" | "gaussian" | "savgol";
+
+/** Pre-processing filters of a dataset (see backend processing/filters.py). */
+export interface Filters {
+  spatial: SpatialFilter;
+  /** Gaussian σ (pixels). */
+  sigma: number;
+  /** Median / mean window (pixels, odd). */
+  size: number;
+  spectral: SpectralFilter;
+  /** Gaussian σ (channels). */
+  spectral_sigma: number;
+  /** Savitzky–Golay window (channels, odd) and order. */
+  window: number;
+  order: number;
+}
+
+/** Changes whenever the data shown for a dataset does (recomputed, rebinned
+ * or filtered), for cache keys. */
+export const dataVersion = (d: { revision: number; filter_rev: number }) => `${d.revision}.${d.filter_rev}`;
 
 /** Options of a spectrum fit (exSpy EDS model). */
 export interface FitOptions {
@@ -217,6 +243,11 @@ export const api = {
   /** One integer factor per axis, in the summary's axis order. */
   rebin: (id: string, factors: number[]) =>
     request<DatasetAndFile>(`/api/datasets/${id}/rebin`, { method: "POST", body: JSON.stringify({ factors }) }),
+  setFilters: (id: string, filters: Filters) =>
+    request<DatasetAndFile & { notes: string[] }>(`/api/datasets/${id}/filters`, {
+      method: "PUT",
+      body: JSON.stringify(filters),
+    }),
   startFitMaps: (id: string, options: FitOptions, quant: QuantSpec) =>
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
@@ -227,6 +258,6 @@ export const api = {
     request<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
 };
 
-/** Thumbnail URL; the revision makes recomputed maps bypass the browser cache. */
-export const thumbnailUrl = (d: { id: string; revision: number }, size = 256) =>
-  `/api/datasets/${d.id}/thumbnail?size=${size}&v=${d.revision}`;
+/** Thumbnail URL; the version makes recomputed or filtered data bypass the browser cache. */
+export const thumbnailUrl = (d: { id: string; revision: number; filter_rev: number }, size = 256) =>
+  `/api/datasets/${d.id}/thumbnail?size=${size}&v=${dataVersion(d)}`;

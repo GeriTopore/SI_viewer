@@ -8,7 +8,7 @@ import { datasetTooltip, kindLabel, shapeLabel } from "../format";
 import { ContextMenu } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
-import { RebinDialog } from "./RebinDialog";
+import { RebinDialog, canRebin } from "./RebinDialog";
 
 const badgeClass = (d: DatasetSummary) => `badge badge-${d.is_element_map ? "map" : d.kind}`;
 
@@ -138,7 +138,7 @@ export function DatasetList() {
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
-            ...(menu.d.kind !== "other" ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
+            ...(canRebin(menu.d) ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
             ...(canDelete(menu.d) ? [{ label: "Delete", danger: true, onSelect: () => deleteDataset(menu.d) }] : []),
           ]}
         />

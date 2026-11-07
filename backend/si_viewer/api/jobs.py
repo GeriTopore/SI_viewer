@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from ..jobs import Job
 from ..processing.element_maps import line_label
+from ..processing.filters import filter_image
 from ..processing.fit_maps import composition_maps, fit_pixels
 from ..processing.fitting import FitOptions, FitSource, fit_model, source_spectrum
 from ..processing.xray import element_table
@@ -53,6 +54,11 @@ def start_fit_maps(dataset_id: str, body: FitMapsBody, request: Request) -> dict
         job.report(0.3, "Fitting each pixel")
         intensities = fit_pixels(si.signal, fitted, body.options, lambda f: job.report(0.3 + 0.6 * f))
         job.report(0.92, "Making maps")
+        # The spectrum image's spatial filter applies to its maps; blurring the
+        # (linear) fitted intensities equals fitting the blurred pixels.
+        spatial = si.filter_spec
+        if spatial.has_spatial:
+            intensities = {line: filter_image(data, spatial) for line, data in intensities.items()}
 
         # One map per element: the chosen line (default: its analysis line).
         per_element = {}

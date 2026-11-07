@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 export type ListMode = "list" | "grid";
 export type Theme = "light" | "dark";
-export type RightTab = "info" | "quantify";
+export type RightTab = "info" | "quantify" | "process";
 
 // Per-browser conveniences, remembered across reloads when storage is available.
 function load<T extends string>(key: string, fallback: T): T {
@@ -33,6 +33,9 @@ interface UiState {
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   setCollapsed: (side: "left" | "right", collapsed: boolean) => void;
+  /** FFT of the viewer's image, above the tabs. */
+  fftOpen: boolean;
+  setFftOpen: (open: boolean) => void;
   lastDir: string;
   browserOpen: boolean;
   setListMode: (mode: ListMode) => void;
@@ -54,6 +57,11 @@ export const useUi = create<UiState>((set) => ({
   setCollapsed: (side, collapsed) => {
     save(`si-viewer.${side}Collapsed`, String(collapsed));
     set(side === "left" ? { leftCollapsed: collapsed } : { rightCollapsed: collapsed });
+  },
+  fftOpen: load<string>("si-viewer.fftOpen", "true") === "true",
+  setFftOpen: (fftOpen) => {
+    save("si-viewer.fftOpen", String(fftOpen));
+    set({ fftOpen });
   },
   setRightTab: (rightTab) => {
     save("si-viewer.rightTab", rightTab);

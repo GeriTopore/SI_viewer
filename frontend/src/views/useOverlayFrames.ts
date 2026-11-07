@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import { fetchFrame, type Frame } from "../api/arrays";
+import { dataVersion } from "../api/client";
 import { useLayers } from "../state/layers";
 
-// Image data only changes when a computed map is recomputed (new revision),
-// so each (dataset, revision) is fetched once.
+// Image data only changes when a map is recomputed or filtered (new
+// version), so each (dataset, version) is fetched once.
 const cache = new Map<string, Promise<Frame>>();
-const keyOf = (d: ImageRef) => `${d.id}@${d.revision}`;
+const keyOf = (d: ImageRef) => `${d.id}@${dataVersion(d)}`;
 
 export interface ImageRef {
   id: string;
   revision: number;
+  filter_rev: number;
 }
 
 /** Frames of the given image datasets (by id), filled in as they arrive. */
@@ -37,7 +39,7 @@ export function useOverlayFrames(images: ImageRef[]): Record<string, Frame> {
     };
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Only frames of the current revisions.
+  // Only frames of the current versions.
   const current: Record<string, Frame> = {};
   for (const d of images) if (frames[d.id]?.key === keyOf(d)) current[d.id] = frames[d.id].frame;
   return current;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from ..session import Dataset, DatasetKind
+from .filters import filter_image, filter_spectrum
 
 # Stacks smaller than this are loaded into RAM on first access so scrubbing is
 # instant; larger ones are read frame by frame.
@@ -36,14 +37,17 @@ def _numpy(data) -> np.ndarray:
 def get_frame(
     ds: Dataset, index: int = 0, projection: str | None = None, bin: int = 1
 ) -> np.ndarray:
-    """The 2D array to display for ``ds``.
+    """The 2D array to display for ``ds``, with its spatial filter applied.
 
     - image: the image
     - stack: frame ``index``, or the ``"mean"``/``"sum"`` projection
     - spectrum image: the total-counts map
     """
+    f = ds.filter_spec
     if ds.kind is DatasetKind.IMAGE:
         frame = _cached(ds, "image", lambda: _numpy(ds.signal.data))
+        if f.has_spatial:
+            frame = _cached(ds, "image|filtered", lambda: filter_image(frame, f))
     elif ds.kind is DatasetKind.STACK:
         if ds.lazy and ds.signal.data.nbytes <= STACK_IN_MEMORY_LIMIT:
             ds.materialise()
@@ -52,30 +56,40 @@ def get_frame(
                 ds, f"stack-{projection}",
                 lambda: _numpy(getattr(ds.signal.data, projection)(axis=0)),
             )
+            if f.has_spatial:
+                frame = _cached(ds, f"stack-{projection}|filtered", lambda: filter_image(frame, f))
         else:
             n = ds.signal.axes_manager.navigation_size
             if not 0 <= index < n:
                 raise IndexError(f"Frame {index} out of range 0–{n - 1}")
-            frame = _numpy(ds.signal.data[index])
+            frame = filter_image(_numpy(ds.signal.data[index]), f)
     elif ds.kind is DatasetKind.SPECTRUM_IMAGE:
         ds.materialise()
         frame = _cached(ds, "total-counts", lambda: _numpy(ds.signal.data.sum(axis=-1)))
+        if f.has_spatial:
+            frame = _cached(ds, "total-counts|filtered", lambda: filter_image(frame, f))
     else:
         raise NotApplicable(f"{ds.kind.value} datasets have no 2D frame")
     return bin2d(frame, bin).astype(np.float32, copy=False)
 
 
 def get_spectrum(ds: Dataset) -> np.ndarray:
-    """The spectrum of a spectrum dataset, or the sum spectrum of a spectrum image."""
+    """The spectrum of a spectrum dataset, or the sum spectrum of a spectrum
+    image, with its spectral smoothing applied."""
     if ds.kind is DatasetKind.SPECTRUM:
-        return _cached(ds, "spectrum", lambda: _numpy(ds.signal.data).ravel())
-    if ds.kind is DatasetKind.SPECTRUM_IMAGE:
+        raw = _cached(ds, "spectrum", lambda: _numpy(ds.signal.data).ravel())
+    elif ds.kind is DatasetKind.SPECTRUM_IMAGE:
         ds.materialise()
-        return _cached(
+        raw = _cached(
             ds, "sum-spectrum",
             lambda: ds.signal.data.sum(axis=(0, 1), dtype=np.float64).astype(np.float32),
         )
-    raise NotApplicable(f"{ds.kind.value} datasets have no spectrum")
+    else:
+        raise NotApplicable(f"{ds.kind.value} datasets have no spectrum")
+    f = ds.filter_spec
+    if not f.has_spectral:
+        return raw
+    return _cached(ds, f"{ds.kind.value}|smoothed", lambda: filter_spectrum(raw, f).astype(np.float32))
 
 
 def navigator_sources(si: Dataset, siblings: list[Dataset]) -> list[dict]:

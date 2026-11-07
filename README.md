@@ -38,6 +38,16 @@ atomic-resolution image and two-Gaussian spectrum image, and a synthetic
 spectrum, with Poisson noise). They are defined in
 `backend/si_viewer/examples.py`, ready to back a tutorial later.
 
+### Processing and FFT
+
+The right-hand column shows a live FFT of the visible part of the image in the
+viewer. Hover over it to read the spatial frequency and the matching spacing
+(d = 1/|k|) in ångström, e.g. to check resolution or lattice
+spacings. Below it, the **Process** tab filters the selected dataset without
+changing the loaded data:
+- Gaussian, median or mean filters for images, maps and stacks;
+- Gaussian or mean spatial filters and spectral smoothing for spectrum images.
+
 ### Frontend development (hot reload)
 
 Run the backend and the Vite dev server side by side; Vite proxies `/api` to

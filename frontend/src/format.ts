@@ -1,4 +1,4 @@
-import type { DatasetKind, DatasetSummary } from "./api/client";
+import type { DatasetKind, DatasetSummary, Filters } from "./api/client";
 
 export const KIND_LABEL: Record<DatasetKind, string> = {
   image: "Image",
@@ -15,12 +15,25 @@ export function kindLabel(d: DatasetSummary): string {
 
 /** Hover text describing a dataset (what an element map contains). */
 export function datasetTooltip(d: DatasetSummary): string {
-  const base = `${d.title} — ${shapeLabel(d)}`;
+  const filters = filterLabel(d.filters);
+  const base = `${d.title} — ${shapeLabel(d)}${filters ? `\nFiltered: ${filters}` : ""}`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "fitted") return `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;
   if (d.origin === "composition") return `${base}\nComposition (at%) per pixel: Cliff-Lorimer on the fitted maps`;
   if (d.is_element_map) return `${base}\nMap stored in the file (may be processed, e.g. quantified or filtered)`;
   return base;
+}
+
+/** e.g. "Gaussian σ 1.5 px; Savitzky–Golay 7 ch, order 2" ("" when unfiltered). */
+export function filterLabel(f: Filters | undefined): string {
+  if (!f) return "";
+  const parts: string[] = [];
+  if (f.spatial === "gaussian") parts.push(`Gaussian σ ${f.sigma} px`);
+  else if (f.spatial === "median" || f.spatial === "mean")
+    parts.push(`${f.spatial === "median" ? "Median" : "Mean"} ${f.size}×${f.size} px`);
+  if (f.spectral === "gaussian") parts.push(`spectral Gaussian σ ${f.spectral_sigma} ch`);
+  else if (f.spectral === "savgol") parts.push(`Savitzky–Golay ${f.window} ch, order ${f.order}`);
+  return parts.join("; ");
 }
 
 /** Shape as HyperSpy prints it: navigation | signal. */

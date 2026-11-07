@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchEnergyMap, fetchFrame, type Frame, type PixelsSpectrum } from "../api/arrays";
 import { Coalescer } from "../api/coalesce";
-import { api, type DatasetSummary, type NavigatorSource } from "../api/client";
+import { api, dataVersion, type DatasetSummary, type NavigatorSource } from "../api/client";
 import { ElementsPicker } from "../components/ElementsPicker";
 import { LayeredViewer } from "../components/LayeredViewer";
 import { RoiOverlay } from "../components/RoiOverlay";
@@ -81,37 +81,41 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
 
   // The frame is kept with the source it came from: right after switching
   // source the previous image must not be used (e.g. for auto contrast).
-  const [nav, setNav] = useState<{ source: string; revision: number; frame: Frame } | null>(null);
+  const [nav, setNav] = useState<{ source: string; version: string; frame: Frame } | null>(null);
   const [navError, setNavError] = useState<string | null>(null);
   // The total-counts map (source = the SI itself) needs the SI in memory.
   const sourceReady =
     sourceId !== null && sourceId !== NONE && sourceId !== WINDOW && (sourceId !== ds.id || ready);
-  const sourceRevision = allDatasets(files).find((d) => d.id === sourceId)?.revision ?? 0;
+  const sourceSummary = allDatasets(files).find((d) => d.id === sourceId);
+  const sourceVersion = sourceSummary ? dataVersion(sourceSummary) : "";
   useEffect(() => {
     if (!sourceReady) return;
     const ac = new AbortController();
     const source = sourceId!;
-    const revision = sourceRevision;
+    const version = sourceVersion;
     fetchFrame(source, {}, ac.signal)
-      .then((frame) => setNav({ source, revision, frame }))
+      .then((frame) => setNav({ source, version, frame }))
       .catch((e) => !isAbort(e) && setNavError((e as Error).message));
     return () => ac.abort();
-  }, [sourceId, sourceReady, sourceRevision]);
+  }, [sourceId, sourceReady, sourceVersion]);
 
   // Energy-window maps follow the window live (latest-only while dragging).
   const windowMaps = useRef<Coalescer<Frame>>();
   windowMaps.current ??= new Coalescer(
-    (_c, frame) => setNav({ source: WINDOW, revision: 0, frame }),
+    (_c, frame) => setNav({ source: WINDOW, version: "", frame }),
     (_c, e) => setNavError(e.message),
   );
   const win = st.window;
   useEffect(() => {
     if (sourceId !== WINDOW || !win || !ready) return;
-    windowMaps.current!.request("map", `${win.lo},${win.hi}`, () => fetchEnergyMap(ds.id, win.lo, win.hi));
-  }, [sourceId, win, ready, ds.id]);
+    // Keyed by the filter too: the map follows the spectrum image's spatial filter.
+    windowMaps.current!.request("map", `${win.lo},${win.hi}@${ds.filter_rev}`, () =>
+      fetchEnergyMap(ds.id, win.lo, win.hi),
+    );
+  }, [sourceId, win, ready, ds.id, ds.filter_rev]);
 
   const navFrame =
-    nav && nav.source === sourceId && (sourceId === WINDOW || nav.revision === sourceRevision) ? nav.frame : null;
+    nav && nav.source === sourceId && (sourceId === WINDOW || nav.version === sourceVersion) ? nav.frame : null;
   const sourceDataset =
     sourceId && sourceId !== ds.id ? allDatasets(files).find((d) => d.id === sourceId) : undefined;
   // A navigator image shares its display settings (contrast, element colour)
@@ -147,7 +151,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // ---------- spectra ----------
   const axis = useEnergyAxis(ds);
   const whole = useSpectrum(ds, ready);
-  const spectra = useSiSpectra(ds.id, st, cursorSize, ready);
+  const spectra = useSiSpectra(ds.id, dataVersion(ds), st, cursorSize, ready);
   const totalPixels = g.width * g.height;
   const fitSeries = useFitSeries(ds, axis.x, reduce === "mean");
   const series = useMemo<SpectrumSeries[]>(() => {
@@ -222,6 +226,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
                         : (sources.find((s) => s.id === sourceId)?.label ?? "Navigator"),
                     frame: navFrame,
                     dataset: sourceDataset,
+                    version: sourceVersion,
                   }
             }
             onRemoveBase={() => setSourceId(NONE)}

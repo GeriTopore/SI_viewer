@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import datasets, eds, examples, files, fs, jobs
+from .api import datasets, eds, examples, files, fs, jobs, process
 from .jobs import JobManager
 from .session import Session
 
@@ -29,6 +29,7 @@ def create_app(session: Session | None = None) -> FastAPI:
     app.include_router(eds.router)
     app.include_router(examples.router)
     app.include_router(jobs.router)
+    app.include_router(process.router)
 
     @app.get("/api/health", tags=["meta"])
     def health() -> dict:

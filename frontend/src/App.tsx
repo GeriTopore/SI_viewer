@@ -82,7 +82,7 @@ export function App() {
       </main>
 
       <aside className={`inspector-panel panel${rightCollapsed ? " collapsed" : ""}`}>
-        {rightCollapsed ? <CollapsedStrip side="right" label="Info · Quantify" /> : <RightPanel />}
+        {rightCollapsed ? <CollapsedStrip side="right" label="FFT · Info · Quantify · Process" /> : <RightPanel />}
       </aside>
 
       <footer className="statusbar">

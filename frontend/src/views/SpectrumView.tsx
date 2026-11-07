@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchSpectrum } from "../api/arrays";
-import type { DatasetSummary } from "../api/client";
+import { dataVersion, type DatasetSummary } from "../api/client";
 import { ElementsPicker } from "../components/ElementsPicker";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { isAbort, spectralAxis } from "./geometry";
@@ -20,10 +20,12 @@ export function useEnergyAxis(ds: DatasetSummary) {
   return { x, label: axis?.name || "Energy", units: axis?.units ?? "" };
 }
 
-/** Fetch the spectrum (or SI sum spectrum) of a dataset once ``ready``. */
+/** Fetch the spectrum (or SI sum spectrum) of a dataset once ``ready``, and
+ * again when its data changes (e.g. smoothing). */
 export function useSpectrum(ds: DatasetSummary, ready = true) {
   const [data, setData] = useState<Float32Array | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const version = dataVersion(ds);
   useEffect(() => {
     if (!ready) return;
     const ac = new AbortController();
@@ -31,7 +33,7 @@ export function useSpectrum(ds: DatasetSummary, ready = true) {
       .then(setData)
       .catch((e) => !isAbort(e) && setError((e as Error).message));
     return () => ac.abort();
-  }, [ds.id, ready]);
+  }, [ds.id, version, ready]);
   return { data, error };
 }
 

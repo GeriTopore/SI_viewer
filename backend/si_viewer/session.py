@@ -52,6 +52,29 @@ SI_IN_MEMORY_LIMIT = 4 << 30
 FIT_ORIGINS = ("fitted", "composition")
 
 
+class NotRebinnable(ValueError):
+    """Rebinning was asked of a dataset that isn't a spectrum image."""
+
+
+def _rebin_in_place(dataset: Dataset, scale: list[int]) -> None:
+    """HyperSpy rebin of ``dataset`` by ``scale`` (natural axis order),
+    replacing its loaded data and recording what was binned."""
+    if all(f == 1 for f in scale):
+        return
+    signal = dataset.signal.rebin(scale=scale)
+    # Integer sums come back as uint64: keep uint32 when the counts fit.
+    if signal.data.dtype == np.uint64 and not getattr(signal, "_lazy", False) and signal.data.max() < 2**32:
+        signal.change_dtype("uint32")
+    natural = dataset.signal.axes_manager._get_axes_in_natural_order()
+    # e.g. "x×2, y×2": the binned axes, by name.
+    label = ", ".join(
+        f"{_defined(ax.name) or f'axis {i}'}×{f}" for i, (ax, f) in enumerate(zip(natural, scale)) if f > 1
+    )
+    dataset.replace_signal(signal)  # frees the unbinned data
+    dataset.kind = classify(signal)
+    dataset.rebinned.append(label)
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex[:10]
 
@@ -80,6 +103,10 @@ class Dataset:
     map_options: dict = field(default_factory=dict)
     # Rebinning applied to the loaded data, e.g. ["x×2, y×2"] (oldest first).
     rebinned: list[str] = field(default_factory=list)
+    # Non-destructive filters applied when the data is read (see
+    # processing/filters.py); filter_rev is bumped whenever they change.
+    filters: dict = field(default_factory=dict)
+    filter_rev: int = 0
     thumbnails: dict[int, bytes] = field(default_factory=dict, repr=False)
     # Derived arrays (projections, sum spectra, …) keyed by name.
     cache: dict[str, object] = field(default_factory=dict, repr=False)
@@ -88,6 +115,12 @@ class Dataset:
     @property
     def title(self) -> str:
         return self.signal.metadata.General.get_item("title", "") or "untitled"
+
+    @property
+    def filter_spec(self):
+        from .processing.filters import Filters
+
+        return Filters(**self.filters)
 
     @property
     def lazy(self) -> bool:
@@ -137,6 +170,8 @@ class Dataset:
             "parent_id": self.parent_id,
             "revision": self.revision,
             "rebinned": list(self.rebinned),
+            "filters": self.filter_spec.model_dump(),
+            "filter_rev": self.filter_rev,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "id": self.id,
             "file_id": self.file_id,
@@ -289,8 +324,12 @@ class Session:
     def _make_map(self, si: Dataset, element: str):
         """``element``'s map from ``si`` (None if it has no usable line)."""
         from .processing.element_maps import MapOptions, compute_map
+        from .processing.filters import filter_image
 
-        return compute_map(si.signal, element, MapOptions(**si.map_options))
+        signal = compute_map(si.signal, element, MapOptions(**si.map_options))
+        if signal is not None and si.filter_spec.has_spatial:
+            signal.data = filter_image(signal.data, si.filter_spec)
+        return signal
 
     def _add_computed_map(self, si: Dataset, element: str) -> bool:
         signal = self._make_map(si, element)
@@ -367,16 +406,22 @@ class Session:
                 self.datasets[ds.id] = ds
                 self.files[si.file_id].dataset_ids.append(ds.id)
 
-    def rebin(self, dataset: Dataset, factors: list[int]) -> Dataset:
-        """Rebin the loaded data in place by an integer factor along each axis.
+    def rebin(self, si: Dataset, factors: list[int]) -> list[Dataset]:
+        """Rebin a spectrum image and everything recorded on its scan, in place.
 
-        The rebinned data replaces the loaded data (the file on disk is not
-        changed). ``factors`` follow the summary's axis order (array order,
-        e.g. y, x, energy). Sizes that don't divide are cropped (HyperSpy's
-        rebin). A spectrum image's computed element maps are recomputed at
-        the new size.
+        Only spectrum images can be rebinned, and always as a whole: the
+        spectrum image by an integer factor along each axis, and the file's
+        images and stacks on the same scan grid (e.g. the HAADF) by the same
+        x and y factors, so they still line up. Computed element maps are
+        recomputed at the new size and per-pixel fit results are removed. The
+        rebinned data replaces the loaded data (the file on disk is not
+        changed). ``factors`` follow the summary's axis order (array order: y,
+        x, energy). Sizes that don't divide are cropped (HyperSpy's rebin).
+        Returns the datasets rebinned, the spectrum image first.
         """
-        am = dataset.signal.axes_manager
+        if si.kind is not DatasetKind.SPECTRUM_IMAGE:
+            raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images can (with their whole scan)")
+        am = si.signal.axes_manager
         axes = list(am._axes)
         if len(factors) != len(axes):
             raise ValueError(f"Expected {len(axes)} factors, got {len(factors)}")
@@ -389,31 +434,29 @@ class Session:
         # HyperSpy's scale is in natural order (x, y | energy).
         natural = am._get_axes_in_natural_order()
         scale = [factors[next(i for i, a in enumerate(axes) if a is ax)] for ax in natural]
-        if dataset.kind is DatasetKind.SPECTRUM_IMAGE:
-            dataset.materialise()
-        signal = dataset.signal.rebin(scale=scale)
-        # Integer sums come back as uint64: keep uint32 when the counts fit.
-        if signal.data.dtype == np.uint64 and not getattr(signal, "_lazy", False) and signal.data.max() < 2**32:
-            signal.change_dtype("uint32")
+        fx, fy = scale[0], scale[1]
+        scan = tuple(am.navigation_shape)
+        on_scan = [
+            d for d in self.siblings_in_file(si.file_id)
+            if d.origin == "file" and d.kind in (DatasetKind.IMAGE, DatasetKind.STACK)
+            and tuple(d.signal.axes_manager.signal_shape) == scan
+        ]
 
-        # e.g. "x×2, y×2": the binned axes, by name.
-        label = ", ".join(
-            f"{_defined(ax.name) or f'axis {i}'}×{f}" for i, (ax, f) in enumerate(zip(natural, scale)) if f > 1
-        )
-        dataset.replace_signal(signal)  # frees the unbinned data
-        dataset.kind = classify(signal)
-        dataset.rebinned.append(label)
+        si.materialise()
+        _rebin_in_place(si, scale)
+        for d in on_scan:
+            # Natural order: (frames |) x, y.
+            _rebin_in_place(d, [1] * d.signal.axes_manager.navigation_dimension + [fx, fy])
 
-        if dataset.kind is DatasetKind.SPECTRUM_IMAGE:
-            for d in self._fit_maps(dataset):
-                self._remove(d)  # made at the old size: refit to update
-            for m in self.computed_maps(dataset):
-                new_map = self._make_map(dataset, m.element)
-                if new_map is None:  # its line left the (rebinned) energy range
-                    self._remove(m)
-                else:
-                    m.replace_signal(new_map)
-        return dataset
+        for d in self._fit_maps(si):
+            self._remove(d)  # made at the old size: refit to update
+        for m in self.computed_maps(si):
+            new_map = self._make_map(si, m.element)
+            if new_map is None:  # its line left the (rebinned) energy range
+                self._remove(m)
+            else:
+                m.replace_signal(new_map)
+        return [si, *on_scan]
 
     def set_map_options(self, si: Dataset, options: dict) -> None:
         """Change how ``si``'s element maps are computed and recompute them."""
@@ -425,6 +468,36 @@ class Session:
             signal = self._make_map(si, m.element)
             if signal is not None:
                 m.replace_signal(signal)
+
+    def set_filters(self, dataset: Dataset, filters: dict) -> list[str]:
+        """Set a dataset's filters (applied whenever its data is read; the
+        loaded data is unchanged). A spectrum image's spatial filter also
+        applies to its maps: computed maps are recomputed, and per-pixel fit
+        results, which can't be, are removed. Returns notes for the user."""
+        from .processing.filters import Filters, check_applicable
+
+        new = Filters(**filters)
+        check_applicable(dataset.kind.value, new)
+        old = dataset.filter_spec
+        dataset.filters = new.model_dump()
+        dataset.filter_rev += 1
+        dataset.thumbnails.clear()
+        for key in [k for k in dataset.cache if "|" in k]:
+            del dataset.cache[key]  # filtered results (raw ones are kept)
+
+        notes = []
+        if dataset.kind is DatasetKind.SPECTRUM_IMAGE and new.spatial_key() != old.spatial_key():
+            dataset.materialise()
+            for m in self.computed_maps(dataset):
+                signal = self._make_map(dataset, m.element)
+                if signal is not None:
+                    m.replace_signal(signal)
+            fits = self._fit_maps(dataset)
+            for d in fits:
+                self._remove(d)
+            if fits:
+                notes.append("Fitted maps were removed: fit every pixel again to include the filter")
+        return notes
 
     def siblings_in_file(self, file_id: str) -> list[Dataset]:
         with self._lock:

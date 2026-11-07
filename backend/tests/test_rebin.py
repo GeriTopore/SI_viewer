@@ -17,27 +17,44 @@ def client():
     return TestClient(create_app())
 
 
-def test_rebin_stack_in_place(client, tmp_path):
-    data = np.arange(6 * 8 * 10, dtype="uint16").reshape(6, 8, 10)
-    tifffile.imwrite(tmp_path / "s.tif", data)
-    ds = client.post("/api/files", json={"path": str(tmp_path / "s.tif")}).json()["datasets"][0]
+def test_only_spectrum_images_rebin(client, tmp_path):
+    tifffile.imwrite(tmp_path / "s.tif", np.zeros((6, 8, 10), "uint16"))
+    stack = client.post("/api/files", json={"path": str(tmp_path / "s.tif")}).json()["datasets"][0]
+    assert client.post(f"/api/datasets/{stack['id']}/rebin", json={"factors": [1, 2, 2]}).status_code == 400
+    entry = client.post("/api/examples/fept-si").json()
+    for d in entry["datasets"]:
+        if d["kind"] != "spectrum_image":  # HAADF and element maps
+            r = client.post(f"/api/datasets/{d['id']}/rebin", json={"factors": [2, 2]})
+            assert r.status_code == 400, d["title"]
+    # Only element maps can be deleted.
+    assert client.delete(f"/api/datasets/{stack['id']}").status_code == 400
 
-    # Axis order as in the summary: frames, y (height), x (width).
-    r = client.post(f"/api/datasets/{ds['id']}/rebin", json={"factors": [1, 2, 5]}).json()
-    new = r["dataset"]
-    assert new["id"] == ds["id"] and new["revision"] == ds["revision"] + 1
-    assert new["title"] == ds["title"] and new["rebinned"] == ["width×5, height×2"]
-    assert new["navigation_shape"] == [6] and new["signal_shape"] == [2, 4]  # (x, y)
-    assert len(r["file"]["datasets"]) == 1  # replaced, not copied
-    expected = data[3].reshape(4, 2, 2, 5).sum(axis=(1, 3))
-    np.testing.assert_array_equal(_array(client.get(f"/api/datasets/{ds['id']}/frame", params={"index": 3})), expected)
+
+def test_rebin_takes_the_whole_scan(client):
+    entry = client.post("/api/examples/fept-si").json()
+    si = next(d for d in entry["datasets"] if d["kind"] == "spectrum_image")
+    haadf = next(d for d in entry["datasets"] if d["kind"] == "image" and d["origin"] == "file")
+    raw = _array(client.get(f"/api/datasets/{haadf['id']}/frame"))
+
+    r = client.post(f"/api/datasets/{si['id']}/rebin", json={"factors": [2, 4, 1]}).json()
+    datasets = {d["id"]: d for d in r["file"]["datasets"]}
+    assert datasets[si["id"]]["navigation_shape"] == [16, 32]  # (x, y)
+    # The HAADF on the same scan is binned the same way, so it still lines up.
+    h = datasets[haadf["id"]]
+    assert h["signal_shape"] == [16, 32] and h["revision"] == haadf["revision"] + 1 and h["rebinned"]
+    np.testing.assert_allclose(
+        _array(client.get(f"/api/datasets/{haadf['id']}/frame")),
+        raw.reshape(32, 2, 16, 4).sum(axis=(1, 3)), rtol=1e-5,
+    )
+    assert haadf["id"] in [s["id"] for s in client.get(f"/api/datasets/{si['id']}/navigators").json()]
+    for d in datasets.values():
+        if d["kind"] == "image":
+            assert d["signal_shape"] == [16, 32], d["title"]
 
     # Factors now apply to the rebinned sizes.
-    assert client.post(f"/api/datasets/{ds['id']}/rebin", json={"factors": [1, 1, 1]}).status_code == 422
-    assert client.post(f"/api/datasets/{ds['id']}/rebin", json={"factors": [1, 5, 1]}).status_code == 422
-    assert client.post(f"/api/datasets/{ds['id']}/rebin", json={"factors": [2, 2]}).status_code == 422
-    # Only element maps can be deleted.
-    assert client.delete(f"/api/datasets/{ds['id']}").status_code == 400
+    assert client.post(f"/api/datasets/{si['id']}/rebin", json={"factors": [1, 1, 1]}).status_code == 422
+    assert client.post(f"/api/datasets/{si['id']}/rebin", json={"factors": [1, 17, 1]}).status_code == 422
+    assert client.post(f"/api/datasets/{si['id']}/rebin", json={"factors": [2, 2]}).status_code == 422
 
 
 def test_rebin_spectrum_image_in_place(client, example_emd):

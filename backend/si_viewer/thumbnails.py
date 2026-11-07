@@ -30,16 +30,18 @@ def make_thumbnail(dataset: Dataset, siblings: list[Dataset], size: int = 256) -
 
 
 def _preview_array(dataset: Dataset, siblings: list[Dataset]) -> np.ndarray:
+    from .processing.filters import filter_image
+
     data = dataset.signal.data
     if dataset.kind is DatasetKind.IMAGE:
-        return _to_numpy(data)
+        return filter_image(_to_numpy(data), dataset.filter_spec)
     if dataset.kind is DatasetKind.STACK:
-        return _to_numpy(data.mean(axis=0))
+        return filter_image(_to_numpy(data.mean(axis=0)), dataset.filter_spec)
     if dataset.kind is DatasetKind.SPECTRUM_IMAGE:
         companion = si_companion_image(dataset, siblings)
         if companion is not None:
-            return _to_numpy(companion.signal.data)
-        return _to_numpy(data.sum(axis=-1))  # total counts map
+            return filter_image(_to_numpy(companion.signal.data), companion.filter_spec)
+        return filter_image(_to_numpy(data.sum(axis=-1)), dataset.filter_spec)  # total counts map
     # Fallback for other dimensionalities: collapse down to 2D.
     arr = _to_numpy(data)
     while arr.ndim > 2:

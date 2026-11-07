@@ -202,18 +202,59 @@ image, and that map appears in the dataset pane like any other.
     and returns the updated file listing.
   - A delete endpoint removes any map dataset.
 
-### 4.5 Pre-processing tab (planned)
+### 4.5 Pre-processing tab and FFT (M5, done)
 
-A tab on the right-hand side for applying filters to the data before
-analysis, always starting from the raw data that is loaded.
+The **Process** tab on the right filters the focused dataset. Filters are
+non-destructive: they are stored with the dataset and applied whenever its
+data is read, so the loaded data is never changed and a filter can be changed
+or removed at any time (`PUT /api/datasets/{id}/filters`,
+`processing/filters.py`).
 
-- **Images and maps:** Gaussian blur (σ), median, box/mean, and possibly a
-  Wiener filter. Applied non-destructively, as a recorded step that can be
-  switched off or removed, never overwriting the raw data.
-- **Spectrum images:** spatial binning and spectral smoothing (e.g. Gaussian
-  along energy). PCA denoising could follow later.
-- The smoothing option currently in the periodic table's map options moves
-  here.
+- **Images, maps and stacks:** Gaussian (σ), median or mean (box) filter.
+  NaN pixels (masked composition) stay NaN and don't spread. Stacks are
+  filtered frame by frame. "Apply to all maps" copies a map's filter to every
+  map of its file.
+- **Spectrum images:** Gaussian or mean spatial filter, and Gaussian or
+  Savitzky–Golay smoothing along energy.
+  - Only linear spatial filters are offered. They commute with summing
+    channels, so no blurred copy of the cube is needed. A map of the blurred
+    SI is the blurred map. A pixel spectrum is a weighted sum of its
+    neighbours.
+  - The spatial filter reaches pixel spectra, the total-counts and
+    energy-window navigators and the element maps. Computed maps are remade.
+    Per-pixel fit results are removed when it changes; a new fit blurs the
+    fitted intensities before computing composition.
+  - Region and summed spectra keep the raw counts, since a blur doesn't
+    change them (bar edge effects).
+  - Spectral smoothing applies to every spectrum shown. Fits always use raw
+    counts.
+- **Spectra:** spectral smoothing.
+- **Rebin** (destructive) is in the tab and the dataset context menu. It is
+  offered for spectrum images only, and always takes the whole scan. The
+  spectrum image is binned by the chosen factors. The file's images and stacks
+  on the same scan grid (e.g. the HAADF) get the same x/y binning, so they
+  still line up as navigators. Computed maps are recomputed and per-pixel fit
+  results are removed. Single maps, images, stacks and spectra can't be
+  rebinned on their own.
+- Each dataset has a `filter_rev`, bumped on every change. The frontend keys
+  its frame, spectrum and thumbnail caches on `revision.filter_rev`, and redoes
+  auto contrast when the version changes. A filter change doesn't reset the
+  view, cursor or regions.
+- Later: Wiener / FFT band-pass filters, and PCA denoising.
+
+**FFT panel.** The top of the right column shows the power spectrum of the
+viewer's active layer.
+- It transforms the visible part of the image, so zooming in gives a local
+  FFT: the centred square, up to 2048 px. Mean removal and a Hann window come
+  first, then zero-padding to a power of two, then a radix-2 FFT in a Web
+  Worker.
+- The display is log power, max-pooled to the canvas so isolated spots stay
+  visible, with ×1–×8 zoom on the centre.
+- Hovering gives the spatial frequency |k| (Å⁻¹ for length calibrations,
+  else the image's units⁻¹ or px⁻¹), the spacing d = 1/|k| (Å) and the
+  direction. A ring marks |k|. The
+  idle readout gives the Nyquist spacing (2 × pixel size). Checked against
+  NumPy on the synthetic atomic image: d = 1.969 Å.
 
 ### 4.6 EDX fitting and quantification (exSpy)
 
@@ -320,7 +361,7 @@ processing recipes across files, and saved sessions.
 | M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table | Done |
 | M3 | Element maps from the periodic table: ticking an element computes its map (window + background) into the dataset pane, unticking removes it, maps can be deleted from the pane (unticking the element); map options (background, width, binning) | Done |
 | M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | Done |
-| M5 | Pre-processing tab (right side): non-destructive filters (Gaussian/median/box blur) for images and maps; binning and spectral smoothing for spectrum images | |
+| M5 | Pre-processing tab (right side): non-destructive filters (Gaussian/median/box blur) for images and maps; binning and spectral smoothing for spectrum images; live FFT of the viewer with d-spacing readout | Done |
 | M6 | Line profiles for images and SIs (intensity and element profiles) | |
 | M7 | Export, keyboard shortcuts, pywebview desktop window, polish | |
 

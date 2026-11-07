@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Frame } from "../api/arrays";
 import { useDisplay } from "../state/display";
+import { useViewerImage } from "../state/viewerImage";
 import { ImageRenderer, type DisplayParams, type ViewTransform } from "../viewer/renderer";
 import { formatValue, niceScaleBar } from "../format";
 import { isTyping } from "../keyboard";
@@ -73,6 +74,9 @@ interface Props {
   interaction?: Interaction;
   /** SVG content drawn over the image in screen coordinates. */
   renderOverlay?: (t: Transform) => ReactNode;
+  /** Layer whose visible part is published for analysis (the FFT panel);
+   * defaults to the first visible layer. */
+  analysisKey?: string;
 }
 
 const MAX_ZOOM = 64;
@@ -91,7 +95,7 @@ const valueAt = (frame: Frame, ix: number, iy: number) => {
 
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
-  interaction, renderOverlay,
+  interaction, renderOverlay, analysisKey,
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -174,6 +178,31 @@ export function ImageView({
     });
     return () => cancelAnimationFrame(id);
   }, [view, layers, size]);
+
+  // Publish the analysed layer and the part of it in view (e.g. for the FFT).
+  const owner = useId();
+  const analysed =
+    layers.find((l) => l.key === analysisKey && l.frame) ?? layers.find((l) => l.visible && l.frame);
+  useEffect(() => {
+    const { publish } = useViewerImage.getState();
+    if (!analysed?.frame || !view || !size.w) {
+      publish(owner, null);
+      return;
+    }
+    const hw = size.w / 2 / view.zoom;
+    const hh = size.h / 2 / view.zoom;
+    publish(owner, {
+      label: analysed.label,
+      frame: analysed.frame,
+      calX,
+      calY,
+      x0: Math.max(0, Math.floor(view.cx - hw)),
+      y0: Math.max(0, Math.floor(view.cy - hh)),
+      x1: Math.min(fullWidth, Math.ceil(view.cx + hw)),
+      y1: Math.min(fullHeight, Math.ceil(view.cy + hh)),
+    });
+  }, [owner, analysed?.frame, analysed?.label, view, size.w, size.h, fullWidth, fullHeight, calX.scale, calX.units, calY.scale]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => useViewerImage.getState().clear(owner), [owner]);
 
   const toData = (clientX: number, clientY: number, v: ViewTransform) => {
     const rect = wrapRef.current!.getBoundingClientRect();

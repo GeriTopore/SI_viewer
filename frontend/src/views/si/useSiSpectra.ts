@@ -7,8 +7,9 @@ import { useLayers } from "../../state/layers";
 export const CURSOR_CHANNEL = "cursor";
 
 /** Spectra for the cursor and each visible region of a spectrum image,
- * refetched (latest-only) whenever their geometry changes. */
-export function useSiSpectra(si: string, state: SiState, cursorSize: number, ready: boolean) {
+ * refetched (latest-only) whenever their geometry or the data ``version``
+ * (e.g. its filters) changes. */
+export function useSiSpectra(si: string, version: string, state: SiState, cursorSize: number, ready: boolean) {
   const [spectra, setSpectra] = useState<Record<string, PixelsSpectrum>>({});
   const coalescer = useRef<Coalescer<PixelsSpectrum>>();
   if (!coalescer.current) {
@@ -24,14 +25,14 @@ export function useSiSpectra(si: string, state: SiState, cursorSize: number, rea
     const c = coalescer.current!;
     if (cursor && showCursor) {
       const { x, y } = cursor;
-      c.request(CURSOR_CHANNEL, `${x},${y},${cursorSize}`, () => fetchPixelSpectrum(si, x, y, cursorSize));
+      c.request(CURSOR_CHANNEL, `${x},${y},${cursorSize}@${version}`, () => fetchPixelSpectrum(si, x, y, cursorSize));
     }
     for (const roi of rois) {
       if (!roi.visible) continue;
       const region = shapeToRegion(roi.shape);
-      c.request(roi.id, JSON.stringify(region), () => fetchRegionSpectrum(si, region));
+      c.request(roi.id, `${JSON.stringify(region)}@${version}`, () => fetchRegionSpectrum(si, region));
     }
-  }, [si, ready, cursor, showCursor, cursorSize, rois]);
+  }, [si, version, ready, cursor, showCursor, cursorSize, rois]);
 
   // Drop results for regions that no longer exist.
   useEffect(() => {

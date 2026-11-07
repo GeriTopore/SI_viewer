@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type DatasetSummary } from "../api/client";
 import { useDatasets, useFocusedDataset } from "../state/datasets";
-import { bytesLabel, kindLabel, shapeLabel } from "../format";
+import { bytesLabel, filterLabel, kindLabel, shapeLabel } from "../format";
 
 export function Inspector() {
   const d = useFocusedDataset();
@@ -28,6 +28,14 @@ export function Inspector() {
           <>
             <dt>Rebinned</dt>
             <dd title="Applied to the loaded data; the file on disk is unchanged">{d.rebinned.join("; then ")}</dd>
+          </>
+        )}
+        {filterLabel(d.filters) && (
+          <>
+            <dt>Filtered</dt>
+            <dd title="Applied when the data is shown (Process tab); the loaded data is unchanged">
+              {filterLabel(d.filters)}
+            </dd>
           </>
         )}
       </dl>

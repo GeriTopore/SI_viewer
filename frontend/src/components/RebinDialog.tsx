@@ -1,29 +1,35 @@
 import { useEffect, useState } from "react";
 import type { DatasetSummary } from "../api/client";
-import { useDatasets } from "../state/datasets";
+import { allDatasets, planeSize, useDatasets } from "../state/datasets";
 import { formatValue } from "../format";
 
-/** Indices (in ``d.axes``) of the 2D plane's y and x axes, if it has one. */
+/** Only spectrum images are rebinned, together with everything on their scan. */
+export const canRebin = (d: DatasetSummary) => d.kind === "spectrum_image";
+
+/** Indices (in ``d.axes``) of the scan's y and x axes. */
 function planeAxes(d: DatasetSummary): [number, number] | null {
-  const navigate = d.kind === "spectrum_image";
-  if (d.kind !== "spectrum_image" && d.kind !== "image" && d.kind !== "stack") return null;
-  const idx = d.axes.map((a, i) => [a, i] as const).filter(([a]) => a.navigate === navigate).map(([, i]) => i);
+  const idx = d.axes.map((a, i) => [a, i] as const).filter(([a]) => a.navigate).map(([, i]) => i);
   return idx.length >= 2 ? [idx[idx.length - 2], idx[idx.length - 1]] : null;
 }
 
-const axisName = (d: DatasetSummary, i: number) => {
-  const a = d.axes[i];
-  if (a.name) return a.name;
-  if (d.kind === "stack" && a.navigate) return "frames";
-  return `axis ${i}`;
-};
+const axisName = (d: DatasetSummary, i: number) => d.axes[i].name || `axis ${i}`;
 
-/** Dialog choosing an integer binning factor per axis (HyperSpy rebin). */
+/** Dialog choosing an integer binning factor per axis of a spectrum image
+ * (HyperSpy rebin). Images on the same scan are binned with it. */
 export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => void }) {
   const plane = planeAxes(d);
-  // Start with 2 × 2 on the image plane (or ×2 for a lone spectrum).
-  const [factors, setFactors] = useState<number[]>(() =>
-    d.axes.map((_, i) => (plane ? (plane.includes(i) ? 2 : 1) : d.axes.length === 1 ? 2 : 1)),
+  // Start with 2 × 2 on the scan.
+  const [factors, setFactors] = useState<number[]>(() => d.axes.map((_, i) => (plane?.includes(i) ? 2 : 1)));
+  // Loaded images and stacks of the same scan, binned with it (maps are remade).
+  const files = useDatasets((s) => s.files);
+  const [sw, sh] = planeSize(d);
+  const onScan = allDatasets(files).filter(
+    (x) =>
+      x.file_id === d.file_id &&
+      x.origin === "file" &&
+      (x.kind === "image" || x.kind === "stack") &&
+      planeSize(x)[0] === sw &&
+      planeSize(x)[1] === sh,
   );
   const [linked, setLinked] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -109,6 +115,10 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
             Same factor for x and y
           </label>
         )}
+        <p className="muted small rebin-also">
+          {onScan.length > 0 && <>{onScan.map((x) => x.title).join(", ")} on the same scan {onScan.length === 1 ? "gets" : "get"} the same x and y binning. </>}
+          Element maps are recomputed; per-pixel fit results are removed.
+        </p>
         <div className="rebin-warning" role="note">
           This will overwrite the currently loaded data (the original file remains untouched).
         </div>

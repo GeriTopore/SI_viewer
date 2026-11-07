@@ -2018,3 +2018,147 @@ button.primary:disabled {
   background: var(--bg);
   font-size: 12px;
 }
+
+/* ---------- FFT (top of the right panel) ---------- */
+.fft-panel {
+  margin: 0 -4px 10px;
+  padding: 0 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fft-panel.closed {
+  padding-bottom: 6px;
+}
+
+.fft-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.fft-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+}
+
+.fft-toggle:hover {
+  color: var(--text);
+}
+
+.fft-chevron {
+  width: 10px;
+  font-size: 10px;
+}
+
+.fft-zoom button {
+  padding: 1px 7px;
+  font-size: 11px;
+}
+
+.fft-canvas-wrap {
+  position: relative;
+  width: 100%;
+  max-width: 32vh;
+  aspect-ratio: 1;
+  margin: 0 auto;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: crosshair;
+}
+
+.fft-canvas-wrap canvas {
+  display: block;
+}
+
+.fft-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.fft-ring {
+  fill: none;
+  stroke: rgba(255, 214, 10, 0.75);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.fft-spot {
+  fill: none;
+  stroke: #ffd60a;
+  stroke-width: 1.5;
+}
+
+.fft-busy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.fft-readout {
+  min-height: 16px;
+  margin-top: 5px;
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Process tab ---------- */
+.process-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.process-choice {
+  align-self: flex-start;
+}
+
+.process-choice button {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.process-slider input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.process-slider {
+  display: flex;
+}
+
+.process-note {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.process-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.process-actions .field-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.process-rebin {
+  margin-top: 4px;
+}
+
+.rebin-also {
+  margin: 10px 0 0;
+  line-height: 1.4;
+}

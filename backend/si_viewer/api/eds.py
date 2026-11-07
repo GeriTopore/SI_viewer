@@ -6,10 +6,11 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from ..processing.element_maps import MapOptions
+from ..processing.filters import filter_image, filter_spectrum, filtered_pixel_spectrum
 from ..processing.fitting import FitOptions, FitSource, fit_spectrum, source_spectrum
 from ..processing.regions import Region, energy_map, pixel_spectrum, region_spectrum
 from ..processing.xray import element_table
-from ..session import DatasetKind
+from ..session import DatasetKind, NotRebinnable
 from .datasets import _dataset, array_response
 
 router = APIRouter(tags=["eds"])
@@ -27,19 +28,27 @@ def _spectrum_image(request: Request, dataset_id: str):
 def get_pixel_spectrum(dataset_id: str, request: Request, x: int, y: int, size: int = 1) -> Response:
     """Summed spectrum of the size × size block around pixel (x, y)."""
     ds = _spectrum_image(request, dataset_id)
+    f = ds.filter_spec
+    size = max(1, min(size, 64))
     try:
-        spectrum, n = pixel_spectrum(ds.signal.data, x, y, max(1, min(size, 64)))
+        if f.has_spatial:
+            spectrum, n = filtered_pixel_spectrum(ds.signal.data, x, y, size, f)
+        else:
+            spectrum, n = pixel_spectrum(ds.signal.data, x, y, size)
     except IndexError as e:
         raise HTTPException(416, str(e))
-    return array_response(spectrum, pixels=n)
+    return array_response(filter_spectrum(spectrum, f), pixels=n)
 
 
 @router.post("/api/datasets/{dataset_id}/region-spectrum")
 def post_region_spectrum(dataset_id: str, region: Region, request: Request) -> Response:
-    """Summed spectrum over a rectangle, ellipse or polygon of the scan."""
+    """Summed spectrum over a rectangle, ellipse or polygon of the scan.
+
+    A spatial filter is ignored here: blurring keeps the counts, so it barely
+    changes a region's sum. Spectral smoothing is applied."""
     ds = _spectrum_image(request, dataset_id)
     spectrum, n = region_spectrum(ds.signal.data, region)
-    return array_response(spectrum, pixels=n)
+    return array_response(filter_spectrum(spectrum, ds.filter_spec), pixels=n)
 
 
 @router.get("/api/datasets/{dataset_id}/energy-map")
@@ -47,7 +56,8 @@ def get_energy_map(dataset_id: str, request: Request, lo: float, hi: float) -> R
     """Counts in the energy window [lo, hi] (spectral-axis units) at every pixel."""
     ds = _spectrum_image(request, dataset_id)
     axis = ds.signal.axes_manager.signal_axes[0]
-    return array_response(energy_map(ds.signal.data, axis.offset, axis.scale, lo, hi), lo=lo, hi=hi)
+    counts = filter_image(energy_map(ds.signal.data, axis.offset, axis.scale, lo, hi), ds.filter_spec)
+    return array_response(counts, lo=lo, hi=hi)
 
 
 @router.get("/api/elements")
@@ -111,11 +121,14 @@ class RebinBody(BaseModel):
 
 @router.post("/api/datasets/{dataset_id}/rebin")
 def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
-    """Rebin a dataset's loaded data in place (HyperSpy rebin); a spectrum
-    image's maps are recomputed. Returns the dataset and its file."""
+    """Rebin a spectrum image's loaded data in place (HyperSpy rebin), with
+    the images on its scan (same x/y factors); its maps are recomputed.
+    Returns the spectrum image and its file."""
     ds = _dataset(request, dataset_id)
     try:
         request.app.state.session.rebin(ds, body.factors)
+    except NotRebinnable as e:
+        raise HTTPException(400, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
     return _with_file(request, ds)

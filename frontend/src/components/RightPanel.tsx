@@ -1,18 +1,23 @@
 import { useUi, type RightTab } from "../state/ui";
+import { FftPanel } from "./FftPanel";
 import { Inspector } from "./Inspector";
 import { CollapseButton } from "./PaneToggle";
+import { ProcessPanel } from "./ProcessPanel";
 import { QuantifyPanel } from "./QuantifyPanel";
 
 const TABS: { id: RightTab; label: string }[] = [
   { id: "info", label: "Info" },
   { id: "quantify", label: "Quantify" },
+  { id: "process", label: "Process" },
 ];
 
-/** Right-hand column: Info (dataset details) and Quantify (fitting) tabs. */
+/** Right-hand column: the FFT of the viewer's image, then Info (dataset
+ * details), Quantify (fitting) and Process (filters) tabs. */
 export function RightPanel() {
   const { rightTab, setRightTab } = useUi();
   return (
     <>
+      <FftPanel />
       <div className="panel-tabs" role="tablist">
         {TABS.map((t) => (
           <button
@@ -26,9 +31,11 @@ export function RightPanel() {
           </button>
         ))}
         <span className="panel-tabs-spacer" />
-        <CollapseButton side="right" label="Info / Quantify" />
+        <CollapseButton side="right" label="right-hand" />
       </div>
-      <div className="panel-tab-body">{rightTab === "info" ? <Inspector /> : <QuantifyPanel />}</div>
+      <div className="panel-tab-body">
+        {rightTab === "info" ? <Inspector /> : rightTab === "quantify" ? <QuantifyPanel /> : <ProcessPanel />}
+      </div>
     </>
   );
 }

@@ -96,6 +96,11 @@ Process tab. So far:
   - The corrected matrices (masked shifts filled from paths of good pairs)
     and a 2D plot of the measured drift below them update as the mask
     changes.
+- **Result:**
+  - The aligned frames, scrolled with a slider and cropped to the square
+    inside every frame; *Original* shows them as loaded with that square
+    drawn on each.
+  - Below, the average of the aligned frames (its FFT in the FFT panel).
 
 The package is installed editable from `../rigidRegistration` (see
 `environment.yml`).

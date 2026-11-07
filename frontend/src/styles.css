@@ -2593,6 +2593,33 @@ kbd {
 }
 
 
+/* Result: the frames (aligned or as loaded) with their bar, the average below. */
+.align-result-step {
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.align-result-step:has(> .align-stale) {
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.align-result-frames {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-height: 0;
+}
+
+.align-result-view button {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.align-crop {
+  fill: none;
+  stroke: #ffd60a;
+  stroke-width: 2;
+}
+
 /* Fourier mask: three panels, then the comparison row. */
 /* Main row above, the compared cutoffs below (height set by dragging). */
 .align-mask {

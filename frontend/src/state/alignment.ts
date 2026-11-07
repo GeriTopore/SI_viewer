@@ -11,7 +11,7 @@ export const ALIGN_STEPS: { id: AlignStep; label: string; ready: boolean }[] = [
   { id: "mask", label: "Fourier mask", ready: true },
   { id: "peaks", label: "Peak finding", ready: true },
   { id: "matrices", label: "Shift matrices", ready: true },
-  { id: "result", label: "Result", ready: false },
+  { id: "result", label: "Result", ready: true },
 ];
 
 /** One stack's registration as the user sets it up. */
@@ -30,6 +30,10 @@ export interface Alignment {
   outliers: OutlierSettings;
   /** Draw the outlier mask over the shift matrices. */
   showOutlierMask: boolean;
+  /** Frame shown in the Result step, and whether aligned (cropped) or as
+   * loaded with the kept area drawn on it. */
+  resultFrame: number;
+  resultView: "aligned" | "original";
   /** Show the cross-correlation for several cutoffs side by side. */
   compare: boolean;
   compareNs: number[];
@@ -72,6 +76,8 @@ const initial = (frames: number): Alignment => ({
   peaks: { correlation: "cc", method: "pixel", num_peaks: 5, sigma_guess: 2, window_radius: 6 },
   outliers: { method: "transitivity", threshold: 10, max_paths: 5, max_shift: 5, off_diagonal: null },
   showOutlierMask: true,
+  resultFrame: 0,
+  resultView: "aligned",
   compare: false,
   compareNs: [3, 4, 6, 8, 12],
   session: null,

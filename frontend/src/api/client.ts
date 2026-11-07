@@ -154,6 +154,16 @@ export interface Drift {
   y: number[];
 }
 
+/** The aligned stack: the frames kept (bad ones left out), the area inside
+ * every frame and the square cropped from it ([x, y, width, height] in
+ * aligned pixels; a frame's pixel p lands at p - drift), and the drift. */
+export interface RegistrationResult {
+  frames: number[];
+  rect: [number, number, number, number];
+  square: [number, number, number, number];
+  drift: Drift;
+}
+
 /** State of a stack's registration in progress (backend session). */
 export interface RegistrationSummary {
   /** Frames first … last - 1 are registered (stack numbering). */
@@ -382,6 +392,7 @@ export const api = {
       body: JSON.stringify({ outliers, bad_frames: badFrames }),
     }),
   startShifts: (id: string) => request<JobSummary>(`/api/datasets/${id}/registration/shifts`, { method: "POST" }),
+  registrationResult: (id: string) => request<RegistrationResult>(`/api/datasets/${id}/registration/result`),
   exportFormats: () => request<Record<string, ExportFormat[]>>("/api/export-formats"),
   listExamples: () => request<ExampleInfo[]>("/api/examples"),
   openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),

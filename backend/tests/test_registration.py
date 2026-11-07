@@ -193,6 +193,41 @@ def test_correction_and_drift(stack):
     assert r.status_code == 422 and "too few good pairs" in r.json()["detail"]
 
 
+def test_result(stack):
+    client, ds = stack
+    url = f"/api/datasets/{ds['id']}/registration"
+    client.post(url, json={})
+    client.put(url, json={"mask": {"type": "hann", "n": 4}})
+    assert _wait(client, client.post(f"{url}/shifts").json())["status"] == "done"
+    assert client.get(f"{url}/result").status_code == 422  # not corrected yet
+    client.post(f"{url}/correct", json={"outliers": {"method": "none", "off_diagonal": 2}, "bad_frames": [3]})
+
+    # Bad frame 3 is left out; the frames' (dy, dx) shifts span 7 and 8 px,
+    # relative to their mean (not whole pixels), and crop_image rounds
+    # inwards at both ends: the area inside every frame is 87 × 88.
+    r = client.get(f"{url}/result").json()
+    assert r["frames"] == [0, 1, 2, 4, 5]
+    assert r["rect"][2:] == [87, 88] and r["square"][2:] == [87, 87]
+    assert client.get(f"{url}/aligned", params={"i": 3}).status_code == 422
+
+    # Aligned, the frames agree to within their noise (σ 30), and the
+    # average is their mean.
+    frames = [_array(client.get(f"{url}/aligned", params={"i": f})) for f in r["frames"]]
+    assert frames[0].shape == (87, 87)
+    for f in frames[1:]:
+        assert np.abs(f - frames[0]).mean() < 60
+    np.testing.assert_allclose(_array(client.get(f"{url}/average")), np.mean(frames, axis=0), rtol=1e-5)
+
+    # The square sits at square + drift on each frame as loaded.
+    sx, sy, side, _ = r["square"]
+    d = r["drift"]
+    for k, f in enumerate(r["frames"]):
+        x, y = round(sx + d["x"][k]), round(sy + d["y"][k])
+        raw = _array(client.get(f"{url}/frame", params={"i": f}))[y:y + side, x:x + side]
+        assert np.corrcoef(raw.ravel(), frames[k].ravel())[0, 1] > 0.95
+    assert _array(client.get(f"{url}/average", params={"crop": False})).shape == (96, 96)
+
+
 def test_elliptical_mask_is_the_packages(stack):
     """The elliptical Gaussian mask (makeFourierMask_eg) with theta in degrees."""
     import rigidregistration
@@ -264,3 +299,16 @@ def test_matches_the_detailed_walkthrough():
     drift = s.correct(outliers)
     np.testing.assert_allclose(drift["x"], -ref.shifts_y, atol=1e-4)
     np.testing.assert_allclose(drift["y"], -ref.shifts_x, atol=1e-4)
+
+    # The result: the package's average and crop (its data is normalised).
+    ref.get_averaged_image(get_shifts=False, correct_Rij=False)
+    ref.crop_image()
+    r = s.result_summary()
+    assert r["frames"] == list(range(raw.shape[0]))
+    np.testing.assert_allclose(s.average(crop=False) / 2**16, ref.average_image, rtol=1e-4, atol=1e-6)
+    x, y, w, h = r["rect"]
+    np.testing.assert_allclose(s.average(crop=False)[y:y + h, x:x + w] / 2**16, ref.cropped_image, rtol=1e-4, atol=1e-6)
+    # The square: as large as the rectangle allows, centred in it.
+    sx, sy, side, _ = r["square"]
+    assert side == min(w, h) and x <= sx and sx + side <= x + w and y <= sy and sy + side <= y + h
+    assert s.average().shape == (side, side) and s.aligned_frame(5).shape == (side, side)

@@ -86,9 +86,24 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
       return <MaskControls d={d} a={a} />;
     case "peaks":
       return <PeaksControls d={d} a={a} />;
-    default:
+    case "matrices":
       return <MatricesControls d={d} a={a} />;
+    default:
+      return <ResultControls d={d} a={a} />;
   }
+}
+
+function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
+  return (
+    <section className="q-form">
+      <h4 className="process-heading">Step 5 · Result</h4>
+      <p className="muted small process-note">
+        Scroll through the aligned frames (slider, ← / →); Original shows them as loaded, with the square kept in
+        every frame. The FFT panel shows the average's FFT.
+      </p>
+      <NextStep d={d} a={a} />
+    </section>
+  );
 }
 
 function FramesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {

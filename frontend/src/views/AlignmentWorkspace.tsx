@@ -14,6 +14,7 @@ import { imageGeometry } from "./geometry";
 import { useLatest } from "./useLatest";
 import { MatricesStep } from "./AlignmentMatrices";
 import { PeaksStep } from "./AlignmentPeaks";
+import { ResultStep } from "./AlignmentResult";
 
 /** Guided drift correction of a stack, filling the viewer: a step bar, then
  * the current step's diagnostics. Its parameters are set in the Process tab. */
@@ -78,8 +79,10 @@ export function AlignmentWorkspace({ ds }: { ds: DatasetSummary }) {
         <MaskStep ds={ds} a={a} />
       ) : a.step === "peaks" ? (
         <PeaksStep ds={ds} a={a} />
-      ) : (
+      ) : a.step === "matrices" ? (
         <MatricesStep ds={ds} a={a} />
+      ) : (
+        <ResultStep ds={ds} a={a} />
       )}
       {a.starting && a.session && <div className="align-busy">Updating the frames…</div>}
     </div>

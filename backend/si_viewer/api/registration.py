@@ -174,6 +174,30 @@ def get_corrected(dataset_id: str, request: Request) -> Response:
     return array_response(_frame_error(s.corrected_matrices), first=s.first)
 
 
+@router.get("/api/datasets/{dataset_id}/registration/result")
+def get_result(dataset_id: str, request: Request) -> dict:
+    """Shift the good frames into register and average them (once per
+    correction): the frames kept, the area inside every frame (``rect``) and
+    the square cropped from it (x, y, width, height in aligned pixels), and
+    each frame's drift."""
+    s = _session(request, dataset_id)
+    return _frame_error(s.result_summary)
+
+
+@router.get("/api/datasets/{dataset_id}/registration/aligned")
+def get_aligned(dataset_id: str, request: Request, i: int, crop: bool = True) -> Response:
+    """Frame i shifted into register, cropped to the square (or whole)."""
+    s = _session(request, dataset_id)
+    return array_response(_frame_error(s.aligned_frame, i, crop), i=i)
+
+
+@router.get("/api/datasets/{dataset_id}/registration/average")
+def get_average(dataset_id: str, request: Request, crop: bool = True) -> Response:
+    """The average of the aligned frames, cropped to the square (or whole)."""
+    s = _session(request, dataset_id)
+    return array_response(_frame_error(s.average, crop))
+
+
 @router.get("/api/datasets/{dataset_id}/registration/matrices")
 def get_matrices(dataset_id: str, request: Request) -> Response:
     """The shift matrices, (2, frames, frames): Δx then Δy (px) of frame j

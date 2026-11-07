@@ -175,6 +175,9 @@ class RegistrationSession:
         self.shifts_settings: dict | None = None
         # Settings of the last correction (None: not corrected).
         self.correction: dict | None = None
+        # The aligned frames, their average and the crop, for the last
+        # correction (None: not made yet).
+        self._result: dict | None = None
         self.lock = threading.Lock()
         # Previews take turns on their own FFT object.
         self.preview_lock = threading.Lock()
@@ -379,6 +382,7 @@ class RegistrationSession:
                 _Progress.report = None
             self.shifts_settings = settings
             self.correction = None
+            self._result = None
 
     def _set_mask(self, outliers: OutlierSettings, bad: list[int]) -> None:
         """Mark the package's ``Rij_mask`` as the user set it (call with the lock)."""
@@ -469,6 +473,7 @@ class RegistrationSession:
             s.Y_ij_c = np.nan_to_num(yc)
             s.get_imshifts()
             self.correction = {"outliers": o.model_dump(), "bad_frames": list(bad), "shifts": self.shifts_settings}
+            self._result = None
             return self.drift()
 
     def drift(self) -> dict:
@@ -482,6 +487,68 @@ class RegistrationSession:
             "x": [float(-s.shifts_y[k]) for k in rows],
             "y": [float(-s.shifts_x[k]) for k in rows],
         }
+
+    # ---------- result ----------
+
+    def result(self) -> dict:
+        """Every good frame shifted into register and their average, as the
+        package's ``get_averaged_image`` makes them (a Fourier shift of each
+        frame by its shift; the loaded data, not normalised), with the area
+        every frame covers: the package's ``crop_image`` rectangle and the
+        largest square centred in it. Rectangles are (x, y, width, height)
+        in pixels of the aligned frames; a frame's own pixel p lands at
+        p - drift. Made once per correction."""
+        from rigidregistration.utils import generateShiftedImage
+
+        if self.correction is None:
+            raise ValueError("Correct the shift matrices first")
+        with self.lock:
+            if self._result is not None:
+                return self._result
+            s = self.imstack
+            rows = np.flatnonzero(s.Rij_mask_c.sum(axis=1) > 0)
+            aligned = np.stack([
+                generateShiftedImage(self.frames[k].astype(np.float64), s.shifts_x[k], s.shifts_y[k]) for k in rows
+            ]).astype(np.float32)
+            average = aligned.mean(axis=0)
+            # crop_image: content lands at p + shift, so the rows every frame
+            # covers run from the largest shift to the height plus the smallest.
+            sx, sy = s.shifts_x[rows], s.shifts_y[rows]
+            r0, r1 = int(np.ceil(max(sx.max(), 0))), int(np.floor(min(s.nx + sx.min(), s.nx)))
+            c0, c1 = int(np.ceil(max(sy.max(), 0))), int(np.floor(min(s.ny + sy.min(), s.ny)))
+            if r1 <= r0 or c1 <= c0:
+                raise ValueError("No area is inside every frame: the drift is larger than the frame")
+            side = min(r1 - r0, c1 - c0)
+            sq_r, sq_c = r0 + (r1 - r0 - side) // 2, c0 + (c1 - c0 - side) // 2
+            self._result = {
+                "frames": [int(self.first + k) for k in rows],
+                "aligned": aligned,
+                "average": average,
+                "rect": [c0, r0, c1 - c0, r1 - r0],
+                "square": [sq_c, sq_r, side, side],
+            }
+            return self._result
+
+    def result_summary(self) -> dict:
+        r = self.result()
+        return {"frames": r["frames"], "rect": r["rect"], "square": r["square"], "drift": self.drift()}
+
+    def _cropped(self, image: np.ndarray, crop: bool) -> np.ndarray:
+        if not crop:
+            return image
+        x, y, w, h = self.result()["square"]
+        return np.ascontiguousarray(image[..., y:y + h, x:x + w])
+
+    def aligned_frame(self, frame: int, crop: bool = True) -> np.ndarray:
+        """Frame ``frame`` shifted into register (cropped to the square)."""
+        r = self.result()
+        if frame not in r["frames"]:
+            raise ValueError(f"Frame {frame} is not in the aligned stack (bad frames are left out)")
+        return self._cropped(r["aligned"][r["frames"].index(frame)], crop)
+
+    def average(self, crop: bool = True) -> np.ndarray:
+        """The average of the aligned frames (cropped to the square)."""
+        return self._cropped(self.result()["average"], crop)
 
     def corrected_matrices(self) -> np.ndarray:
         """Corrected shift matrices (2, frames, frames), Δx then Δy, and which

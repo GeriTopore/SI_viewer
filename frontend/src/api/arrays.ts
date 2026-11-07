@@ -95,6 +95,18 @@ export async function fetchRegistrationFrame(stack: string, i: number): Promise<
   return { data, height: shape[0], width: shape[1], bin: 1 };
 }
 
+/** Frame i shifted into register, cropped to the area every frame covers. */
+export async function fetchAlignedFrame(stack: string, i: number): Promise<Frame> {
+  const { data, shape } = await fetchArray(`/api/datasets/${stack}/registration/aligned?i=${i}`);
+  return { data, height: shape[0], width: shape[1], bin: 1 };
+}
+
+/** The average of the aligned frames, cropped like them. */
+export async function fetchAlignedAverage(stack: string): Promise<Frame> {
+  const { data, shape } = await fetchArray(`/api/datasets/${stack}/registration/average`);
+  return { data, height: shape[0], width: shape[1], bin: 1 };
+}
+
 /** Correlation of frames i, j with a Fourier mask (zero shift at the centre);
  * cross (cc), mutual (mc) or phase (pc). */
 export async function fetchCorrelation(

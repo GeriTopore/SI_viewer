@@ -5,6 +5,7 @@ import { cliffLorimer, datasetKey, useQuant, type SourceChoice } from "../state/
 import { shapeToRegion, useSi, useSiState } from "../state/si";
 import { lineLabel, useElementTable } from "../views/si/xray";
 import { formatValue } from "../format";
+import { FitMapsSection } from "./FitMapsSection";
 
 /** The EDS spectrum image or spectrum shown in the viewer, if any. */
 function useEdsTarget(): DatasetSummary | undefined {
@@ -270,6 +271,8 @@ function QuantifyTarget({ ds }: { ds: DatasetSummary }) {
           <KFactorPresets />
         </>
       )}
+
+      {isSi && <FitMapsSection ds={ds} />}
     </div>
   );
 }

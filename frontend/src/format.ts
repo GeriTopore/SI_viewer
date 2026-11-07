@@ -9,6 +9,7 @@ export const KIND_LABEL: Record<DatasetKind, string> = {
 };
 
 export function kindLabel(d: DatasetSummary): string {
+  if (d.origin === "composition") return "at%";
   return d.is_element_map ? "Map" : KIND_LABEL[d.kind];
 }
 
@@ -16,6 +17,8 @@ export function kindLabel(d: DatasetSummary): string {
 export function datasetTooltip(d: DatasetSummary): string {
   const base = `${d.title} — ${shapeLabel(d)}`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
+  if (d.origin === "fitted") return `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;
+  if (d.origin === "composition") return `${base}\nComposition (at%) per pixel: Cliff-Lorimer on the fitted maps`;
   if (d.is_element_map) return `${base}\nMap stored in the file (may be processed, e.g. quantified or filtered)`;
   return base;
 }

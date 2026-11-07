@@ -13,8 +13,10 @@ import { RebinDialog } from "./RebinDialog";
 const badgeClass = (d: DatasetSummary) => `badge badge-${d.is_element_map ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
-  `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
-  (d.origin === "file" ? ". The file on disk is not changed." : "");
+  d.origin === "fitted" || d.origin === "composition"
+    ? "Delete this map"
+    : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
+      (d.origin === "file" ? ". The file on disk is not changed." : "");
 
 export function DatasetList() {
   const { files, selection, clickDataset, toggleSelect, closeFile, deleteDataset } = useDatasets();

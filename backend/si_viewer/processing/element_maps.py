@@ -77,6 +77,20 @@ def line_intensity(signal, integration: list[float], background: list[float] | N
     return np.asarray(result.compute() if hasattr(result, "compute") else result)
 
 
+def scan_image(si_signal, data: np.ndarray, title: str):
+    """A Signal2D on the spectrum image's scan grid (same calibration)."""
+    import hyperspy.api as hs
+
+    axes = []
+    for ax in si_signal.axes_manager.navigation_axes[::-1]:  # array order y, x
+        d = ax.get_axis_dictionary()
+        d["navigate"] = False
+        axes.append(d)
+    out = hs.signals.Signal2D(np.asarray(data, np.float32), axes=axes)
+    out.metadata.General.title = title
+    return out
+
+
 def compute_map(signal, element: str, options: MapOptions):
     """The element's map as a HyperSpy Signal2D (None if it has no usable line)."""
     import hyperspy.api as hs
@@ -90,14 +104,7 @@ def compute_map(signal, element: str, options: MapOptions):
     if options.smoothing > 1:
         data = uniform_filter(data, size=options.smoothing, mode="nearest")
 
-    # Same calibration as the scan (navigation axes, in array order y, x).
-    axes = []
-    for ax in signal.axes_manager.navigation_axes[::-1]:
-        d = ax.get_axis_dictionary()
-        d["navigate"] = False
-        axes.append(d)
-    out = hs.signals.Signal2D(data.astype(np.float32), axes=axes)
-    out.metadata.General.title = line_label(line)
+    out = scan_image(signal, data, line_label(line))
     out.metadata.set_item(
         "Sample.xray_line_map",
         {"line": line, "integration_window": integration, "background_windows": background or []},

@@ -10,7 +10,8 @@ intensities.
 
 from __future__ import annotations
 
-from typing import Literal
+from dataclasses import dataclass
+from typing import Callable, Literal
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -78,9 +79,19 @@ def analysis_lines(spec) -> dict[str, str]:
     return out
 
 
-def fit_spectrum(spec, options: FitOptions) -> dict:
-    """Fit ``spec`` (a 1D EDS signal with elements set) and return curves,
-    line intensities and calibration results."""
+@dataclass
+class FittedModel:
+    model: object  # exSpy EDSModel, fitted
+    spectrum: object  # the (cropped) spectrum it was fitted to
+    elements: list[str]
+    lines: list[str]  # all α lines in the fitted range
+    chosen: dict[str, str]  # analysis line per element
+
+
+def fit_model(spec, options: FitOptions, report: Callable[[float, str], None] | None = None) -> FittedModel:
+    """Fit exSpy's EDS model to ``spec`` (a 1D EDS signal with elements set).
+    ``report(fraction, step)`` is called before each step (it may raise to stop)."""
+    report = report or (lambda f, step: None)
     elements = list(spec.metadata.get_item("Sample.elements", []))
     if not elements:
         raise ValueError("Add elements in the periodic table before fitting")
@@ -98,17 +109,32 @@ def fit_spectrum(spec, options: FitOptions) -> dict:
     lines = list(cropped.metadata.Sample.xray_lines)
     chosen = analysis_lines(cropped)
 
+    report(0.05, "building the model")
     m = cropped.create_model(auto_background=False)
     m.add_polynomial_background(order=options.background_order)
+    report(0.15, "fitting the background")
     m.fit_background()
+    report(0.2, "fitting the lines")
     m.fit(bounded=True)
     if options.calibrate_resolution:
+        report(0.3, "calibrating the resolution")
         m.calibrate_energy_axis("resolution")
     if options.calibrate_energy and chosen:
+        report(0.7, "calibrating line energies")
         m.calibrate_xray_lines("energy", xray_lines=lines, bound=10)
     if options.calibrate_resolution or options.calibrate_energy:
+        report(0.9, "refitting")
         m.fit(bounded=True)
+    return FittedModel(m, cropped, elements, lines, chosen)
 
+
+def fit_spectrum(spec, options: FitOptions) -> dict:
+    """Fit ``spec`` (a 1D EDS signal with elements set) and return curves,
+    line intensities and calibration results."""
+    fitted = fit_model(spec, options)
+    m, cropped, elements, lines, chosen = (
+        fitted.model, fitted.spectrum, fitted.elements, fitted.lines, fitted.chosen,
+    )
     x = cropped.axes_manager.signal_axes[0].axis
     data = cropped.data
     model = m.as_signal(show_progressbar=False).data

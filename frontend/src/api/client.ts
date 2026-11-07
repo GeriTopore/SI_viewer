@@ -44,8 +44,9 @@ export interface DatasetSummary {
   axes: Axis[];
   /** Present for EDS spectra and spectrum images. */
   eds: EdsInfo | null;
-  /** "computed": an element map made from a spectrum image. */
-  origin: "file" | "computed";
+  /** "computed": an element map made from a spectrum image (window +
+   * background); "fitted"/"composition": from fitting every pixel. */
+  origin: "file" | "computed" | "fitted" | "composition";
   /** Element symbol of an element map. */
   element: string | null;
   /** Spectrum image a computed map was made from. */
@@ -138,6 +139,28 @@ export interface AxisCalibration {
   units?: string;
 }
 
+/** A background job (e.g. fitting every pixel). */
+export interface JobSummary {
+  id: string;
+  kind: string;
+  title: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  progress: number;
+  message: string;
+  error: string | null;
+  result: { file: FileSummary; skipped?: string[] } | null;
+}
+
+/** Composition maps made alongside per-pixel fitted maps. */
+export interface QuantSpec {
+  composition: boolean;
+  kfactors: Record<string, number>;
+  lines: Record<string, string>;
+  exclude: string[];
+  /** Pixels with fewer fitted element counts get no composition. */
+  min_counts: number;
+}
+
 /** A bundled example dataset (offline). */
 export interface ExampleInfo {
   id: string;
@@ -194,6 +217,10 @@ export const api = {
   /** One integer factor per axis, in the summary's axis order. */
   rebin: (id: string, factors: number[]) =>
     request<DatasetAndFile>(`/api/datasets/${id}/rebin`, { method: "POST", body: JSON.stringify({ factors }) }),
+  startFitMaps: (id: string, options: FitOptions, quant: QuantSpec) =>
+    request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
+  getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
+  cancelJob: (id: string) => request<JobSummary>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   listExamples: () => request<ExampleInfo[]>("/api/examples"),
   openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),
   listDir: (path?: string) =>

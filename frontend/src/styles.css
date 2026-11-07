@@ -1952,3 +1952,69 @@ button.primary:disabled {
 .panel-tabs-spacer {
   flex: 1;
 }
+
+/* Per-pixel fit maps (Quantify tab) */
+.q-maps {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.q-maps h3 {
+  margin: 0 0 4px;
+}
+
+.q-maps p {
+  margin: 0 0 8px;
+}
+
+.q-check-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.q-job {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.q-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.q-progress > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.q-job-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+}
+
+.q-mask {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 10px 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.q-mask input {
+  width: 56px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+}

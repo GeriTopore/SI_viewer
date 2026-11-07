@@ -241,6 +241,15 @@ analysis, always starting from the raw data that is loaded.
   fit returned negative Fe intensities.
 - **Test data:** exSpy's FePt spectrum (good counts) for fitting tests; the
   example `.emd` for spectrum-image plumbing.
+- **Phase 2 (per-pixel maps):** the summed spectrum is fitted once to fix the
+  line positions, widths and minor-line ratios. Each pixel is then solved for
+  the line amplitudes and a Legendre-polynomial background by linear least
+  squares, as chunked matrix products: 0.2 s for 256×256 × 4096 channels.
+  Being linear, the per-pixel intensities add up to the summed fit.
+  - It runs as a background job with progress and cancel.
+  - The output is a fitted map per element, plus optional at% composition maps
+    using the k-factors, with a minimum-counts mask (default 5) so vacuum and
+    film pixels aren't read as 100% of one element.
 
 - **Element selection:** a periodic table picker. Elements found in the file
   metadata are pre-selected. Hovering an element previews its X-ray lines on
@@ -310,7 +319,7 @@ processing recipes across files, and saved sessions.
 | M1 | Dataset list and loading; image and stack viewer; SI navigator + sum spectrum; manual axis calibration | Done |
 | M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table | Done |
 | M3 | Element maps from the periodic table: ticking an element computes its map (window + background) into the dataset pane, unticking removes it, maps can be deleted from the pane (unticking the element); map options (background, width, binning) | Done |
-| M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | Phase 1 done |
+| M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | Done |
 | M5 | Pre-processing tab (right side): non-destructive filters (Gaussian/median/box blur) for images and maps; binning and spectral smoothing for spectrum images | |
 | M6 | Line profiles for images and SIs (intensity and element profiles) | |
 | M7 | Export, keyboard shortcuts, pywebview desktop window, polish | |

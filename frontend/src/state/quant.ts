@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { FitOptions, FitResult } from "../api/client";
+import type { FitOptions, FitResult, JobSummary } from "../api/client";
 
 /** Fit source picked in the Quantify tab: all pixels, the cursor or a region id. */
 export type SourceChoice = "all" | "cursor" | string;
@@ -53,6 +53,14 @@ interface QuantState {
   presets: Record<string, KFactors>;
   showFit: boolean;
   showComponents: boolean;
+  /** Per-pixel fit job per dataset key, and whether it also makes at% maps. */
+  jobs: Record<string, JobSummary>;
+  mapComposition: boolean;
+  /** Composition maps: mask pixels with fewer fitted element counts. */
+  minCounts: number;
+  setJob: (key: string, job: JobSummary) => void;
+  setMapComposition: (on: boolean) => void;
+  setMinCounts: (n: number) => void;
   setOptions: (patch: Partial<FitOptions>) => void;
   setFit: (key: string, fit: StoredFit) => void;
   setSource: (key: string, source: SourceChoice) => void;
@@ -78,6 +86,12 @@ export const useQuant = create<QuantState>((set, get) => ({
   presets: load<Record<string, KFactors>>(PRESETS_KEY, {}),
   showFit: true,
   showComponents: false,
+  jobs: {},
+  mapComposition: true,
+  minCounts: 5,
+  setJob: (key, job) => set((s) => ({ jobs: { ...s.jobs, [key]: job } })),
+  setMapComposition: (mapComposition) => set({ mapComposition }),
+  setMinCounts: (minCounts) => set({ minCounts }),
   setOptions: (patch) => set((s) => ({ options: { ...s.options, ...patch } })),
   setFit: (key, fit) => set((s) => ({ fits: { ...s.fits, [key]: fit } })),
   setSource: (key, source) => set((s) => ({ source: { ...s.source, [key]: source } })),

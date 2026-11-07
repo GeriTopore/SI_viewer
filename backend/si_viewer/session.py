@@ -48,6 +48,9 @@ def _is_element_map(signal, kind: DatasetKind) -> bool:
 # (raw maps are computed from them straight away); larger ones stay lazy.
 SI_IN_MEMORY_LIMIT = 4 << 30
 
+# Element maps made by fitting every pixel (net counts, and at% composition).
+FIT_ORIGINS = ("fitted", "composition")
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:10]
@@ -335,6 +338,8 @@ class Session:
         if not dataset.is_element_map:
             raise ValueError(f"{dataset.title} is not an element map and can't be deleted")
         self._remove(dataset)
+        if dataset.origin in FIT_ORIGINS:
+            return  # results of a per-pixel fit: nothing else to undo
         element = dataset.element
         for d in self.siblings_in_file(dataset.file_id):
             if d.kind is DatasetKind.SPECTRUM_IMAGE and dataset.parent_id not in (None, d.id):
@@ -342,6 +347,25 @@ class Session:
             info = eds_info(d.signal)
             if info is not None and element in info["elements"]:
                 self.set_elements(d, [e for e in info["elements"] if e != element])
+
+    def _fit_maps(self, si: Dataset) -> list[Dataset]:
+        return [d for d in self.siblings_in_file(si.file_id) if d.parent_id == si.id and d.origin in FIT_ORIGINS]
+
+    def set_fit_maps(self, si: Dataset, maps: list[tuple[str, str, str, np.ndarray]]) -> None:
+        """Replace ``si``'s per-pixel fit results with ``maps``: tuples of
+        (origin "fitted" or "composition", element, title, data)."""
+        from .processing.element_maps import scan_image
+
+        for d in self._fit_maps(si):
+            self._remove(d)
+        for origin, element, title, data in maps:
+            ds = Dataset(
+                id=_new_id(), file_id=si.file_id, signal=scan_image(si.signal, data, title),
+                kind=DatasetKind.IMAGE, is_element_map=True, origin=origin, element=element, parent_id=si.id,
+            )
+            with self._lock:
+                self.datasets[ds.id] = ds
+                self.files[si.file_id].dataset_ids.append(ds.id)
 
     def rebin(self, dataset: Dataset, factors: list[int]) -> Dataset:
         """Rebin the loaded data in place by an integer factor along each axis.
@@ -381,6 +405,8 @@ class Session:
         dataset.rebinned.append(label)
 
         if dataset.kind is DatasetKind.SPECTRUM_IMAGE:
+            for d in self._fit_maps(dataset):
+                self._remove(d)  # made at the old size: refit to update
             for m in self.computed_maps(dataset):
                 new_map = self._make_map(dataset, m.element)
                 if new_map is None:  # its line left the (rebinned) energy range

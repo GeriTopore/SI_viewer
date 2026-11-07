@@ -58,6 +58,46 @@ export interface DatasetSummary {
   xray_line: string | null;
 }
 
+/** Options of a spectrum fit (exSpy EDS model). */
+export interface FitOptions {
+  background_order: number;
+  /** Channels below this energy (keV) are ignored. */
+  min_energy: number;
+  calibrate_resolution: boolean;
+  calibrate_energy: boolean;
+}
+
+/** Which spectrum of a spectrum image to fit. */
+export type FitSource =
+  | { type: "all" }
+  | { type: "pixel"; x: number; y: number; size: number }
+  | { type: "region"; region: object };
+
+export interface FitLine {
+  line: string;
+  element: string;
+  energy: number;
+  intensity: number;
+  /** exSpy's choice of line for the element. */
+  analysis: boolean;
+}
+
+export interface FitResult {
+  x: number[];
+  data: number[];
+  model: number[];
+  background: number[];
+  /** Each element's fitted contribution. */
+  elements: Record<string, number[]>;
+  lines: FitLine[];
+  resolution_MnKa: number | null;
+  residual_ratio: number | null;
+  /** Pixels summed into the fitted spectrum. */
+  pixels: number;
+  /** Elements with no line in the fitted range. */
+  skipped: string[];
+}
+
 /** A dataset change that may also have changed its file's maps. */
 export interface DatasetAndFile {
   dataset: DatasetSummary;
@@ -96,6 +136,13 @@ export interface AxisCalibration {
   scale?: number;
   offset?: number;
   units?: string;
+}
+
+/** A bundled example dataset (offline). */
+export interface ExampleInfo {
+  id: string;
+  title: string;
+  description: string;
 }
 
 export interface Health {
@@ -142,9 +189,13 @@ export const api = {
   setMapOptions: (id: string, options: Partial<MapOptions>) =>
     request<DatasetAndFile>(`/api/datasets/${id}/map-options`, { method: "PUT", body: JSON.stringify(options) }),
   deleteDataset: (id: string) => request<{ file: FileSummary }>(`/api/datasets/${id}`, { method: "DELETE" }),
+  fit: (id: string, source: FitSource, options: FitOptions) =>
+    request<FitResult>(`/api/datasets/${id}/fit`, { method: "POST", body: JSON.stringify({ source, options }) }),
   /** One integer factor per axis, in the summary's axis order. */
   rebin: (id: string, factors: number[]) =>
     request<DatasetAndFile>(`/api/datasets/${id}/rebin`, { method: "POST", body: JSON.stringify({ factors }) }),
+  listExamples: () => request<ExampleInfo[]>("/api/examples"),
+  openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),
   listDir: (path?: string) =>
     request<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
 };

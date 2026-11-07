@@ -15,6 +15,7 @@ export interface ElementInfo {
   symbol: string;
   Z: number;
   name: string;
+  atomic_weight: number;
   lines: XrayLine[];
 }
 

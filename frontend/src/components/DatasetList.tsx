@@ -6,6 +6,7 @@ import { useUi } from "../state/ui";
 import { isColour, swatchBackground } from "../viewer/colormaps";
 import { datasetTooltip, kindLabel, shapeLabel } from "../format";
 import { ContextMenu } from "./ContextMenu";
+import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
 import { RebinDialog } from "./RebinDialog";
 
@@ -233,6 +234,7 @@ export function DatasetListHeader() {
           Close all
         </button>
       )}
+      <CollapseButton side="left" label="Datasets" />
     </div>
   );
 }

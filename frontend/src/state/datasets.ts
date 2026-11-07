@@ -21,6 +21,8 @@ interface DatasetsState {
   errors: string[];
   refresh: () => Promise<void>;
   openFiles: (paths: string[]) => Promise<void>;
+  /** Open a bundled example dataset (see the Examples menu). */
+  openExample: (id: string, title: string) => Promise<void>;
   closeFile: (fileId: string) => Promise<void>;
   closeAll: () => Promise<void>;
   /** Replace a dataset's summary (after loading, calibration, …). */
@@ -136,6 +138,21 @@ export const useDatasets = create<DatasetsState>((set, get) => {
         }
       }
       set({ progress: null, errors });
+    },
+
+    openExample: async (id, title) => {
+      if (get().progress) return;
+      set({ errors: [], progress: { done: 0, total: 1, current: title } });
+      try {
+        const entry = sortFile(await api.openExample(id));
+        assignElementColours([entry]);
+        set({ files: get().files.filter((f) => f.id !== entry.id).concat(entry) });
+        if (entry.datasets[0]) get().select(entry.datasets[0].id);
+      } catch (e) {
+        set({ errors: [`${title}: ${(e as Error).message}`] });
+      } finally {
+        set({ progress: null });
+      }
     },
 
     closeFile: async (fileId) => {

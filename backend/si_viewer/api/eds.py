@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from ..processing.element_maps import MapOptions
+from ..processing.fitting import FitOptions, FitSource, fit_spectrum, source_spectrum
 from ..processing.regions import Region, energy_map, pixel_spectrum, region_spectrum
 from ..processing.xray import element_table
 from ..session import DatasetKind
@@ -118,3 +119,21 @@ def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
     except ValueError as e:
         raise HTTPException(422, str(e))
     return _with_file(request, ds)
+
+
+class FitBody(BaseModel):
+    source: FitSource = FitSource()
+    options: FitOptions = FitOptions()
+
+
+@router.post("/api/datasets/{dataset_id}/fit")
+def fit(dataset_id: str, body: FitBody, request: Request) -> dict:
+    """Fit one spectrum (a spectrum, or all pixels / a pixel block / a region
+    of a spectrum image) with exSpy's EDS model."""
+    ds = _dataset(request, dataset_id)
+    try:
+        spec, pixels = source_spectrum(ds, body.source)
+        result = fit_spectrum(spec, body.options)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {**result, "pixels": pixels}

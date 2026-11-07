@@ -40,3 +40,4 @@ def close_file(file_id: str, request: Request) -> None:
         _session(request).close_file(file_id)
     except KeyError:
         raise HTTPException(404, f"Unknown file id: {file_id}")
+

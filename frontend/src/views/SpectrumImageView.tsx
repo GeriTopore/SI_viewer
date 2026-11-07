@@ -18,6 +18,7 @@ import { useNavigatorTools } from "./si/useNavigatorTools";
 import { CURSOR_CHANNEL, useSiSpectra } from "./si/useSiSpectra";
 import { fwhmAt, useLineMarkers } from "./si/xray";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
+import { useFitSeries } from "./useFitSeries";
 
 /** Navigator source meaning "no base image": only the overlaid maps are shown. */
 const NONE = "none";
@@ -148,6 +149,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const whole = useSpectrum(ds, ready);
   const spectra = useSiSpectra(ds.id, st, cursorSize, ready);
   const totalPixels = g.width * g.height;
+  const fitSeries = useFitSeries(ds, axis.x, reduce === "mean");
   const series = useMemo<SpectrumSeries[]>(() => {
     const k = (n: number) => (reduce === "mean" ? 1 / n : 1);
     const out: SpectrumSeries[] = [];
@@ -160,8 +162,8 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     }
     const c = spectra[CURSOR_CHANNEL];
     if (st.showCursor && st.cursor && c) out.push({ label: "Cursor", data: scaled(c.data, k(c.pixels)), color: CURSOR_COLOR });
-    return out;
-  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, totalPixels]);
+    return [...out, ...fitSeries];
+  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, totalPixels, fitSeries]);
 
   // ---------- elements, line markers and energy windows ----------
   const [preview, setPreview] = useState<string | null>(null);

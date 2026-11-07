@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useDatasets } from "../state/datasets";
 import { useUi } from "../state/ui";
+import { ExamplesMenu } from "./ExamplesMenu";
 
 /** "Open…" button (⌘/Ctrl+O) plus progress while a batch of files loads. */
 export function OpenFile() {
@@ -23,6 +24,7 @@ export function OpenFile() {
       <button className="primary" onClick={() => setBrowserOpen(true)} disabled={!!progress}>
         Open…
       </button>
+      <ExamplesMenu />
       {progress && (
         <span className="open-progress">
           <span className="spinner" aria-hidden />

@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type ListMode = "list" | "grid";
 export type Theme = "light" | "dark";
+export type RightTab = "info" | "quantify";
 
 // Per-browser conveniences, remembered across reloads when storage is available.
 function load<T extends string>(key: string, fallback: T): T {
@@ -25,6 +26,13 @@ interface UiState {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   listMode: ListMode;
+  /** Tab shown in the right-hand column. */
+  rightTab: RightTab;
+  setRightTab: (tab: RightTab) => void;
+  /** Side panes folded to their edges, leaving the viewer. */
+  leftCollapsed: boolean;
+  rightCollapsed: boolean;
+  setCollapsed: (side: "left" | "right", collapsed: boolean) => void;
   lastDir: string;
   browserOpen: boolean;
   setListMode: (mode: ListMode) => void;
@@ -40,6 +48,17 @@ export const useUi = create<UiState>((set) => ({
     set({ theme });
   },
   listMode: load<ListMode>("si-viewer.listMode", "list"),
+  rightTab: load<RightTab>("si-viewer.rightTab", "info"),
+  leftCollapsed: load<string>("si-viewer.leftCollapsed", "false") === "true",
+  rightCollapsed: load<string>("si-viewer.rightCollapsed", "false") === "true",
+  setCollapsed: (side, collapsed) => {
+    save(`si-viewer.${side}Collapsed`, String(collapsed));
+    set(side === "left" ? { leftCollapsed: collapsed } : { rightCollapsed: collapsed });
+  },
+  setRightTab: (rightTab) => {
+    save("si-viewer.rightTab", rightTab);
+    set({ rightTab });
+  },
   lastDir: load("si-viewer.lastDir", ""),
   browserOpen: false,
   setListMode: (listMode) => {

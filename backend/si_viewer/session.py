@@ -165,12 +165,14 @@ class FileEntry:
     id: str
     path: Path
     dataset_ids: list[str] = field(default_factory=list)
+    # Shown instead of the file name (e.g. an example's title).
+    label: str | None = None
 
     def summary(self, session: "Session") -> dict:
         return {
             "id": self.id,
             "path": str(self.path),
-            "name": self.path.name,
+            "name": self.label or self.path.name,
             "datasets": [session.datasets[d].summary() for d in self.dataset_ids],
         }
 
@@ -187,8 +189,24 @@ class Session:
             for entry in self.files.values():
                 if entry.path == path:
                     return entry
-        signals = load_file(path, lazy=True)
-        entry = FileEntry(id=_new_id(), path=path)
+        return self.open_signals(path, load_file(path, lazy=True))
+
+    def open_example(self, example_id: str) -> FileEntry:
+        """Open one of the bundled example datasets (see ``examples.py``)."""
+        from .examples import get_example
+
+        example = get_example(example_id)  # KeyError if unknown
+        path = Path(f"example:{example_id}")
+        with self._lock:
+            for entry in self.files.values():
+                if entry.path == path:
+                    return entry
+        return self.open_signals(path, example.load(), label=example.title)
+
+    def open_signals(self, path: Path, signals: list, label: str | None = None) -> FileEntry:
+        """Register loaded signals as one file entry (with raw element maps
+        for EDS spectrum images)."""
+        entry = FileEntry(id=_new_id(), path=path, label=label)
         datasets = []
         for i, signal in enumerate(signals):
             # e.g. TIFF files carry no title: name them after the file.

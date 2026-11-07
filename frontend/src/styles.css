@@ -100,7 +100,7 @@ h3 {
 /* Layout: top bar, three columns, status bar */
 .app {
   display: grid;
-  grid-template-columns: 280px 1fr 300px;
+  grid-template-columns: 280px 1fr 330px;
   grid-template-rows: auto auto 1fr auto;
   grid-template-areas:
     "top top top"
@@ -1636,4 +1636,319 @@ button.primary:disabled {
   background: rgba(217, 119, 6, 0.1);
   font-size: 12px;
   line-height: 1.45;
+}
+
+/* ---------- Right panel tabs ---------- */
+.inspector-panel {
+  display: flex;
+  flex-direction: column;
+  padding-top: 8px;
+}
+
+.panel-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 -4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-tabs button {
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.panel-tabs button:hover {
+  color: var(--text);
+}
+
+.panel-tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.panel-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---------- Quantify ---------- */
+.quantify section + section {
+  margin-top: 14px;
+}
+
+.q-title {
+  margin: 0 0 2px;
+  overflow-wrap: anywhere;
+}
+
+.q-elements {
+  margin: 0;
+}
+
+.q-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.q-form > label {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.q-form > label.q-check {
+  display: flex;
+  color: var(--text);
+}
+
+.q-form select,
+.q-form input[type="number"],
+.q-presets select,
+.q-presets input[type="text"] {
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.q-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+
+.q-inline input {
+  width: 64px;
+}
+
+.q-form .primary {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.q-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.q-toggles {
+  display: flex;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.q-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.q-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.q-table th,
+.q-table td {
+  padding: 3px 3px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.q-table th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.q-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.q-table select {
+  max-width: 78px;
+  padding: 1px 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 11px;
+}
+
+.q-table input[type="number"] {
+  width: 52px;
+  padding: 1px 3px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 11px;
+}
+
+.q-table input.q-k-default::placeholder {
+  color: #d97706;
+}
+
+.q-table tr.q-excluded td:not(:first-child) {
+  opacity: 0.45;
+}
+
+.q-warning {
+  margin: 8px 0 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(217, 119, 6, 0.45);
+  background: rgba(217, 119, 6, 0.1);
+}
+
+.q-presets h3 {
+  margin: 0 0 6px;
+}
+
+.q-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.q-preset-row select,
+.q-preset-row input {
+  flex: 1;
+}
+
+/* Examples menu */
+.examples-menu {
+  position: relative;
+}
+
+.examples-menu > button.active {
+  background: var(--selected);
+  border-color: var(--accent);
+}
+
+.examples-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 25;
+  width: 380px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.examples-intro {
+  margin: 4px 8px 6px;
+}
+
+.example-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  text-align: left;
+}
+
+.example-item:hover {
+  background: var(--selected);
+}
+
+.example-title {
+  font-weight: 600;
+}
+
+.example-desc {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* ---------- Collapsible side panes ---------- */
+.app.left-collapsed {
+  grid-template-columns: 34px 1fr 330px;
+}
+
+.app.right-collapsed {
+  grid-template-columns: 280px 1fr 34px;
+}
+
+.app.left-collapsed.right-collapsed {
+  grid-template-columns: 34px 1fr 34px;
+}
+
+.panel.collapsed {
+  padding: 0;
+  overflow: hidden;
+}
+
+.pane-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 10px 0;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--muted);
+}
+
+.pane-strip:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.pane-strip-label {
+  writing-mode: vertical-rl;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sidebar .pane-strip-label {
+  transform: rotate(180deg); /* reads bottom-to-top on the left edge */
+}
+
+.pane-collapse {
+  display: grid;
+  place-items: center;
+  padding: 3px;
+}
+
+.panel-tabs {
+  align-items: center;
+}
+
+.panel-tabs-spacer {
+  flex: 1;
 }

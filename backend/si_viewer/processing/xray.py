@@ -19,7 +19,10 @@ def element_table() -> list[dict]:
             for name, line in props.Atomic_properties.Xray_lines.as_dictionary().items():
                 lines.append({"line": name, "energy": line["energy (keV)"], "weight": line["weight"]})
         lines.sort(key=lambda l: l["energy"])
-        table.append({"symbol": symbol, "Z": int(general.Z), "name": general.name, "lines": lines})
+        table.append({
+            "symbol": symbol, "Z": int(general.Z), "name": general.name,
+            "atomic_weight": float(general.atomic_weight), "lines": lines,
+        })
     table.sort(key=lambda e: e["Z"])
     return table
 

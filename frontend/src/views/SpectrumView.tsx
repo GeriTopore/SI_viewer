@@ -5,6 +5,7 @@ import { ElementsPicker } from "../components/ElementsPicker";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { isAbort, spectralAxis } from "./geometry";
 import { useLineMarkers } from "./si/xray";
+import { useFitSeries } from "./useFitSeries";
 
 export const SPECTRUM_COLOR = "#4c8dff";
 
@@ -37,9 +38,10 @@ export function useSpectrum(ds: DatasetSummary, ready = true) {
 export function SpectrumView({ ds }: { ds: DatasetSummary }) {
   const axis = useEnergyAxis(ds);
   const { data, error } = useSpectrum(ds);
+  const fitSeries = useFitSeries(ds, axis.x);
   const series = useMemo<SpectrumSeries[]>(
-    () => (data ? [{ label: ds.title, data, color: SPECTRUM_COLOR }] : []),
-    [data, ds.title],
+    () => (data ? [{ label: ds.title, data, color: SPECTRUM_COLOR }, ...fitSeries] : []),
+    [data, ds.title, fitSeries],
   );
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, [axis.x[0], axis.x[axis.x.length - 1]]);

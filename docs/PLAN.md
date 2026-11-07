@@ -216,6 +216,32 @@ analysis, always starting from the raw data that is loaded.
   here.
 
 ### 4.6 EDX fitting and quantification (exSpy)
+
+**Decisions for M4:**
+- **Two phases.**
+  - Phase 1: fit one spectrum (all pixels, cursor, a region, or a standalone
+    spectrum) and quantify it.
+  - Phase 2: per-pixel fitted and quantified maps, as a background job.
+- **Placement:** the right-hand column becomes tabs, **Info | Quantify**, with
+  **Pre-process** joining in M5. Fit curves are drawn on the existing spectrum
+  plot.
+- **k-factors:** an editable k-factor per line, defaulting to 1.0 and flagged
+  "uncalibrated" until real values are entered. Named presets are saved in the
+  browser. Velox files don't store k-factors (Velox uses an ionisation
+  cross-section model).
+- **Fitting defaults**, tested on exSpy's `EDS_TEM_FePt_nanoparticles`:
+  - ignore everything below 0.5 keV (the noise peak);
+  - `fit_background()` first, then `fit(bounded=True)` so intensities can't
+    go negative;
+  - `calibrate_energy_axis("resolution")` and
+    `calibrate_xray_lines("energy", bound=10)`, then refit.
+
+  On FePt (with Cu from the grid added) this gives positive intensities for
+  every line, with a residual of about 9% of the signal. The unbounded default
+  fit returned negative Fe intensities.
+- **Test data:** exSpy's FePt spectrum (good counts) for fitting tests; the
+  example `.emd` for spectrum-image plumbing.
+
 - **Element selection:** a periodic table picker. Elements found in the file
   metadata are pre-selected. Hovering an element previews its X-ray lines on
   the spectrum (from `exspy.misc.elements.elements_db`). Individual lines
@@ -284,7 +310,7 @@ processing recipes across files, and saved sessions.
 | M1 | Dataset list and loading; image and stack viewer; SI navigator + sum spectrum; manual axis calibration | Done |
 | M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table | Done |
 | M3 | Element maps from the periodic table: ticking an element computes its map (window + background) into the dataset pane, unticking removes it, maps can be deleted from the pane (unticking the element); map options (background, width, binning) | Done |
-| M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | |
+| M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | Phase 1 done |
 | M5 | Pre-processing tab (right side): non-destructive filters (Gaussian/median/box blur) for images and maps; binning and spectral smoothing for spectrum images | |
 | M6 | Line profiles for images and SIs (intensity and element profiles) | |
 | M7 | Export, keyboard shortcuts, pywebview desktop window, polish | |

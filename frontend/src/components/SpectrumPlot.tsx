@@ -8,8 +8,14 @@ import { formatValue } from "../format";
 
 export interface SpectrumSeries {
   label: string;
-  data: Float32Array;
+  /** One value per channel; null where the series has no value (e.g. a fit
+   * that only covers part of the spectrum). */
+  data: ArrayLike<number | null>;
   color: string;
+  /** Line style: dashes, width, and whether to fill under the curve. */
+  dash?: number[];
+  width?: number;
+  fill?: boolean;
 }
 
 /** A vertical X-ray line marker. */
@@ -77,7 +83,9 @@ export function SpectrumPlot({
 
   const toData = (): uPlot.AlignedData => [
     x,
-    ...series.map((s) => (log ? Array.from(s.data, (v) => (v > 0 ? v : null)) : s.data)),
+    ...series.map((s) =>
+      log ? Array.from(s.data, (v) => (v !== null && v > 0 ? v : null)) : (s.data as uPlot.AlignedData[1]),
+    ),
   ];
 
   // (Re)build when the series layout or scale type changes; otherwise setData.
@@ -115,8 +123,9 @@ export function SpectrumPlot({
         ...series.map((s) => ({
           label: s.label,
           stroke: s.color,
-          width: 1.25,
-          fill: `${s.color}1a`,
+          width: s.width ?? 1.25,
+          dash: s.dash,
+          fill: s.fill === false ? undefined : `${s.color}1a`,
           points: { show: false },
         })),
       ],
@@ -133,7 +142,7 @@ export function SpectrumPlot({
             setHover(
               i == null
                 ? null
-                : { x: x[i], values: current.map((s) => (s.data[i] !== undefined ? s.data[i] : null)) },
+                : { x: x[i], values: current.map((s) => s.data[i] ?? null) },
             );
           },
         ],

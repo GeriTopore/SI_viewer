@@ -29,6 +29,15 @@ si-viewer path/to/file.emd     # open files at startup
 si-viewer --no-browser --port 8765
 ```
 
+### Example data
+
+**Examples ▾** in the top bar opens bundled datasets that work offline:
+exSpy's FePt (TEM) and TM002 (SEM) EDS spectra, HyperSpy's synthetic
+atomic-resolution image and two-Gaussian spectrum image, and a synthetic
+64×64 EDS spectrum image of core-shell FePt particles (built from the FePt
+spectrum, with Poisson noise). They are defined in
+`backend/si_viewer/examples.py`, ready to back a tutorial later.
+
 ### Frontend development (hot reload)
 
 Run the backend and the Vite dev server side by side; Vite proxies `/api` to

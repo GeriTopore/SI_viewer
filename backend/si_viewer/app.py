@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import datasets, eds, files, fs
+from .api import datasets, eds, examples, files, fs
 from .session import Session
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -25,6 +25,7 @@ def create_app(session: Session | None = None) -> FastAPI:
     app.include_router(datasets.router)
     app.include_router(fs.router)
     app.include_router(eds.router)
+    app.include_router(examples.router)
 
     @app.get("/api/health", tags=["meta"])
     def health() -> dict:

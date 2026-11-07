@@ -157,7 +157,65 @@ SI_viewer/
 - Any ROI spectrum can be sent to the EDX panel as the active spectrum for
   fitting.
 
-### 4.4 EDX fitting and quantification (exSpy)
+### 4.4 Element maps from the periodic table (M3, prioritised)
+
+Adding an element in the periodic table creates its map from the spectrum
+image, and that map appears in the dataset pane like any other.
+
+- **Computing a map:** a map is the net counts of the element's analysis line
+  at every pixel. The analysis line is exSpy's choice, as already used for the
+  marker label.
+  - The counts are integrated over a window of the line ± 1 FWHM. The FWHM is
+    taken from the detector's Mn Kα resolution.
+  - The background is subtracted using exSpy's background windows on either
+    side of the peak (`estimate_background_windows`, then
+    `get_lines_intensity(background_windows=…)`).
+  - This is fast enough (tens of ms for the example scan) that a map appears as
+    soon as the element is ticked.
+- **Map options** (per spectrum image, at the foot of the periodic table):
+  - background subtraction on/off;
+  - integration width in FWHM units;
+  - spatial binning (1×, 2×, 4×), because raw EDS maps are sparse.
+
+  Changing an option recomputes all of that spectrum image's computed maps.
+- **The table and the maps stay in sync:**
+  - Ticking an element adds a computed map, listed with the maps, in the
+    element's colour, and marked as computed to tell it apart from a map
+    loaded from the file.
+  - Unticking an element removes its computed map.
+  - **Raw data only:** when a file has an EDS spectrum image, its maps are
+    computed from the raw spectrum stream as the file opens, one for each
+    element recorded in the file.
+    - Velox's stored maps are not listed: they are processed (quantified to
+      weight fractions and usually blurred, e.g. σ = 1.7).
+    - Files with maps but no spectrum image still show their maps.
+- **Deleting maps from the dataset pane:** each map gets a × button, and the
+  Delete key removes the focused map.
+  - Deleting a map also unticks its element, which removes that element's
+    computed map and its line markers.
+  - Maps loaded from the file are only removed from the app; the file on disk
+    is never changed.
+- **Backend:**
+  - Computed maps are registered in the session as datasets of the spectrum
+    image's file, flagged with `origin: "computed"` and their line and windows.
+  - Setting a spectrum image's elements creates or removes its computed maps
+    and returns the updated file listing.
+  - A delete endpoint removes any map dataset.
+
+### 4.5 Pre-processing tab (planned)
+
+A tab on the right-hand side for applying filters to the data before
+analysis, always starting from the raw data that is loaded.
+
+- **Images and maps:** Gaussian blur (σ), median, box/mean, and possibly a
+  Wiener filter. Applied non-destructively, as a recorded step that can be
+  switched off or removed, never overwriting the raw data.
+- **Spectrum images:** spatial binning and spectral smoothing (e.g. Gaussian
+  along energy). PCA denoising could follow later.
+- The smoothing option currently in the periodic table's map options moves
+  here.
+
+### 4.6 EDX fitting and quantification (exSpy)
 - **Element selection:** a periodic table picker. Elements found in the file
   metadata are pre-selected. Hovering an element previews its X-ray lines on
   the spectrum (from `exspy.misc.elements.elements_db`). Individual lines
@@ -187,7 +245,7 @@ SI_viewer/
 - Results export: CSV for spectra and tables, TIFF/PNG for maps, and `.hspy`
   for processed signals.
 
-### 4.5 Line profiles
+### 4.7 Line profiles
 - A line tool on any image or navigator, with draggable endpoints, an
   adjustable width (integration perpendicular to the line) and the length shown
   in calibrated units.
@@ -200,7 +258,7 @@ SI_viewer/
     plot.
 - Several profiles at once, overlaid. Export to CSV.
 
-### 4.6 Later (not in the first draft)
+### 4.8 Later (not in the first draft)
 EELS SIs (`exspy.signals.EELSSpectrum`, background power law, edges), PCA/NMF
 denoising (`decomposition`), drift correction from the SI HAADF stack, batch
 processing recipes across files, and saved sessions.
@@ -225,9 +283,11 @@ processing recipes across files, and saved sessions.
 | M0 | Repo scaffold, `environment.yml`, `load_emd` with the VeloxLite shim and pytest on the example file, FastAPI skeleton, Vite app shell, `si-viewer` command | Done |
 | M1 | Dataset list and loading; image and stack viewer; SI navigator + sum spectrum; manual axis calibration | Done |
 | M2 | Point cursor, area ROIs, energy-span maps, X-ray line markers, periodic table | Done |
-| M3 | Background (windows + model), model fit + calibration, quantification, SI maps job | |
-| M4 | Line profiles for images and SIs (intensity and element profiles) | |
-| M5 | Export, keyboard shortcuts, pywebview desktop window, polish | |
+| M3 | Element maps from the periodic table: ticking an element computes its map (window + background) into the dataset pane, unticking removes it, maps can be deleted from the pane (unticking the element); map options (background, width, binning) | Done |
+| M4 | Background (windows + model), model fit + calibration, quantification, per-pixel fitted maps as a job | |
+| M5 | Pre-processing tab (right side): non-destructive filters (Gaussian/median/box blur) for images and maps; binning and spectral smoothing for spectrum images | |
+| M6 | Line profiles for images and SIs (intensity and element profiles) | |
+| M7 | Export, keyboard shortcuts, pywebview desktop window, polish | |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

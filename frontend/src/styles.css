@@ -1464,3 +1464,176 @@ button.primary:disabled {
   color: var(--text);
   background: var(--hover);
 }
+
+/* Element maps: delete buttons */
+
+.dataset {
+  grid-template-columns: auto 1fr auto 18px;
+}
+
+.row-delete,
+.thumb-delete {
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.dataset:hover .row-delete,
+.dataset:focus-visible .row-delete,
+.dataset-card:hover .thumb-delete,
+.dataset-card:focus-visible .thumb-delete {
+  opacity: 1;
+}
+
+.row-delete:hover,
+.thumb-delete:hover {
+  color: var(--danger) !important;
+}
+
+.thumb-delete {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6) !important;
+  color: #fff !important;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/* Map options under the periodic table */
+.map-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.map-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.map-options select {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.map-options-title {
+  font-weight: 600;
+}
+
+/* Right-click menu */
+.context-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+}
+
+.context-menu button:hover {
+  background: var(--selected);
+}
+
+.context-menu button.danger {
+  color: var(--danger);
+}
+
+/* Rebin dialog */
+.rebin-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 16px 18px;
+}
+
+.rebin-dialog h2 {
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+  margin: 0 0 2px;
+}
+
+.rebin-subtitle {
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+
+.rebin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.rebin-table th,
+.rebin-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.rebin-table th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.rebin-table td:not(:first-child) {
+  font-variant-numeric: tabular-nums;
+}
+
+.rebin-table input {
+  width: 64px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.rebin-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.rebin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.rebin-warning {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(217, 119, 6, 0.45);
+  background: rgba(217, 119, 6, 0.1);
+  font-size: 12px;
+  line-height: 1.45;
+}

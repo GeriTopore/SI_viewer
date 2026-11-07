@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useDisplay } from "../state/display";
 import { swatchBackground } from "../viewer/colormaps";
 import { lineLabel, useElementTable, type ElementInfo } from "../views/si/xray";
@@ -24,10 +24,12 @@ interface Props {
   onHover: (symbol: string | null) => void;
   onClose: () => void;
   style?: CSSProperties;
+  /** Shown under the table (e.g. map options for a spectrum image). */
+  footer?: ReactNode;
 }
 
 /** Popover periodic table for choosing elements; hover previews their lines. */
-export function PeriodicTable({ selected, onToggle, onClear, onHover, onClose, style }: Props) {
+export function PeriodicTable({ selected, onToggle, onClear, onHover, onClose, style, footer }: Props) {
   const table = useElementTable();
   const colours = useDisplay((s) => s.elementColours);
   const ref = useRef<HTMLDivElement>(null);
@@ -105,6 +107,7 @@ export function PeriodicTable({ selected, onToggle, onClear, onHover, onClose, s
           Clear
         </button>
       </div>
+      {footer}
     </div>
   );
 }

@@ -24,6 +24,12 @@ export function Inspector() {
           {d.dtype}, {bytesLabel(d.nbytes)}
           <span className="muted"> · {d.lazy ? "on disk" : "in memory"}</span>
         </dd>
+        {d.rebinned.length > 0 && (
+          <>
+            <dt>Rebinned</dt>
+            <dd title="Applied to the loaded data; the file on disk is unchanged">{d.rebinned.join("; then ")}</dd>
+          </>
+        )}
       </dl>
       <AxesTable key={d.id} d={d} />
     </div>

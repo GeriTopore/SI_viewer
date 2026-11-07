@@ -63,7 +63,7 @@ export function LayeredViewer({
   const layerProps = useLayers((s) => s.props);
   const setProps = useLayers((s) => s.setProps);
 
-  const frames = useOverlayFrames(images.map((d) => d.id));
+  const frames = useOverlayFrames(images);
   const baseDataset = base?.dataset;
   const baseDisplay = useImageDisplay(
     base?.key ?? `${viewKey}:none`,

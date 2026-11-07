@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api, type DatasetSummary, type FileSummary } from "../api/client";
 import { DEFAULT_COLORMAP, useDisplay } from "./display";
 import { useLayers } from "./layers";
+import { useSi } from "./si";
 
 interface OpenProgress {
   done: number;
@@ -24,6 +25,12 @@ interface DatasetsState {
   closeAll: () => Promise<void>;
   /** Replace a dataset's summary (after loading, calibration, …). */
   updateDataset: (summary: DatasetSummary) => void;
+  /** Replace a file's datasets (maps added, removed or recomputed). */
+  replaceFile: (file: FileSummary) => void;
+  /** Delete an element map (the backend also unticks its element). */
+  deleteDataset: (d: DatasetSummary) => Promise<void>;
+  /** Rebin the loaded data in place (one factor per axis). */
+  rebin: (d: DatasetSummary, factors: number[]) => Promise<void>;
   /** Show only this dataset. */
   select: (datasetId: string) => void;
   /** Plain click in the dataset pane: images toggle in and out of the view;
@@ -84,7 +91,7 @@ function sortFile(f: FileSummary): FileSummary {
 /** Pre-assign a colour to every element map (one colour per element). */
 function assignElementColours(files: FileSummary[]) {
   const { ensureElementColour } = useDisplay.getState();
-  for (const d of allDatasets(files)) if (d.is_element_map) ensureElementColour(d.title);
+  for (const d of allDatasets(files)) if (d.is_element_map) ensureElementColour(elementOf(d));
 }
 
 export const useDatasets = create<DatasetsState>((set, get) => {
@@ -147,6 +154,43 @@ export const useDatasets = create<DatasetsState>((set, get) => {
 
     closeAll: async () => {
       for (const f of get().files) await get().closeFile(f.id);
+    },
+
+    replaceFile: (file) => {
+      const sorted = sortFile(file);
+      assignElementColours([sorted]);
+      const before = new Map(allDatasets(get().files).map((d) => [d.id, d.revision]));
+      // Recomputed or rebinned data gets fresh auto contrast and zoom; a
+      // rebinned spectrum image's cursor and regions no longer fit.
+      const changed = sorted.datasets.filter((d) => before.has(d.id) && before.get(d.id) !== d.revision);
+      if (changed.length) {
+        useDisplay.getState().resetDisplay(changed.map((d) => d.id));
+        changed.forEach((d) => d.kind === "spectrum_image" && useSi.getState().reset(d.id));
+      }
+      const files = get().files.map((f) => (f.id === file.id ? sorted : f));
+      const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
+      // Drop highlighted datasets that are gone, or that no longer fit the
+      // view's size (e.g. a HAADF image over a rebinned spectrum image).
+      const kept = get().selection.map((id) => byId.get(id)).filter((d): d is DatasetSummary => !!d);
+      const base = kept.find((d) => d.kind !== "image") ?? kept[0];
+      const [bw, bh] = base ? planeSize(base) : [0, 0];
+      const selection = kept
+        .filter((d) => d === base || d.kind !== "image" || (planeSize(d)[0] === bw && planeSize(d)[1] === bh))
+        .map((d) => d.id);
+      const focusId = byId.has(get().focusId ?? "") ? get().focusId : (selection.at(-1) ?? null);
+      set({ files, selection, focusId });
+    },
+
+    deleteDataset: async (d) => {
+      try {
+        get().replaceFile((await api.deleteDataset(d.id)).file);
+      } catch (e) {
+        notify(`Could not delete ${d.title}: ${(e as Error).message}`);
+      }
+    },
+
+    rebin: async (d, factors) => {
+      get().replaceFile((await api.rebin(d.id, factors)).file);
     },
 
     updateDataset: (summary) =>
@@ -215,9 +259,15 @@ export const useDatasets = create<DatasetsState>((set, get) => {
   };
 });
 
+/** Only element maps can be deleted. */
+export const canDelete = (d: DatasetSummary) => d.is_element_map;
+
+/** Element symbol of an element map (computed maps are titled e.g. "Fe Kα"). */
+export const elementOf = (d: DatasetSummary) => d.element ?? d.title;
+
 /** Colormap an image starts with: its element colour for element maps. */
 export function initialColormap(d: DatasetSummary): string {
-  return d.is_element_map ? useDisplay.getState().ensureElementColour(d.title) : DEFAULT_COLORMAP;
+  return d.is_element_map ? useDisplay.getState().ensureElementColour(elementOf(d)) : DEFAULT_COLORMAP;
 }
 
 /** Recolour an element map, and every other open map of the same element. */
@@ -227,9 +277,9 @@ export function setMapColour(d: DatasetSummary, colour: string) {
     return;
   }
   const ids = allDatasets(useDatasets.getState().files)
-    .filter((x) => x.is_element_map && x.title === d.title)
+    .filter((x) => x.is_element_map && elementOf(x) === elementOf(d))
     .map((x) => x.id);
-  useDisplay.getState().setElementColour(d.title, colour, ids);
+  useDisplay.getState().setElementColour(elementOf(d), colour, ids);
 }
 
 /** The focused dataset (last clicked), shown in the Inspector. */

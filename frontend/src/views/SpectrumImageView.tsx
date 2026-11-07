@@ -65,34 +65,42 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // ---------- navigator ----------
   const [sources, setSources] = useState<NavigatorSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
+  const files = useDatasets((s) => s.files);
+  // Refetched when the file's maps change (computed maps added or removed).
+  const fileKey = files.find((f) => f.id === ds.file_id)?.datasets.map((d) => d.id).join(",");
   useEffect(() => {
     api.navigators(ds.id).then((s) => {
       setSources(s);
-      setSourceId((cur) => cur ?? s[0]?.id ?? ds.id);
+      // Keep the current source unless it was deleted.
+      setSourceId((cur) =>
+        cur && (cur === NONE || cur === WINDOW || s.some((x) => x.id === cur)) ? cur : (s[0]?.id ?? ds.id),
+      );
     });
-  }, [ds.id]);
+  }, [ds.id, fileKey]);
 
   // The frame is kept with the source it came from: right after switching
   // source the previous image must not be used (e.g. for auto contrast).
-  const [nav, setNav] = useState<{ source: string; frame: Frame } | null>(null);
+  const [nav, setNav] = useState<{ source: string; revision: number; frame: Frame } | null>(null);
   const [navError, setNavError] = useState<string | null>(null);
   // The total-counts map (source = the SI itself) needs the SI in memory.
   const sourceReady =
     sourceId !== null && sourceId !== NONE && sourceId !== WINDOW && (sourceId !== ds.id || ready);
+  const sourceRevision = allDatasets(files).find((d) => d.id === sourceId)?.revision ?? 0;
   useEffect(() => {
     if (!sourceReady) return;
     const ac = new AbortController();
     const source = sourceId!;
+    const revision = sourceRevision;
     fetchFrame(source, {}, ac.signal)
-      .then((frame) => setNav({ source, frame }))
+      .then((frame) => setNav({ source, revision, frame }))
       .catch((e) => !isAbort(e) && setNavError((e as Error).message));
     return () => ac.abort();
-  }, [sourceId, sourceReady]);
+  }, [sourceId, sourceReady, sourceRevision]);
 
   // Energy-window maps follow the window live (latest-only while dragging).
   const windowMaps = useRef<Coalescer<Frame>>();
   windowMaps.current ??= new Coalescer(
-    (_c, frame) => setNav({ source: WINDOW, frame }),
+    (_c, frame) => setNav({ source: WINDOW, revision: 0, frame }),
     (_c, e) => setNavError(e.message),
   );
   const win = st.window;
@@ -101,8 +109,8 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     windowMaps.current!.request("map", `${win.lo},${win.hi}`, () => fetchEnergyMap(ds.id, win.lo, win.hi));
   }, [sourceId, win, ready, ds.id]);
 
-  const navFrame = nav && nav.source === sourceId ? nav.frame : null;
-  const files = useDatasets((s) => s.files);
+  const navFrame =
+    nav && nav.source === sourceId && (sourceId === WINDOW || nav.revision === sourceRevision) ? nav.frame : null;
   const sourceDataset =
     sourceId && sourceId !== ds.id ? allDatasets(files).find((d) => d.id === sourceId) : undefined;
   // A navigator image shares its display settings (contrast, element colour)

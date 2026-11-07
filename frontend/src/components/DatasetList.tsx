@@ -1,18 +1,27 @@
 import { useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { thumbnailUrl, type DatasetSummary } from "../api/client";
-import { setMapColour, useDatasets } from "../state/datasets";
+import { canDelete, elementOf, setMapColour, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
 import { isColour, swatchBackground } from "../viewer/colormaps";
-import { kindLabel, shapeLabel } from "../format";
+import { datasetTooltip, kindLabel, shapeLabel } from "../format";
+import { ContextMenu } from "./ContextMenu";
 import { DATASET_MIME } from "./LayeredViewer";
+import { RebinDialog } from "./RebinDialog";
 
 const badgeClass = (d: DatasetSummary) => `badge badge-${d.is_element_map ? "map" : d.kind}`;
 
+const deleteTitle = (d: DatasetSummary) =>
+  `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
+  (d.origin === "file" ? ". The file on disk is not changed." : "");
+
 export function DatasetList() {
-  const { files, selection, clickDataset, toggleSelect, closeFile } = useDatasets();
+  const { files, selection, clickDataset, toggleSelect, closeFile, deleteDataset } = useDatasets();
   const listMode = useUi((s) => s.listMode);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // Right-click menu (Rebin…, Delete) and the rebin dialog it opens.
+  const [menu, setMenu] = useState<{ x: number; y: number; d: DatasetSummary } | null>(null);
+  const [rebinTarget, setRebinTarget] = useState<DatasetSummary | null>(null);
   const highlighted = new Set(selection);
 
   // Rows are div[role=button] (not <button>) so the colour picker can sit inside.
@@ -27,7 +36,16 @@ export function DatasetList() {
     "aria-pressed": highlighted.has(d.id),
     className: `${className}${highlighted.has(d.id) ? " selected" : ""}`,
     onClick: (e: MouseEvent) => activate(d, e.metaKey || e.ctrlKey),
+    onContextMenu: (e: MouseEvent) => {
+      e.preventDefault();
+      setMenu({ x: e.clientX, y: e.clientY, d });
+    },
     onKeyDown: (e: KeyboardEvent) => {
+      if (canDelete(d) && (e.key === "Delete" || e.key === "Backspace")) {
+        e.preventDefault();
+        deleteDataset(d);
+        return;
+      }
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
       activate(d, e.metaKey || e.ctrlKey);
@@ -44,72 +62,113 @@ export function DatasetList() {
   }
 
   return (
-    <ul className="file-list">
-      {files.map((file) => {
-        const isCollapsed = collapsed[file.id];
-        return (
-          <li key={file.id} className="file">
-            <div className="file-header">
-              <button
-                className="disclosure"
-                aria-expanded={!isCollapsed}
-                onClick={() => setCollapsed((c) => ({ ...c, [file.id]: !isCollapsed }))}
-              >
-                {isCollapsed ? "▸" : "▾"}
-              </button>
-              <span className="file-name" title={file.path}>
-                {file.name}
-              </span>
-              <button className="icon-button" title="Close file" onClick={() => closeFile(file.id)}>
-                ×
-              </button>
-            </div>
-            {!isCollapsed &&
-              (listMode === "grid" ? (
-                <ul className="dataset-grid">
-                  {file.datasets.map((d) => (
-                    <li key={d.id}>
-                      <div {...itemProps(d, "dataset-card")} title={`${d.title} — ${shapeLabel(d)}`}>
-                        <span className={`thumb thumb-${d.kind}`}>
-                          <img src={thumbnailUrl(d.id)} alt="" loading="lazy" draggable={false} />
-                          {d.is_element_map && <MapTint d={d} />}
+    <>
+      <ul className="file-list">
+        {files.map((file) => {
+          const isCollapsed = collapsed[file.id];
+          return (
+            <li key={file.id} className="file">
+              <div className="file-header">
+                <button
+                  className="disclosure"
+                  aria-expanded={!isCollapsed}
+                  onClick={() => setCollapsed((c) => ({ ...c, [file.id]: !isCollapsed }))}
+                >
+                  {isCollapsed ? "▸" : "▾"}
+                </button>
+                <span className="file-name" title={file.path}>
+                  {file.name}
+                </span>
+                <button className="icon-button" title="Close file" onClick={() => closeFile(file.id)}>
+                  ×
+                </button>
+              </div>
+              {!isCollapsed &&
+                (listMode === "grid" ? (
+                  <ul className="dataset-grid">
+                    {file.datasets.map((d) => (
+                      <li key={d.id}>
+                        <div {...itemProps(d, "dataset-card")} title={datasetTooltip(d)}>
+                          <span className={`thumb thumb-${d.kind}`}>
+                            <img src={thumbnailUrl(d)} alt="" loading="lazy" draggable={false} />
+                            {d.is_element_map && <MapTint d={d} />}
+                            <span className={badgeClass(d)}>{kindLabel(d)}</span>
+                            {canDelete(d) && <DeleteButton d={d} className="thumb-delete" onDelete={deleteDataset} />}
+                          </span>
+                          <span className="dataset-title">
+                            {d.is_element_map && <ColourDot d={d} />}
+                            {d.title}
+                          </span>
+                          <span className="dataset-shape">{shapeLabel(d)}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <ul className="dataset-list">
+                    {file.datasets.map((d) => (
+                      <li key={d.id}>
+                        <div {...itemProps(d, "dataset")} title={datasetTooltip(d)}>
                           <span className={badgeClass(d)}>{kindLabel(d)}</span>
-                        </span>
-                        <span className="dataset-title">
-                          {d.is_element_map && <ColourDot d={d} />}
-                          {d.title}
-                        </span>
-                        <span className="dataset-shape">{shapeLabel(d)}</span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <ul className="dataset-list">
-                  {file.datasets.map((d) => (
-                    <li key={d.id}>
-                      <div {...itemProps(d, "dataset")}>
-                        <span className={badgeClass(d)}>{kindLabel(d)}</span>
-                        <span className="dataset-title">
-                          {d.is_element_map && <ColourDot d={d} />}
-                          {d.title}
-                        </span>
-                        <span className="dataset-shape">{shapeLabel(d)}</span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ))}
-          </li>
-        );
-      })}
-    </ul>
+                          <span className="dataset-title">
+                            {d.is_element_map && <ColourDot d={d} />}
+                            {d.title}
+                          </span>
+                          <span className="dataset-shape">{shapeLabel(d)}</span>
+                          {canDelete(d) ? (
+                            <DeleteButton d={d} className="row-delete" onDelete={deleteDataset} />
+                          ) : (
+                            <span />
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ))}
+            </li>
+          );
+        })}
+      </ul>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            ...(menu.d.kind !== "other" ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
+            ...(canDelete(menu.d) ? [{ label: "Delete", danger: true, onSelect: () => deleteDataset(menu.d) }] : []),
+          ]}
+        />
+      )}
+      {rebinTarget && <RebinDialog d={rebinTarget} onClose={() => setRebinTarget(null)} />}
+    </>
+  );
+}
+
+/** × that deletes an element map (without selecting the row). */
+function DeleteButton({
+  d, className, onDelete,
+}: { d: DatasetSummary; className: string; onDelete: (d: DatasetSummary) => void }) {
+  return (
+    <button
+      className={`icon-button ${className}`}
+      title={deleteTitle(d)}
+      aria-label={`Delete ${d.title}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onDelete(d);
+      }}
+      onKeyDown={(e) => e.stopPropagation()}
+      draggable={false}
+    >
+      ×
+    </button>
   );
 }
 
 /** The colormap an element map is shown with (its element colour by default). */
 const useMapColormap = (d: DatasetSummary) =>
-  useDisplay((s) => s.display[d.id]?.colormap ?? s.elementColours[d.title] ?? "#ffffff");
+  useDisplay((s) => s.display[d.id]?.colormap ?? s.elementColours[elementOf(d)] ?? "#ffffff");
 
 /** Tints a map's greyscale thumbnail with its colour: multiplying turns the
  * grey ramp into the same black → colour scale the viewer uses. */
@@ -125,7 +184,7 @@ function ColourDot({ d }: { d: DatasetSummary }) {
     <label
       className="colour-dot"
       style={{ background: swatchBackground(colormap) }}
-      title={`${d.title} colour — click to change`}
+      title={`${elementOf(d)} colour — click to change`}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => e.stopPropagation()}
     >
@@ -133,7 +192,7 @@ function ColourDot({ d }: { d: DatasetSummary }) {
         type="color"
         value={isColour(colormap) ? colormap : "#ffffff"}
         onChange={(e) => setMapColour(d, e.target.value)}
-        aria-label={`${d.title} colour`}
+        aria-label={`${elementOf(d)} colour`}
       />
     </label>
   );

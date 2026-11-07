@@ -11,11 +11,22 @@ export interface Axis {
   navigate: boolean;
 }
 
+/** How a spectrum image's element maps are computed. */
+export interface MapOptions {
+  background: boolean;
+  /** Integration window width in FWHM units. */
+  width: number;
+  /** n × n box smoothing (1 = none). */
+  smoothing: number;
+}
+
 export interface EdsInfo {
   elements: string[];
   xray_lines: string[];
   beam_energy: number | null;
   energy_resolution_MnKa: number | null;
+  /** Spectrum images only. */
+  map_options?: MapOptions;
 }
 
 export interface DatasetSummary {
@@ -33,6 +44,25 @@ export interface DatasetSummary {
   axes: Axis[];
   /** Present for EDS spectra and spectrum images. */
   eds: EdsInfo | null;
+  /** "computed": an element map made from a spectrum image. */
+  origin: "file" | "computed";
+  /** Element symbol of an element map. */
+  element: string | null;
+  /** Spectrum image a computed map was made from. */
+  parent_id: string | null;
+  /** Bumped when the data is recomputed or rebinned. */
+  revision: number;
+  /** Rebinning applied to the loaded data, e.g. ["x×2, y×2"]. */
+  rebinned: string[];
+  /** Line of a computed map, e.g. "Fe_Ka". */
+  xray_line: string | null;
+}
+
+/** A dataset change that may also have changed its file's maps. */
+export interface DatasetAndFile {
+  dataset: DatasetSummary;
+  file: FileSummary;
+  warnings?: string[];
 }
 
 export interface FileSummary {
@@ -108,10 +138,17 @@ export const api = {
   calibrate: (id: string, axes: AxisCalibration[]) =>
     request<DatasetSummary>(`/api/datasets/${id}/axes`, { method: "PATCH", body: JSON.stringify(axes) }),
   setElements: (id: string, elements: string[]) =>
-    request<DatasetSummary>(`/api/datasets/${id}/elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
+    request<DatasetAndFile>(`/api/datasets/${id}/elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
+  setMapOptions: (id: string, options: Partial<MapOptions>) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/map-options`, { method: "PUT", body: JSON.stringify(options) }),
+  deleteDataset: (id: string) => request<{ file: FileSummary }>(`/api/datasets/${id}`, { method: "DELETE" }),
+  /** One integer factor per axis, in the summary's axis order. */
+  rebin: (id: string, factors: number[]) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/rebin`, { method: "POST", body: JSON.stringify({ factors }) }),
   listDir: (path?: string) =>
     request<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
 };
 
-export const thumbnailUrl = (datasetId: string, size = 256) =>
-  `/api/datasets/${datasetId}/thumbnail?size=${size}`;
+/** Thumbnail URL; the revision makes recomputed maps bypass the browser cache. */
+export const thumbnailUrl = (d: { id: string; revision: number }, size = 256) =>
+  `/api/datasets/${d.id}/thumbnail?size=${size}&v=${d.revision}`;

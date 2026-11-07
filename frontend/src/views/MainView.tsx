@@ -31,14 +31,16 @@ export function MainView() {
   const primary = selected.find((d) => d.kind !== "image");
   const images = selected.filter((d) => d.kind === "image");
 
-  // Keyed by the primary dataset: each gets fresh view state.
+  // Keyed by the primary dataset and its revision: each gets fresh view
+  // state, and so does rebinned data.
+  const key = primary && `${primary.id}@${primary.revision}`;
   switch (primary?.kind) {
     case "spectrum_image":
-      return <SpectrumImageView key={primary.id} ds={primary} images={images} />;
+      return <SpectrumImageView key={key} ds={primary} images={images} />;
     case "stack":
-      return <StackView key={primary.id} ds={primary} images={images} />;
+      return <StackView key={key} ds={primary} images={images} />;
     case "spectrum":
-      return <SpectrumView key={primary.id} ds={primary} />;
+      return <SpectrumView key={key} ds={primary} />;
     case undefined: {
       const [w, h] = planeSize(images[0]);
       return <ImagesView key={`images:${w}x${h}`} images={images} />;

@@ -2,25 +2,33 @@ import { useEffect, useState } from "react";
 import { fetchFrame, type Frame } from "../api/arrays";
 import { useLayers } from "../state/layers";
 
-// Image datasets don't change, so each is fetched once.
+// Image data only changes when a computed map is recomputed (new revision),
+// so each (dataset, revision) is fetched once.
 const cache = new Map<string, Promise<Frame>>();
+const keyOf = (d: ImageRef) => `${d.id}@${d.revision}`;
 
-/** Frames of the given image datasets, filled in as they arrive. */
-export function useOverlayFrames(ids: string[]): Record<string, Frame> {
-  const [frames, setFrames] = useState<Record<string, Frame>>({});
-  const key = ids.join(",");
+export interface ImageRef {
+  id: string;
+  revision: number;
+}
+
+/** Frames of the given image datasets (by id), filled in as they arrive. */
+export function useOverlayFrames(images: ImageRef[]): Record<string, Frame> {
+  const [frames, setFrames] = useState<Record<string, { key: string; frame: Frame }>>({});
+  const key = images.map(keyOf).join(",");
 
   useEffect(() => {
     let live = true;
-    for (const id of ids) {
-      if (frames[id]) continue;
-      let p = cache.get(id);
+    for (const d of images) {
+      const k = keyOf(d);
+      if (frames[d.id]?.key === k) continue;
+      let p = cache.get(k);
       if (!p) {
-        p = fetchFrame(id);
-        cache.set(id, p);
+        p = fetchFrame(d.id);
+        cache.set(k, p);
       }
-      p.then((f) => live && setFrames((prev) => (prev[id] ? prev : { ...prev, [id]: f }))).catch((e) => {
-        cache.delete(id);
+      p.then((frame) => live && setFrames((prev) => ({ ...prev, [d.id]: { key: k, frame } }))).catch((e) => {
+        cache.delete(k);
         useLayers.getState().notify(`Could not load image: ${(e as Error).message}`);
       });
     }
@@ -29,5 +37,8 @@ export function useOverlayFrames(ids: string[]): Record<string, Frame> {
     };
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return frames;
+  // Only frames of the current revisions.
+  const current: Record<string, Frame> = {};
+  for (const d of images) if (frames[d.id]?.key === keyOf(d)) current[d.id] = frames[d.id].frame;
+  return current;
 }

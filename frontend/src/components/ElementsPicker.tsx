@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { DatasetSummary } from "../api/client";
 import { setElements } from "../views/si/xray";
+import { MapOptionsControls } from "./MapOptionsControls";
 import { PeriodicTable } from "./PeriodicTable";
 
 interface Props {
@@ -47,6 +48,7 @@ export function ElementsPicker({ ds, onPreview }: Props) {
           onClear={() => setElements(ds, [])}
           onHover={onPreview}
           onClose={close}
+          footer={ds.kind === "spectrum_image" ? <MapOptionsControls ds={ds} /> : undefined}
         />
       )}
     </div>

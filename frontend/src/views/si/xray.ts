@@ -95,14 +95,17 @@ export function fwhmAt(energy: number, resolutionMnKa = 130): number {
   return Math.sqrt(2.5 * (energy - 5.898) * 1000 + resolutionMnKa ** 2) / 1000;
 }
 
-/** Set a dataset's elements (optimistically, then from the backend's reply). */
+/** Set a dataset's elements (optimistically, then from the backend's reply,
+ * which includes the file: a spectrum image gains or loses computed maps). */
 export async function setElements(ds: DatasetSummary, elements: string[]) {
-  const { updateDataset } = useDatasets.getState();
+  const { updateDataset, replaceFile } = useDatasets.getState();
   if (!ds.eds) return;
   for (const e of elements) useDisplay.getState().ensureElementColour(e);
   updateDataset({ ...ds, eds: { ...ds.eds, elements } });
   try {
-    updateDataset(await api.setElements(ds.id, elements));
+    const { file, warnings } = await api.setElements(ds.id, elements);
+    replaceFile(file);
+    if (warnings?.length) useLayers.getState().notify(warnings.join(" · "));
   } catch (e) {
     updateDataset(ds);
     useLayers.getState().notify(`Could not set elements: ${(e as Error).message}`);

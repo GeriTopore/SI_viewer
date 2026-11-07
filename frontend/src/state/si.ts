@@ -52,6 +52,8 @@ interface SiStore {
   addRoi: (si: string, shape: Shape) => string;
   updateRoi: (si: string, id: string, patch: Partial<Roi>) => void;
   removeRoi: (si: string, id: string) => void;
+  /** Forget a spectrum image's cursor, regions and window (e.g. after rebinning). */
+  reset: (si: string) => void;
   setTool: (tool: Tool) => void;
   setCursorSize: (n: number) => void;
   setReduce: (r: Reduce) => void;
@@ -91,6 +93,12 @@ export const useSi = create<SiStore>((set) => {
         rois: s.rois.filter((r) => r.id !== id),
         selected: s.selected === id ? null : s.selected,
       })),
+    reset: (si) =>
+      set((st) => {
+        const bySi = { ...st.bySi };
+        delete bySi[si];
+        return { bySi };
+      }),
     setTool: (tool) => set({ tool }),
     setCursorSize: (cursorSize) => set({ cursorSize }),
     setReduce: (reduce) => set({ reduce }),

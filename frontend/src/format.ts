@@ -12,6 +12,14 @@ export function kindLabel(d: DatasetSummary): string {
   return d.is_element_map ? "Map" : KIND_LABEL[d.kind];
 }
 
+/** Hover text describing a dataset (what an element map contains). */
+export function datasetTooltip(d: DatasetSummary): string {
+  const base = `${d.title} — ${shapeLabel(d)}`;
+  if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
+  if (d.is_element_map) return `${base}\nMap stored in the file (may be processed, e.g. quantified or filtered)`;
+  return base;
+}
+
 /** Shape as HyperSpy prints it: navigation | signal. */
 export function shapeLabel(d: DatasetSummary): string {
   const nav = d.navigation_shape.join("×");

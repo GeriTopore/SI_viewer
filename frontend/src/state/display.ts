@@ -12,6 +12,9 @@ interface DisplayState {
   elementColours: Record<string, string>;
   spectrumLog: boolean;
   setDisplay: (key: string, patch: Partial<DisplayParams>) => void;
+  /** Forget the display settings and pan/zoom of datasets whose data changed
+   * (keys equal to an id or starting with "id:"), so they start afresh. */
+  resetDisplay: (ids: string[]) => void;
   initDisplay: (key: string, params: DisplayParams) => void;
   setView: (key: string, view: ViewTransform) => void;
   /** Give ``element`` the next unused palette colour if it has none. */
@@ -49,6 +52,13 @@ export const useDisplay = create<DisplayState>((set, get) => ({
   spectrumLog: false,
   setDisplay: (key, patch) =>
     set((s) => ({ display: { ...s.display, [key]: { ...s.display[key], ...patch } } })),
+  resetDisplay: (ids) =>
+    set((s) => {
+      const stale = (k: string) => ids.some((id) => k === id || k.startsWith(`${id}:`));
+      const display = Object.fromEntries(Object.entries(s.display).filter(([k]) => !stale(k)));
+      const views = Object.fromEntries(Object.entries(s.views).filter(([k]) => !stale(k)));
+      return { display, views };
+    }),
   initDisplay: (key, params) =>
     set((s) => (s.display[key] ? s : { display: { ...s.display, [key]: params } })),
   setView: (key, view) => set((s) => ({ views: { ...s.views, [key]: view } })),

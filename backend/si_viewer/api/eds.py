@@ -5,8 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
+from ..processing.element_maps import MapOptions
 from ..processing.regions import Region, energy_map, pixel_spectrum, region_spectrum
-from ..processing.xray import element_table, set_elements
+from ..processing.xray import element_table
 from ..session import DatasetKind
 from .datasets import _dataset, array_response
 
@@ -58,14 +59,62 @@ class ElementsBody(BaseModel):
     elements: list[str]
 
 
+def _with_file(request: Request, ds, **extra) -> dict:
+    """The dataset's summary plus its file's (whose maps may have changed)."""
+    session = request.app.state.session
+    return {"dataset": ds.summary(), "file": session.file_of(ds).summary(session), **extra}
+
+
 @router.put("/api/datasets/{dataset_id}/elements")
 def put_elements(dataset_id: str, body: ElementsBody, request: Request) -> dict:
-    """Set the elements of an EDS spectrum or spectrum image."""
+    """Set the elements of an EDS spectrum or spectrum image.
+
+    For a spectrum image, newly added elements get a computed map and removed
+    ones lose theirs. Returns the dataset, its file and any warnings.
+    """
     ds = _dataset(request, dataset_id)
     if ds.summary().get("eds") is None:
         raise HTTPException(400, f"{ds.title} is not an EDS dataset")
     try:
-        set_elements(ds.signal, body.elements)
+        warnings = request.app.state.session.set_elements(ds, body.elements)
     except ValueError as e:
         raise HTTPException(422, str(e))
-    return ds.summary()
+    return _with_file(request, ds, warnings=warnings)
+
+
+@router.put("/api/datasets/{dataset_id}/map-options")
+def put_map_options(dataset_id: str, options: MapOptions, request: Request) -> dict:
+    """Change how a spectrum image's element maps are computed (recomputes them)."""
+    ds = _spectrum_image(request, dataset_id)
+    request.app.state.session.set_map_options(ds, options.model_dump())
+    return _with_file(request, ds)
+
+
+@router.delete("/api/datasets/{dataset_id}")
+def delete_dataset(dataset_id: str, request: Request) -> dict:
+    """Delete an element map (also unticks its element). Returns its file."""
+    session = request.app.state.session
+    ds = _dataset(request, dataset_id)
+    entry = session.file_of(ds)
+    try:
+        session.delete_dataset(ds)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"file": entry.summary(session)}
+
+
+class RebinBody(BaseModel):
+    # One integer factor per axis, in the summary's axis order.
+    factors: list[int]
+
+
+@router.post("/api/datasets/{dataset_id}/rebin")
+def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
+    """Rebin a dataset's loaded data in place (HyperSpy rebin); a spectrum
+    image's maps are recomputed. Returns the dataset and its file."""
+    ds = _dataset(request, dataset_id)
+    try:
+        request.app.state.session.rebin(ds, body.factors)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _with_file(request, ds)

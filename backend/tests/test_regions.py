@@ -93,7 +93,8 @@ def test_elements(si_client):
     assert si["eds"]["beam_energy"] == 300.0
     assert "Fe" in si["eds"]["elements"]
     r = client.put(f"/api/datasets/{si['id']}/elements", json={"elements": ["Fe", "O"]})
-    eds = r.json()["eds"]
+    eds = r.json()["dataset"]["eds"]
     assert eds["elements"] == ["Fe", "O"] and "Fe_Ka" in eds["xray_lines"]
-    assert client.put(f"/api/datasets/{si['id']}/elements", json={"elements": []}).json()["eds"]["elements"] == []
+    r = client.put(f"/api/datasets/{si['id']}/elements", json={"elements": []})
+    assert r.json()["dataset"]["eds"]["elements"] == []
     assert client.put(f"/api/datasets/{si['id']}/elements", json={"elements": ["Xx"]}).status_code == 422

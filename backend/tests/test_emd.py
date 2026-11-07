@@ -30,7 +30,7 @@ def test_si_image_stack_loaded(example_emd):
     assert stacks[0].axes_manager.navigation_size > 1
 
 
-def test_session_open_and_materialise(example_emd):
+def test_session_open(example_emd):
     session = Session()
     entry = session.open_file(example_emd)
     assert entry.dataset_ids
@@ -42,8 +42,7 @@ def test_session_open_and_materialise(example_emd):
         for d in entry.dataset_ids
         if session.datasets[d].kind is DatasetKind.SPECTRUM_IMAGE
     )
-    assert si.lazy
-    si.materialise()
+    # Loaded on open (raw element maps are computed from it straight away).
     assert not si.lazy
     assert isinstance(si.signal.data, np.ndarray)
     assert si.summary()["navigation_shape"] == list(si.signal.axes_manager.navigation_shape)

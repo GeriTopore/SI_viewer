@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import {
-  api, type JobSummary, type MaskSettings, type OutlierSettings, type PeakSettings, type RegistrationSummary,
+  api, type JobSummary, type MaskEdits, type MaskSettings, type OutlierSettings, type PeakSettings, type RegistrationSummary,
 } from "../api/client";
 
 /** Steps of the guided registration (docs/PLAN.md 4.10). */
@@ -27,6 +27,11 @@ export interface Alignment {
   outliers: OutlierSettings;
   /** Draw the outlier mask over the shift matrices. */
   showOutlierMask: boolean;
+  /** Entries of the outlier mask set by hand, by pair "i,j" (i < j, stack
+   * numbering; applies to both triangles): true keeps, false masks. */
+  maskEdits: Record<string, boolean>;
+  /** The Edit mask tool is on: clicking the matrices edits the mask. */
+  editMask: boolean;
   /** Frame shown in the Result step, and whether aligned (cropped) or as
    * loaded with the kept area drawn on it. */
   resultFrame: number;
@@ -55,7 +60,7 @@ interface AlignmentStore {
   patch: (stack: string, patch: Partial<Alignment>) => void;
   /** (Re)start the backend session with the current frame range. */
   start: (stack: string) => Promise<void>;
-  /** Store the mask, peak finding and bad frames with the session. */
+  /** Store the mask, peak finding, bad frames and mask edits with the session. */
   save: (stack: string) => Promise<void>;
   /** Compute every pair's shift (a job), then show the matrices. */
   computeShifts: (stack: string) => Promise<void>;
@@ -72,6 +77,8 @@ const initial = (frames: number): Alignment => ({
   peaks: { correlation: "cc", method: "pixel", num_peaks: 5, sigma_guess: 2, window_radius: 6 },
   outliers: { method: "transitivity", threshold: 10, max_paths: 5, max_shift: 5, off_diagonal: null },
   showOutlierMask: true,
+  maskEdits: {},
+  editMask: false,
   resultFrame: 0,
   resultView: "aligned",
   compare: false,
@@ -83,6 +90,16 @@ const initial = (frames: number): Alignment => ({
   job: null,
   matricesStamp: 0,
 });
+
+/** The hand edits as the lists the backend takes. */
+export function editsOf(a: Pick<Alignment, "maskEdits">): MaskEdits {
+  const edits: MaskEdits = { keep: [], mask: [] };
+  for (const [key, keep] of Object.entries(a.maskEdits)) {
+    const [i, j] = key.split(",").map(Number);
+    (keep ? edits.keep : edits.mask).push([i, j]);
+  }
+  return edits;
+}
 
 const ACTIVE = new Set(["queued", "running"]);
 const POLL_MS = 300;
@@ -102,7 +119,7 @@ export const useAlignment = create<AlignmentStore>((set, get) => {
     close: () => set({ openId: null }),
     patch: (stack, p) => {
       patch(stack, p);
-      if (p.badFrames) get().save(stack); // stored with the session wherever they are set
+      if (p.badFrames || p.maskEdits) get().save(stack); // stored with the session wherever they are set
     },
     start: async (stack) => {
       const a = get().byStack[stack];
@@ -113,7 +130,7 @@ export const useAlignment = create<AlignmentStore>((set, get) => {
         // A new session keeps the settings of the old one; a first one gets ours.
         const cur = get().byStack[stack];
         session = await api.putRegistration(stack, {
-          mask: cur.mask, peaks: cur.peaks, outliers: cur.outliers, bad_frames: a.badFrames,
+          mask: cur.mask, peaks: cur.peaks, outliers: cur.outliers, bad_frames: a.badFrames, edits: editsOf(cur),
         });
         patch(stack, { session, starting: false, sessionStamp: get().byStack[stack].sessionStamp + 1 });
       } catch (e) {
@@ -126,7 +143,7 @@ export const useAlignment = create<AlignmentStore>((set, get) => {
       try {
         patch(stack, {
           session: await api.putRegistration(stack, {
-            mask: a.mask, peaks: a.peaks, outliers: a.outliers, bad_frames: a.badFrames,
+            mask: a.mask, peaks: a.peaks, outliers: a.outliers, bad_frames: a.badFrames, edits: editsOf(a),
           }),
         });
       } catch (e) {

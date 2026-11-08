@@ -77,7 +77,14 @@ export interface AppliedAlignment {
   rect: [number, number, number, number];
   square: [number, number, number, number];
   drift: Drift;
-  settings: { mask: MaskSettings; peaks: PeakSettings; outliers: OutlierSettings; bad_frames: number[] };
+  settings: {
+    mask: MaskSettings;
+    peaks: PeakSettings;
+    outliers: OutlierSettings;
+    bad_frames: number[];
+    /** Absent in alignments applied before manual edits existed. */
+    edits?: MaskEdits;
+  };
   /** The aligned frames are shown (else the frames as loaded). */
   active: boolean;
   loaded_frames: number;
@@ -140,6 +147,13 @@ export interface OutlierSettings {
   off_diagonal: number | null;
 }
 
+/** Pairs of frames (stack numbering) whose outlier mask is set by hand; each
+ * applies to both (i, j) and (j, i). Keeps override the automatic tests. */
+export interface MaskEdits {
+  keep: [number, number][];
+  mask: [number, number][];
+}
+
 /** A candidate maximum of a pair's correlation (Gaussian fit), with its
  * cut-out and fitted model. Positions are in the centred correlation. */
 export interface PeakCandidate {
@@ -196,6 +210,7 @@ export interface RegistrationSummary {
   mask: MaskSettings;
   peaks: PeakSettings;
   outliers: OutlierSettings;
+  edits: MaskEdits;
   /** The shift matrices' settings once computed; stale if changed since. */
   shifts: { mask: MaskSettings; peaks: PeakSettings; stale: boolean } | null;
   /** Memory taken by the FFTs of the frames. */
@@ -397,7 +412,9 @@ export const api = {
   getRegistration: (id: string) => request<RegistrationSummary>(`/api/datasets/${id}/registration`),
   putRegistration: (
     id: string,
-    settings: { bad_frames?: number[]; mask?: MaskSettings; peaks?: PeakSettings; outliers?: OutlierSettings },
+    settings: {
+      bad_frames?: number[]; mask?: MaskSettings; peaks?: PeakSettings; outliers?: OutlierSettings; edits?: MaskEdits;
+    },
   ) =>
     request<RegistrationSummary>(`/api/datasets/${id}/registration`, { method: "PUT", body: JSON.stringify(settings) }),
   endRegistration: (id: string) => request<void>(`/api/datasets/${id}/registration`, { method: "DELETE" }),
@@ -406,10 +423,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ i, j, mask, peaks }),
     }),
-  correctShifts: (id: string, outliers: OutlierSettings, badFrames: number[]) =>
+  correctShifts: (id: string, outliers: OutlierSettings, badFrames: number[], edits: MaskEdits) =>
     request<Drift>(`/api/datasets/${id}/registration/correct`, {
       method: "POST",
-      body: JSON.stringify({ outliers, bad_frames: badFrames }),
+      body: JSON.stringify({ outliers, bad_frames: badFrames, edits }),
     }),
   startShifts: (id: string) => request<JobSummary>(`/api/datasets/${id}/registration/shifts`, { method: "POST" }),
   registrationResult: (id: string) => request<RegistrationResult>(`/api/datasets/${id}/registration/result`),

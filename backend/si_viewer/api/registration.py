@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from ..jobs import Job
 from ..processing.registration import (
-    CorrelationType, MaskSettings, MaskType, OutlierSettings, PeakSettings, RegistrationSession,
+    CorrelationType, MaskEdits, MaskSettings, MaskType, OutlierSettings, PeakSettings, RegistrationSession,
 )
 from ..session import Dataset, DatasetKind
 from .datasets import _dataset, array_response
@@ -81,12 +81,13 @@ class SettingsBody(BaseModel):
     mask: MaskSettings | None = None
     peaks: PeakSettings | None = None
     outliers: OutlierSettings | None = None
+    edits: MaskEdits | None = None
 
 
 @router.put("/api/datasets/{dataset_id}/registration")
 def put_settings(dataset_id: str, body: SettingsBody, request: Request) -> dict:
     s = _session(request, dataset_id)
-    s.set_settings(bad_frames=body.bad_frames, mask=body.mask, peaks=body.peaks, outliers=body.outliers)
+    s.set_settings(bad_frames=body.bad_frames, mask=body.mask, peaks=body.peaks, outliers=body.outliers, edits=body.edits)
     return s.summary()
 
 
@@ -147,24 +148,26 @@ def start_shifts(dataset_id: str, request: Request) -> dict:
 class MaskBody(BaseModel):
     outliers: OutlierSettings = OutlierSettings()
     bad_frames: list[int] = []
+    edits: MaskEdits = MaskEdits()
 
 
 @router.post("/api/datasets/{dataset_id}/registration/outlier-mask")
 def post_outlier_mask(dataset_id: str, body: MaskBody, request: Request) -> Response:
-    """Which pair shifts the outlier settings keep (1) or mask (0), as a
-    (frames, frames) array over the frames registered."""
+    """Which pair shifts the outlier settings and the hand edits keep (1) or
+    mask (0), as a (frames, frames) array over the frames registered."""
     s = _session(request, dataset_id)
-    mask = _frame_error(s.outlier_mask, body.outliers, body.bad_frames)
+    mask = _frame_error(s.outlier_mask, body.outliers, body.bad_frames, body.edits)
     return array_response(mask, masked=int((mask == 0).sum()), pairs=int(mask.size))
 
 
 @router.post("/api/datasets/{dataset_id}/registration/correct")
 def post_correct(dataset_id: str, body: MaskBody, request: Request) -> dict:
-    """Correct the masked shifts (with these outlier settings and bad frames)
-    and return each frame's measured drift (px, image x right, y down)."""
+    """Correct the masked shifts (with these outlier settings, hand edits and
+    bad frames) and return each frame's measured drift (px, image x right, y
+    down)."""
     s = _session(request, dataset_id)
-    s.set_settings(bad_frames=body.bad_frames, outliers=body.outliers)
-    return _frame_error(s.correct, body.outliers, body.bad_frames)
+    s.set_settings(bad_frames=body.bad_frames, outliers=body.outliers, edits=body.edits)
+    return _frame_error(s.correct, body.outliers, body.bad_frames, body.edits)
 
 
 @router.get("/api/datasets/{dataset_id}/registration/corrected")

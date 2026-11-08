@@ -2888,6 +2888,26 @@ kbd {
   fill: rgba(0, 0, 0, 0.72);
 }
 
+/* Cells set by hand (both triangles) and the block being dragged. */
+.align-matrix-overlay .align-edited {
+  fill: none;
+  stroke: #ff961e;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.align-drag {
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.align-edits {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .align-matrix-bar {
   flex: none;
   display: flex;

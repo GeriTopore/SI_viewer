@@ -3,7 +3,7 @@ import { api, type DatasetSummary } from "../api/client";
 import { ArrayPanel } from "../components/ArrayPanel";
 import type { Transform } from "../components/ImageView";
 import { useShortcuts } from "../keyboard";
-import { useAlignment, type Alignment } from "../state/alignment";
+import { editsOf, useAlignment, type Alignment } from "../state/alignment";
 import { imageGeometry } from "./geometry";
 import { useLatest } from "./useLatest";
 
@@ -17,9 +17,11 @@ export function ResultStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
   const shifts = a.session?.shifts ?? null;
   // Correct with the current outlier settings (as step 3 shows them), then
   // shift and average: the backend does this once per correction.
-  const key = shifts ? `${a.sessionStamp}:${a.matricesStamp}:${JSON.stringify(a.outliers)}:${a.badFrames.join(",")}` : null;
+  const key = shifts
+    ? `${a.sessionStamp}:${a.matricesStamp}:${JSON.stringify(a.outliers)}:${a.badFrames.join(",")}:${JSON.stringify(a.maskEdits)}`
+    : null;
   const result = useLatest(key, async () => {
-    await api.correctShifts(ds.id, a.outliers, a.badFrames);
+    await api.correctShifts(ds.id, a.outliers, a.badFrames, editsOf(a));
     return api.registrationResult(ds.id);
   });
   const r = result.value;

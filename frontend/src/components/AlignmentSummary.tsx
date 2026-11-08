@@ -19,6 +19,7 @@ export function AlignmentSummary({ ds, calX }: { ds: DatasetSummary; calX: AxisC
       : s.outliers.method === "neighbours"
         ? `neighbours, max shift ${formatValue(s.outliers.max_shift)} px`
         : "none";
+  const edits = s.edits ? { masked: s.edits.mask.length, kept: s.edits.keep.length } : null;
   return (
     <div className="alignment-summary">
       <DriftPlot drift={a.drift} calX={calX} />
@@ -43,6 +44,14 @@ export function AlignmentSummary({ ds, calX }: { ds: DatasetSummary; calX: AxisC
           {outliers}
           {s.outliers.off_diagonal ? `; pairs at most ${s.outliers.off_diagonal} frames apart` : ""}
         </dd>
+        {edits && edits.masked + edits.kept > 0 && (
+          <>
+            <dt>Manual edits</dt>
+            <dd>
+              {edits.masked} masked, {edits.kept} kept
+            </dd>
+          </>
+        )}
       </dl>
     </div>
   );

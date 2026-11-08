@@ -98,6 +98,9 @@ Process tab. So far:
   - Outliers are masked over the matrices (toggle to hide), set by a
     transitivity threshold or a neighbour check, and optionally only pairs a
     few frames apart.
+  - *Edit mask* sets the mask by hand: click a cell to flip it, or drag over
+    a block to set it to the opposite of its first cell. Edited cells are
+    outlined in orange and stored with the alignment.
   - The corrected matrices (masked shifts filled from paths of good pairs)
     and a 2D plot of the measured drift below them update as the mask
     changes.

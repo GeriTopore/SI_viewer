@@ -1,4 +1,4 @@
-import { ApiError, type MaskSettings } from "./client";
+import { ApiError, type MaskEdits, type MaskSettings } from "./client";
 
 export interface ArrayResult {
   data: Float32Array;
@@ -120,11 +120,11 @@ export async function fetchCorrelation(
 }
 
 /** Which pair shifts the outlier settings keep (1) or mask (0). */
-export async function fetchOutlierMask(stack: string, outliers: object, badFrames: number[]) {
+export async function fetchOutlierMask(stack: string, outliers: object, badFrames: number[], edits: MaskEdits) {
   const r = await fetchArray(`/api/datasets/${stack}/registration/outlier-mask`, undefined, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ outliers, bad_frames: badFrames }),
+    body: JSON.stringify({ outliers, bad_frames: badFrames, edits }),
   });
   const [n] = r.shape;
   return { kept: r.data, n, masked: Number(r.meta.masked), pairs: Number(r.meta.pairs) };

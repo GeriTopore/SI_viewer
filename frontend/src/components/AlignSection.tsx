@@ -4,7 +4,7 @@ import {
   type PeakMethod, type PeakSettings,
 } from "../api/client";
 import { maskLabel } from "../viewer/fourierMask";
-import { ALIGN_STEPS, clampFrame, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
+import { ALIGN_STEPS, clampFrame, editsOf, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
 import { useDatasets } from "../state/datasets";
 
 const MASKS: { id: MaskType; label: string }[] = [
@@ -193,6 +193,10 @@ function FrameRange({ d, a }: { d: DatasetSummary; a: Alignment }) {
       last: l + 1,
       pair: [clamp(a.pair[0]), clamp(a.pair[1])],
       badFrames: a.badFrames.filter((b) => b >= f && b <= l),
+      // Edits of pairs with a frame outside the new range are dropped.
+      maskEdits: Object.fromEntries(
+        Object.entries(a.maskEdits).filter(([k]) => k.split(",").every((x) => Number(x) >= f && Number(x) <= l)),
+      ),
     });
     start(d.id);
   };
@@ -649,10 +653,28 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
             frames apart
           </label>
           <BadFrames d={d} a={a} hint="their rows and columns are masked" />
+          <ManualEdits d={d} a={a} />
         </>
       )}
       <NextStep d={d} a={a} />
     </section>
+  );
+}
+
+/** Count of the entries set by hand (Edit mask in the matrices), with Clear. */
+function ManualEdits({ d, a }: { d: DatasetSummary; a: Alignment }) {
+  const { patch } = useAlignment.getState();
+  const e = editsOf(a);
+  if (!e.keep.length && !e.mask.length) return null;
+  return (
+    <div className="align-edits">
+      <span className="muted small">
+        Manual edits: {e.mask.length} masked, {e.keep.length} kept
+      </span>
+      <button className="link-button" onClick={() => patch(d.id, { maskEdits: {} })} title="Go back to the automatic mask">
+        Clear
+      </button>
+    </div>
   );
 }
 

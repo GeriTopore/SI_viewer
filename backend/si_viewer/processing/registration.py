@@ -84,6 +84,16 @@ class OutlierSettings(BaseModel):
     off_diagonal: int | None = Field(None, ge=1)
 
 
+class MaskEdits(BaseModel):
+    """Entries of the shift matrices set by hand, as pairs of frames (stack
+    numbering, either order; applied to (i, j) and (j, i))."""
+
+    # Kept although the outlier test or the off-diagonal limit masks them.
+    keep: list[tuple[int, int]] = []
+    # Masked whatever the outlier test says (wins over ``keep``).
+    mask: list[tuple[int, int]] = []
+
+
 def _wisdom_file() -> Path:
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "si-viewer"
     base.mkdir(parents=True, exist_ok=True)
@@ -192,6 +202,7 @@ class RegistrationSession:
         self.mask = MaskSettings()
         self.peaks = PeakSettings()
         self.outliers = OutlierSettings()
+        self.edits = MaskEdits()
         # Settings the shift matrices were computed with (None: not yet).
         self.shifts_settings: dict | None = None
         # Settings of the last correction (None: not corrected).
@@ -227,6 +238,7 @@ class RegistrationSession:
             "mask": self.mask.model_dump(),
             "peaks": self.peaks.model_dump(),
             "outliers": self.outliers.model_dump(),
+            "edits": self.edits.model_dump(),
             "shifts": None if self.shifts_settings is None else {
                 **self.shifts_settings,
                 # The mask or peak finding changed since: recompute to use them.
@@ -243,7 +255,7 @@ class RegistrationSession:
 
     def set_settings(
         self, bad_frames: list[int] | None = None, mask: MaskSettings | None = None, peaks: PeakSettings | None = None,
-        outliers: OutlierSettings | None = None,
+        outliers: OutlierSettings | None = None, edits: MaskEdits | None = None,
     ) -> None:
         if bad_frames is not None:
             self.bad_frames = sorted({f for f in bad_frames if self.first <= f < self.last})
@@ -253,6 +265,16 @@ class RegistrationSession:
             self.peaks = peaks
         if outliers is not None:
             self.outliers = outliers
+        if edits is not None:
+            self.edits = self._valid_edits(edits)
+
+    def _valid_edits(self, edits: MaskEdits) -> MaskEdits:
+        """``edits`` without pairs that have a frame outside the frames being
+        registered or are on the diagonal (nothing to edit there)."""
+        def valid(pairs: list[tuple[int, int]]) -> list[tuple[int, int]]:
+            return [(i, j) for i, j in pairs if i != j and self.first <= i < self.last and self.first <= j < self.last]
+
+        return MaskEdits(keep=valid(edits.keep), mask=valid(edits.mask))
 
     # ---------- previews ----------
 
@@ -405,7 +427,7 @@ class RegistrationSession:
             self.correction = None
             self._result = None
 
-    def _set_mask(self, outliers: OutlierSettings, bad: list[int]) -> None:
+    def _set_mask(self, outliers: OutlierSettings, bad: list[int], edits: MaskEdits) -> None:
         """Mark the package's ``Rij_mask`` as the user set it (call with the lock)."""
         s = self.imstack
         s.outlier_mask = np.ones((s.nz, s.nz), dtype=bool)
@@ -414,21 +436,42 @@ class RegistrationSession:
         elif outliers.method == "neighbours":
             s.get_outliers_NN(outliers.max_shift)
         s.mask_off_diagonal(outliers.off_diagonal or False)
-        s.set_bad_images([f - self.first for f in bad if self.first <= f < self.last])
+        bad_idx = [f - self.first for f in bad if self.first <= f < self.last]
+        s.set_bad_images(bad_idx)
+        # Hand edits, as the notebook makes them on ``Rij_mask`` after the
+        # outliers: kept pairs override the outlier test and the off-diagonal
+        # limit, masked pairs win over kept ones, bad frames over both.
+        edits = self._valid_edits(edits)
+        for pairs, value in ((edits.keep, True), (edits.mask, False)):
+            for i, j in pairs:
+                a, b = i - self.first, j - self.first
+                s.Rij_mask[a, b] = s.Rij_mask[b, a] = value
+        for k in bad_idx:
+            s.Rij_mask[k, :] = False
+            s.Rij_mask[:, k] = False
         s.refine_mask()
 
-    def outlier_mask(self, outliers: OutlierSettings | None = None, bad_frames: list[int] | None = None) -> np.ndarray:
+    def outlier_mask(
+        self, outliers: OutlierSettings | None = None, bad_frames: list[int] | None = None,
+        edits: MaskEdits | None = None,
+    ) -> np.ndarray:
         """Which pair shifts are kept (1) or masked (0), (frames, frames), as
         the package marks them before correcting: outliers, pairs too far
-        off the diagonal and bad frames' rows and columns; the diagonal of
-        good frames is kept (``refine_mask``)."""
+        off the diagonal and bad frames' rows and columns, then the pairs
+        kept or masked by hand; the diagonal of good frames is kept
+        (``refine_mask``)."""
         if self.shifts_settings is None:
             raise ValueError("Compute the shifts first")
         with self.lock:
-            self._set_mask(outliers or self.outliers, self.bad_frames if bad_frames is None else bad_frames)
+            self._set_mask(
+                outliers or self.outliers, self.bad_frames if bad_frames is None else bad_frames, edits or self.edits,
+            )
             return self.imstack.Rij_mask.astype(np.float32)
 
-    def correct(self, outliers: OutlierSettings | None = None, bad_frames: list[int] | None = None) -> dict:
+    def correct(
+        self, outliers: OutlierSettings | None = None, bad_frames: list[int] | None = None,
+        edits: MaskEdits | None = None,
+    ) -> dict:
         """Fill the masked shifts from paths of good ones (the package's
         ``make_corrected_Rij``), then each frame's shift as the mean of its
         row (``get_imshifts``). Returns each frame's measured drift.
@@ -449,8 +492,9 @@ class RegistrationSession:
             raise ValueError("Compute the shifts first")
         o = outliers or self.outliers
         bad = self.bad_frames if bad_frames is None else bad_frames
+        e = self._valid_edits(edits or self.edits)
         with self.lock:
-            self._set_mask(o, bad)
+            self._set_mask(o, bad, e)
             s = self.imstack
             nz = s.nz
             mask = s.Rij_mask
@@ -493,7 +537,9 @@ class RegistrationSession:
             s.X_ij_c = np.nan_to_num(xc)
             s.Y_ij_c = np.nan_to_num(yc)
             s.get_imshifts()
-            self.correction = {"outliers": o.model_dump(), "bad_frames": list(bad), "shifts": self.shifts_settings}
+            self.correction = {
+                "outliers": o.model_dump(), "edits": e.model_dump(), "bad_frames": list(bad), "shifts": self.shifts_settings,
+            }
             self._result = None
             return self.drift()
 
@@ -586,7 +632,7 @@ class RegistrationSession:
                 "rect": r["rect"],
                 "square": r["square"],
                 "drift": self.drift(),
-                "settings": {**self.correction["shifts"], **{k: self.correction[k] for k in ("outliers", "bad_frames")}},
+                "settings": {**self.correction["shifts"], **{k: self.correction[k] for k in ("outliers", "edits", "bad_frames")}},
             },
         }
 

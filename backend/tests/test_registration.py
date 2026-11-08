@@ -164,6 +164,83 @@ def test_outlier_mask(stack):
     assert client.put(url, json={"outliers": {"method": "neighbours", "max_shift": 2}}).json()["outliers"]["max_shift"] == 2
 
 
+def test_outlier_mask_edits(stack):
+    """Entries kept or masked by hand, on top of the outlier settings."""
+    client, ds = stack
+    url = f"/api/datasets/{ds['id']}/registration"
+    client.post(url, json={})
+    client.put(url, json={"mask": {"type": "hann", "n": 4}})
+    assert _wait(client, client.post(f"{url}/shifts").json())["status"] == "done"
+    mask_url = f"{url}/outlier-mask"
+
+    # A masked pair is masked in both (i, j) and (j, i); nothing else changes.
+    m = _array(client.post(mask_url, json={"outliers": {"method": "none"}, "edits": {"mask": [[0, 3]], "keep": []}}))
+    assert m[0, 3] == 0 and m[3, 0] == 0
+    assert m.sum() == 36 - 2
+    # Either order of the pair is the same pair.
+    m = _array(client.post(mask_url, json={"outliers": {"method": "none"}, "edits": {"mask": [[3, 0]]}}))
+    assert m[0, 3] == 0 and m[3, 0] == 0 and m.sum() == 34
+
+    # A kept pair overrides the off-diagonal limit.
+    none1 = {"method": "none", "off_diagonal": 1}
+    m = _array(client.post(mask_url, json={"outliers": none1, "edits": {"keep": [[0, 2]]}}))
+    assert m[0, 2] == 1 and m[2, 0] == 1 and m[0, 3] == 0 and m[0, 1] == 1
+    # A pair in both lists is masked.
+    m = _array(client.post(mask_url, json={"outliers": none1, "edits": {"keep": [[0, 2]], "mask": [[0, 2]]}}))
+    assert m[0, 2] == 0 and m[2, 0] == 0
+
+    # Bad frames win over kept pairs; the diagonal of good frames stays.
+    body = {"outliers": none1, "bad_frames": [2], "edits": {"keep": [[0, 2], [2, 4], [0, 4]]}}
+    m = _array(client.post(mask_url, json=body))
+    assert m[2].sum() == 0 and m[:, 2].sum() == 0 and m[0, 4] == 1 and m[4, 0] == 1
+    assert np.all(np.diag(m)[[0, 1, 3, 4, 5]] == 1)
+    # Masking a diagonal entry is ignored.
+    m = _array(client.post(mask_url, json={"outliers": {"method": "none"}, "edits": {"mask": [[1, 1], [2, 4]]}}))
+    assert np.all(np.diag(m) == 1) and m[2, 4] == 0 and m.sum() == 34
+
+    # Frames outside the registered ones, and pairs on the diagonal, are ignored.
+    edits = {"keep": [[0, 9], [-1, 2], [3, 3]], "mask": [[7, 8], [5, 5]]}
+    m = _array(client.post(mask_url, json={"outliers": none1, "edits": edits}))
+    expected = _array(client.post(mask_url, json={"outliers": none1}))
+    np.testing.assert_array_equal(m, expected)
+
+    # Stored with the session by PUT; pairs out of range are dropped.
+    state = client.put(url, json={"edits": {"keep": [[0, 2], [0, 9]], "mask": [[1, 4]]}}).json()
+    assert state["edits"] == {"keep": [[0, 2]], "mask": [[1, 4]]}
+    assert client.get(url).json()["edits"] == state["edits"]
+    # A request carries its own edits (empty here), as it does its outliers.
+    m = _array(client.post(mask_url, json={"outliers": {"method": "none"}}))
+    assert m.sum() == 36
+    assert client.put(url, json={"mask": {"type": "hann", "n": 4}}).json()["edits"] == state["edits"]
+
+
+def test_correction_with_edits(stack):
+    client, ds = stack
+    url = f"/api/datasets/{ds['id']}/registration"
+    client.post(url, json={})
+    client.put(url, json={"mask": {"type": "hann", "n": 4}})
+    assert _wait(client, client.post(f"{url}/shifts").json())["status"] == "done"
+
+    # Masking the pair (0, 5) as well: the drift is still the true one, as
+    # the pair is filled from paths of good ones.
+    edits = {"mask": [[5, 0]], "keep": [[1, 4]]}
+    body = {"outliers": {"method": "none", "off_diagonal": 2}, "bad_frames": [3], "edits": edits}
+    drift = client.post(f"{url}/correct", json=body).json()
+    assert drift["frames"] == [0, 1, 2, 4, 5]
+    true = np.array([SHIFTS[f] for f in drift["frames"]], float)  # (dy, dx)
+    rel = lambda v: np.array(v) - np.mean(v)  # noqa: E731
+    np.testing.assert_allclose(rel(drift["x"]), rel(true[:, 1]), atol=1e-6)
+    np.testing.assert_allclose(rel(drift["y"]), rel(true[:, 0]), atol=1e-6)
+    assert client.get(url).json()["edits"] == {"mask": [[5, 0]], "keep": [[1, 4]]}
+    c = _array(client.get(f"{url}/corrected"))
+    assert c[2][1, 4] == 1 and c[0][1, 4] == pytest.approx(SHIFTS[4][1] - SHIFTS[1][1])
+
+    # Applied, the edits are stored with the alignment's settings.
+    r = client.post(f"{url}/apply").json()
+    assert r["dataset"]["alignment"]["settings"]["edits"] == edits
+    assert r["dataset"]["alignment"]["settings"]["bad_frames"] == [3]
+
+
 def test_correction_and_drift(stack):
     client, ds = stack
     url = f"/api/datasets/{ds['id']}/registration"
@@ -312,7 +389,7 @@ def test_matches_the_detailed_walkthrough():
     import rigidregistration
 
     from si_viewer.processing.registration import (
-        MaskSettings, OutlierSettings, PeakSettings, RegistrationSession,
+        MaskEdits, MaskSettings, OutlierSettings, PeakSettings, RegistrationSession,
     )
 
     path = os.path.join(os.path.dirname(__file__), NB3CL8)
@@ -357,3 +434,34 @@ def test_matches_the_detailed_walkthrough():
     sx, sy, side, _ = r["square"]
     assert side == min(w, h) and x <= sx and sx + side <= x + w and y <= sy and sy + side <= y + h
     assert s.average().shape == (side, side) and s.aligned_frame(5).shape == (side, side)
+
+    # The notebook's hand edits after get_outliers (cell 24): single pairs
+    # kept or masked, and blocks of masked pairs.
+    ref.get_outliers(10, 10)
+    for i, j in [[11, 12], [11, 13]]:
+        ref.Rij_mask[i, j] = 1
+        ref.Rij_mask[j, i] = 1
+    for i, j in [[1, 9]]:
+        ref.Rij_mask[i, j] = 0
+        ref.Rij_mask[j, i] = 0
+    ref.Rij_mask[:5, 15] = 0
+    ref.Rij_mask[:3, 18] = 0
+    ref.Rij_mask[:8, 24:26] = 0
+    ref.Rij_mask[15, :5] = 0
+    ref.Rij_mask[18, :3] = 0
+    ref.Rij_mask[24:26, :8] = 0
+    ref.refine_mask()
+    ref.make_corrected_Rij()
+    ref.get_imshifts()
+
+    # The same as pairs (the blocks' mirror images are implied).
+    edits = MaskEdits(
+        keep=[(11, 12), (11, 13)],
+        mask=[(1, 9)] + [(r, 15) for r in range(5)] + [(r, 18) for r in range(3)]
+        + [(r, c) for r in range(8) for c in (24, 25)],
+    )
+    np.testing.assert_array_equal(s.outlier_mask(outliers, edits=edits), ref.Rij_mask)
+    drift = s.correct(outliers, edits=edits)
+    np.testing.assert_allclose(drift["x"], -ref.shifts_y, atol=1e-4)
+    np.testing.assert_allclose(drift["y"], -ref.shifts_x, atol=1e-4)
+    assert s.correction["edits"] == edits.model_dump()

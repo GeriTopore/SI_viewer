@@ -41,9 +41,9 @@ spectrum, with Poisson noise). They are defined in
 ### Processing and FFT
 
 The right-hand column shows a live FFT of the visible part of the image in the
-viewer. Hover over it to read the spatial frequency and the matching spacing
-(d = 1/|k|) in ångström, e.g. to check resolution or lattice
-spacings. Below it, the **Process** tab rebins and filters the data in view
+viewer. Click on it to mark a spatial frequency and read the matching spacing
+(d = 1/|k|) in ångström, e.g. to check resolution or lattice spacings; the
+mark stays until you click elsewhere, and *Measure* hides it. Below it, the **Process** tab rebins and filters the data in view
 without changing the loaded data:
 - **Spectrum images:** Gaussian or mean spatial filters and spectral
   smoothing. They apply to the whole spectrum image, whatever maps are
@@ -82,9 +82,8 @@ alignment workspace. It registers the frames with
 [rigidregistration](https://github.com/kem-group/rigidRegistration), step by
 step, with each step's diagnostics in the viewer and its parameters in the
 Process tab. So far:
-- **Frames:** each frame (slider, ← / →), with its FFT in the FFT panel; set
-  the frame range and mark bad frames.
 - **Fourier mask:**
+  - Set the frames to register (first to last) and the pair to preview.
   - The mask and its cutoff ring are drawn on the FFT panel; its *Mask*
     button hides them.
   - The frame and the cross-correlation of a pair of frames, updating live.
@@ -105,7 +104,8 @@ Process tab. So far:
 - **Result:**
   - The aligned frames, scrolled with a slider and cropped to the square
     inside every frame; *Original* shows them as loaded with that square
-    drawn on each.
+    drawn on each. *Mark bad* leaves the frame shown out (bad frames are
+    listed in the Process tab, with × to use one again).
   - Below, the average of the aligned frames (its FFT in the FFT panel).
   - *Apply* shows the stack aligned and cropped everywhere (slider,
     projections, profiles, export), with an *Original / Aligned* switch and

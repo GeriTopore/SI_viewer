@@ -92,8 +92,6 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
     );
   }
   switch (a.step) {
-    case "frames":
-      return <FramesControls d={d} a={a} />;
     case "mask":
       return <MaskControls d={d} a={a} />;
     case "peaks":
@@ -125,11 +123,12 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   const k = ALIGN_STEPS.findIndex((s) => s.id === a.step);
   return (
     <section className="q-form">
-      <h4 className="process-heading">Step 5 · Result</h4>
+      <h4 className="process-heading">Step 4 · Result</h4>
       <p className="muted small process-note">
         Scroll through the aligned frames (slider, ← / →); Original shows them as loaded, with the square kept in
         every frame. The FFT panel shows the average's FFT.
       </p>
+      <BadFrames d={d} a={a} hint="Mark bad under the frame" />
       <p className="muted small process-note">
         Apply shows the stack's frames aligned and cropped (switch back with Original under the image) and adds
         the average as an image.{d.alignment ? " It replaces the current alignment." : ""}
@@ -171,8 +170,9 @@ function RemoveAlignment({ d }: { d: DatasetSummary }) {
   );
 }
 
-function FramesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
-  const { patch, start, save } = useAlignment.getState();
+/** The frames registered (first … last); changing them retakes the FFTs. */
+function FrameRange({ d, a }: { d: DatasetSummary; a: Alignment }) {
+  const { patch, start } = useAlignment.getState();
   const n = d.navigation_shape[0] ?? 1;
   const [first, setFirst] = useState(String(a.first));
   const [last, setLast] = useState(String(a.last - 1));
@@ -191,79 +191,81 @@ function FramesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
     patch(d.id, {
       first: f,
       last: l + 1,
-      frame: clamp(a.frame),
       pair: [clamp(a.pair[0]), clamp(a.pair[1])],
       badFrames: a.badFrames.filter((b) => b >= f && b <= l),
     });
     start(d.id);
   };
 
-  // Bad frames are stored with the session as they change.
-  const badKey = a.badFrames.join(",");
-  const first_ = useRef(true);
-  useEffect(() => {
-    if (first_.current) {
-      first_.current = false;
-      return;
-    }
-    save(d.id);
-  }, [badKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
   return (
-    <section className="q-form">
-      <h4 className="process-heading">Step 1 · Frames</h4>
-      <p className="muted small process-note">
-        Look through the frames (slider, ← / →) and their FFTs (FFT panel, top right). Leave out frames at the
-        start or end that differ (e.g. before the drift settled), and mark damaged or blank frames as bad.
-      </p>
-      <label title="First and last frame to register">
-        Frames
-        <span className="q-inline">
-          <input
-            type="number"
-            min={0}
-            max={n - 1}
-            value={first}
-            onChange={(e) => setFirst(e.target.value)}
-            onBlur={applyRange}
-            onKeyDown={(e) => e.key === "Enter" && applyRange()}
-          />
-          to
-          <input
-            type="number"
-            min={0}
-            max={n - 1}
-            value={last}
-            onChange={(e) => setLast(e.target.value)}
-            onBlur={applyRange}
-            onKeyDown={(e) => e.key === "Enter" && applyRange()}
-          />
-          <span className="muted">of 0–{n - 1}</span>
+    <label title="First and last frame to register: leave out frames at the start or end that differ (e.g. before the drift settled)">
+      Register frames
+      <span className="q-inline">
+        <input
+          type="number"
+          min={0}
+          max={n - 1}
+          value={first}
+          onChange={(e) => setFirst(e.target.value)}
+          onBlur={applyRange}
+          onKeyDown={(e) => e.key === "Enter" && applyRange()}
+        />
+        to
+        <input
+          type="number"
+          min={0}
+          max={n - 1}
+          value={last}
+          onChange={(e) => setLast(e.target.value)}
+          onBlur={applyRange}
+          onKeyDown={(e) => e.key === "Enter" && applyRange()}
+        />
+        <span className="muted">of 0–{n - 1}</span>
+      </span>
+    </label>
+  );
+}
+
+/** Frames left out of the registration, each with × to use it again, and a
+ * field to add one by number. */
+function BadFrames({ d, a, hint }: { d: DatasetSummary; a: Alignment; hint: string }) {
+  const { patch } = useAlignment.getState();
+  const [add, setAdd] = useState("");
+  const addFrame = () => {
+    const f = Math.round(Number(add));
+    if (add.trim() && f >= a.first && f < a.last && !a.badFrames.includes(f)) {
+      patch(d.id, { badFrames: [...a.badFrames, f].sort((x, y) => x - y) });
+    }
+    setAdd("");
+  };
+  return (
+    <div className="align-bad-frames">
+      <span className="muted small">Bad frames:</span>
+      {a.badFrames.map((f) => (
+        <span key={f} className="align-chip">
+          {f}
+          <button
+            className="icon-button"
+            onClick={() => patch(d.id, { badFrames: a.badFrames.filter((b) => b !== f) })}
+            title="Use this frame again"
+          >
+            ×
+          </button>
         </span>
-      </label>
-      <div className="align-bad-frames">
-        <span className="muted small">Bad frames:</span>
-        {a.badFrames.length ? (
-          a.badFrames.map((f) => (
-            <span key={f} className="align-chip">
-              <button className="link-button" onClick={() => patch(d.id, { frame: f })} title="Show this frame">
-                {f}
-              </button>
-              <button
-                className="icon-button"
-                onClick={() => patch(d.id, { badFrames: a.badFrames.filter((b) => b !== f) })}
-                title="Use this frame again"
-              >
-                ×
-              </button>
-            </span>
-          ))
-        ) : (
-          <span className="muted small">none (use “Mark bad” under the frame)</span>
-        )}
-      </div>
-      <NextStep d={d} a={a} />
-    </section>
+      ))}
+      <input
+        type="number"
+        className="align-bad-add"
+        min={a.first}
+        max={a.last - 1}
+        placeholder="add"
+        value={add}
+        onChange={(e) => setAdd(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && addFrame()}
+        onBlur={addFrame}
+        title={`Leave a frame out (${hint})`}
+      />
+    </div>
   );
 }
 
@@ -298,7 +300,7 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
 
   return (
     <section className="q-form">
-      <h4 className="process-heading">Step 2 · Fourier mask</h4>
+      <h4 className="process-heading">Step 1 · Fourier mask</h4>
       <p className="muted small process-note">
         The mask weights the frequencies the frames share; features smaller than about n pixels are ignored. It is
         drawn on the FFT panel (top right), with a ring at the cutoff; its Mask button hides it to see the whole
@@ -306,6 +308,7 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
         sit at the information limit. The cross-correlation should show one sharp, isolated peak; check several
         pairs, especially frames far apart.
       </p>
+      <FrameRange d={d} a={a} />
       <PairInputs d={d} a={a} />
       <label>
         Mask
@@ -381,7 +384,7 @@ function PairInputs({ d, a }: { d: DatasetSummary; a: Alignment }) {
   };
   return (
     <label title="The pair of frames previewed">
-      Frames
+      Preview pair
       <span className="q-inline">
         <input type="number" min={a.first} max={a.last - 1} value={a.pair[0]} onChange={(e) => setPair(0, e.target.value)} />
         and
@@ -425,7 +428,7 @@ function PeaksControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
 
   return (
     <section className="q-form">
-      <h4 className="process-heading">Step 3 · Peak finding</h4>
+      <h4 className="process-heading">Step 2 · Peak finding</h4>
       <p className="muted small process-note">
         Each pair's shift is the position of its correlation peak. Check that the peak used (red) is the true one
         and not a neighbouring lattice maximum, for several pairs (or click cells of the shift matrices).
@@ -522,7 +525,7 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
 
   return (
     <section className="q-form">
-      <h4 className="process-heading">Step 4 · Shift matrices</h4>
+      <h4 className="process-heading">Step 3 · Shift matrices</h4>
       <p className="muted small process-note">
         Every pair of the {n} frames ({(n * (n - 1)) / 2} pairs) is correlated: row i, column j is the shift of frame
         j relative to frame i. Correct shifts change smoothly across the matrix; isolated jumps are wrong pairs. Mask
@@ -645,9 +648,7 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
             />
             frames apart
           </label>
-          <p className="muted small process-note">
-            Bad frames ({a.badFrames.length ? a.badFrames.join(", ") : "none"}) are masked too; set them in step 1.
-          </p>
+          <BadFrames d={d} a={a} hint="their rows and columns are masked" />
         </>
       )}
       <NextStep d={d} a={a} />

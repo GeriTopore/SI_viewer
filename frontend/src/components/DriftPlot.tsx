@@ -145,7 +145,8 @@ export function DriftPlot({ drift, calX, highlight = [] }: Props) {
           {xs.map((x, k) => (
             <circle key={k} cx={sx(x)} cy={sy(ys[k])} r={4} fill={colour(k)} className="drift-point" />
           ))}
-          {highlight.map((f) => {
+          {/* Each frame once: a diagonal cell (i, i) names it twice, and duplicate keys leave stale circles. */}
+          {[...new Set(highlight)].map((f) => {
             const k = drift.frames.indexOf(f);
             return k < 0 ? null : <circle key={`h${f}`} cx={sx(xs[k])} cy={sy(ys[k])} r={7} className="drift-highlight" />;
           })}

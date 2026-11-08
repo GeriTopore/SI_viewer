@@ -7,7 +7,7 @@ import { useAlignment, type Alignment } from "../state/alignment";
 import { imageGeometry } from "./geometry";
 import { useLatest } from "./useLatest";
 
-/** Step 5: the frames shifted into register, scrolled through, cropped to
+/** Step 4: the frames shifted into register, scrolled through, cropped to
  * the square inside every frame (or as loaded, with that square drawn where
  * it falls on each frame), and below them their average. The average feeds
  * the FFT panel. */
@@ -15,7 +15,7 @@ export function ResultStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
   const { patch } = useAlignment.getState();
   const g = imageGeometry(ds, "signal");
   const shifts = a.session?.shifts ?? null;
-  // Correct with the current outlier settings (as step 4 shows them), then
+  // Correct with the current outlier settings (as step 3 shows them), then
   // shift and average: the backend does this once per correction.
   const key = shifts ? `${a.sessionStamp}:${a.matricesStamp}:${JSON.stringify(a.outliers)}:${a.badFrames.join(",")}` : null;
   const result = useLatest(key, async () => {
@@ -41,7 +41,7 @@ export function ResultStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
   if (!shifts) {
     return (
       <div className="placeholder">
-        <p className="muted">Compute the shifts in step 4 first.</p>
+        <p className="muted">Compute the shifts in step 3 first.</p>
       </div>
     );
   }
@@ -73,7 +73,7 @@ export function ResultStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
     <div className="align-body align-result-step">
       {shifts.stale && (
         <div className="align-stale">
-          The mask or peak finding changed since the shifts were computed: compute them again in step 4 to use them.
+          The mask or peak finding changed since the shifts were computed: compute them again in step 3 to use them.
         </div>
       )}
       <div className="align-result-frames">
@@ -116,6 +116,14 @@ export function ResultStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
           <span className="stack-index">
             {frame} ({k + 1} of {frames.length})
           </span>
+          <button
+            className="secondary small-button"
+            onClick={() => patch(ds.id, { badFrames: [...a.badFrames, frame].sort((x, y) => x - y) })}
+            disabled={frames.length <= 2}
+            title="Leave this frame out: the shifts are corrected and the frames averaged again without it"
+          >
+            Mark bad
+          </button>
         </div>
       </div>
       <ArrayPanel

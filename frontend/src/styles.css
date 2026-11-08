@@ -2122,6 +2122,10 @@ button.primary:disabled {
   display: block;
 }
 
+.fft-canvas-wrap.measuring {
+  cursor: crosshair;
+}
+
 .fft-overlay {
   position: absolute;
   inset: 0;
@@ -2581,11 +2585,6 @@ kbd {
   gap: 8px;
 }
 
-/* Frames: the frame, then its slider (its FFT is in the FFT panel). */
-.align-frames {
-  grid-template-rows: minmax(0, 1fr) auto;
-}
-
 .align-frame-bar {
   display: flex;
   align-items: center;
@@ -2741,6 +2740,10 @@ kbd {
   gap: 4px;
 }
 
+.align-bad-add {
+  width: 56px;
+}
+
 .align-chip {
   display: inline-flex;
   align-items: center;
@@ -2891,6 +2894,11 @@ kbd {
   align-items: center;
   gap: 10px;
   font-size: 12px;
+}
+
+/* Measure and Mask side by side at the right of the FFT header. */
+.fft-mask-toggle + .fft-mask-toggle {
+  margin-left: 0;
 }
 
 .align-matrix-bar .fft-mask-toggle {

@@ -467,9 +467,9 @@ sets that step's parameters while watching them update, and moves on only
 when satisfied. These are the notebook's steps (QuickWalkThrough /
 DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
 
-1. **Frames.** The stack (slider) beside the FFT of the current frame, and a
-   plot of each frame's mean intensity, to spot blank or damaged frames.
-   - Choose the frame range, and mark bad frames to leave out.
+1. **Frames.** (Removed as a step: the stack viewer already shows the frames
+   and their FFT. The frame range is set in the Fourier mask step; bad frames
+   in the Shift matrices step, or with *Mark bad* in the Result step.)
 2. **Fourier mask.** Three panels for a chosen pair of frames (i, j), as
    `show_Fourier_mask` draws them, updating live as the mask changes:
    - the FFT of frame i with the mask overlaid in colour;
@@ -515,8 +515,8 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
 - **Alignment workspace in the viewer.**
   - *Align frames…* (Process tab, or right-click a stack) switches the main
     viewer to a workspace for that stack.
-  - A stepper at the top: Frames → Fourier mask → Peak finding → Shift
-    matrices → Outliers → Result. It has Back / Next and shows which steps
+  - A stepper at the top: Fourier mask → Peak finding → Shift matrices (with
+    outliers) → Result. It has Back / Next and shows which steps
     are done; later steps unlock once earlier ones are done.
   - The panels of the current step fill the viewer: images in the app's
     WebGL image view (zoom, contrast, hover readout), plots in uPlot, and

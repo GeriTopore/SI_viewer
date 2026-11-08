@@ -66,6 +66,9 @@ interface UiState {
   /** FFT of the viewer's image, above the tabs. */
   fftOpen: boolean;
   setFftOpen: (open: boolean) => void;
+  /** Clicking the FFT marks a spatial frequency (and shows the mark). */
+  fftMeasure: boolean;
+  setFftMeasure: (on: boolean) => void;
   lastDir: string;
   browserOpen: boolean;
   setListMode: (mode: ListMode) => void;
@@ -113,6 +116,11 @@ export const useUi = create<UiState>((set) => ({
     set({ bottomTab });
   },
   fftOpen: load<string>("si-viewer.fftOpen", "true") === "true",
+  fftMeasure: load<string>("si-viewer.fftMeasure", "true") === "true",
+  setFftMeasure: (fftMeasure) => {
+    save("si-viewer.fftMeasure", String(fftMeasure));
+    set({ fftMeasure });
+  },
   setFftOpen: (fftOpen) => {
     save("si-viewer.fftOpen", String(fftOpen));
     set({ fftOpen });

@@ -11,9 +11,10 @@ const dialogOpen = () => !!document.querySelector(".modal-backdrop");
 /**
  * Single-key shortcuts (no ⌘/Ctrl/Alt), e.g. ``{ f: fit, "1": oneToOne }``.
  * Letters match either case. Ignored while typing in a field or with a
- * dialog open. The latest handlers are always used.
+ * dialog open. The latest handlers are always used. A handler that returns
+ * ``false`` leaves the key to other listeners.
  */
-export function useShortcuts(keys: Record<string, (e: KeyboardEvent) => void>, enabled = true) {
+export function useShortcuts(keys: Record<string, (e: KeyboardEvent) => unknown>, enabled = true) {
   const live = useRef(keys);
   live.current = keys;
   useEffect(() => {
@@ -21,9 +22,8 @@ export function useShortcuts(keys: Record<string, (e: KeyboardEvent) => void>, e
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isTyping(e) || dialogOpen()) return;
       const fn = live.current[e.key.length === 1 ? e.key.toLowerCase() : e.key] ?? live.current[e.key];
-      if (!fn) return;
+      if (!fn || fn(e) === false) return;
       e.preventDefault();
-      fn(e);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -45,8 +45,8 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
   {
     group: "Image",
     keys: [
-      ["F", "Fit the image to the window (or double-click)"],
-      ["1", "One screen pixel per data pixel"],
+      ["F", "Fit the image under the mouse (else the main one) to its window, or double-click"],
+      ["1", "One screen pixel per data pixel (same image)"],
       ["⌘/Ctrl S", "Save the image as shown as PNG"],
       ["Space + drag", "Pan with any tool (or middle-drag)"],
       ["← / →", "Previous / next frame of a stack"],

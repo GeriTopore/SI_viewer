@@ -4,10 +4,9 @@ import {
 } from "../api/client";
 
 /** Steps of the guided registration (docs/PLAN.md 4.10). */
-export type AlignStep = "frames" | "mask" | "peaks" | "matrices" | "result";
+export type AlignStep = "mask" | "peaks" | "matrices" | "result";
 
 export const ALIGN_STEPS: { id: AlignStep; label: string; ready: boolean }[] = [
-  { id: "frames", label: "Frames", ready: true },
   { id: "mask", label: "Fourier mask", ready: true },
   { id: "peaks", label: "Peak finding", ready: true },
   { id: "matrices", label: "Shift matrices", ready: true },
@@ -17,8 +16,6 @@ export const ALIGN_STEPS: { id: AlignStep; label: string; ready: boolean }[] = [
 /** One stack's registration as the user sets it up. */
 export interface Alignment {
   step: AlignStep;
-  /** Frame shown in the Frames step. */
-  frame: number;
   /** Frames registered: first … last - 1. */
   first: number;
   last: number;
@@ -66,8 +63,7 @@ interface AlignmentStore {
 }
 
 const initial = (frames: number): Alignment => ({
-  step: "frames",
-  frame: 0,
+  step: "mask",
   first: 0,
   last: frames,
   badFrames: [],
@@ -104,7 +100,10 @@ export const useAlignment = create<AlignmentStore>((set, get) => {
       if (!existing?.session) get().start(stack);
     },
     close: () => set({ openId: null }),
-    patch,
+    patch: (stack, p) => {
+      patch(stack, p);
+      if (p.badFrames) get().save(stack); // stored with the session wherever they are set
+    },
     start: async (stack) => {
       const a = get().byStack[stack];
       if (!a) return;
@@ -160,9 +159,6 @@ export const useAlignment = create<AlignmentStore>((set, get) => {
 });
 
 export const useStackAlignment = (stack: string): Alignment | undefined => useAlignment((s) => s.byStack[stack]);
-
-/** Frames registered, as a list (first … last - 1). */
-export const frameRange = (a: Alignment) => Array.from({ length: a.last - a.first }, (_, k) => a.first + k);
 
 /** Clamp frame f into the registered range. */
 export const clampFrame = (a: Alignment, f: number) => Math.min(a.last - 1, Math.max(a.first, Math.round(f)));

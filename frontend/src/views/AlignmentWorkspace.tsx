@@ -3,13 +3,12 @@ import { fetchCompareN, fetchCorrelation, fetchRegistrationFrame, type Frame } f
 import type { DatasetSummary } from "../api/client";
 import { ArrayPanel } from "../components/ArrayPanel";
 import type { Transform } from "../components/ImageView";
-import { ALIGN_STEPS, clampFrame, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
+import { ALIGN_STEPS, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
 import { formatValue } from "../format";
 import { useViewerImage } from "../state/viewerImage";
 import { maskLabel } from "../viewer/fourierMask";
 import { PANE_SIZES, useUi } from "../state/ui";
 import { Splitter } from "../components/Splitter";
-import { useShortcuts } from "../keyboard";
 import { imageGeometry } from "./geometry";
 import { useLatest } from "./useLatest";
 import { MatricesStep } from "./AlignmentMatrices";
@@ -73,8 +72,6 @@ export function AlignmentWorkspace({ ds }: { ds: DatasetSummary }) {
             <span className="spinner" aria-hidden /> Taking the FFTs of {a.last - a.first} frames…
           </p>
         </div>
-      ) : a.step === "frames" ? (
-        <FramesStep ds={ds} a={a} />
       ) : a.step === "mask" ? (
         <MaskStep ds={ds} a={a} />
       ) : a.step === "peaks" ? (
@@ -89,10 +86,10 @@ export function AlignmentWorkspace({ ds }: { ds: DatasetSummary }) {
   );
 }
 
-// ---------- step 1: frames ----------
+// ---------- step 1: Fourier mask ----------
 
-/** One frame of the stack, as loaded, filling the step. It feeds the FFT
- * panel (top right), so the FFT of the frame in view is shown there. */
+/** One frame of the stack, as loaded. It feeds the FFT panel (top right),
+ * so the FFT of the frame in view is shown there, with the mask on it. */
 function FramePanel({ ds, a, frame, title }: { ds: DatasetSummary; a: Alignment; frame: number; title: string }) {
   const g = imageGeometry(ds, "signal");
   const shown = useLatest(`${a.sessionStamp}:${frame}`, () => fetchRegistrationFrame(ds.id, frame));
@@ -112,50 +109,6 @@ function FramePanel({ ds, a, frame, title }: { ds: DatasetSummary; a: Alignment;
     />
   );
 }
-
-function FramesStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
-  const { patch } = useAlignment.getState();
-  const frame = clampFrame(a, a.frame);
-  const setFrame = (f: number) => patch(ds.id, { frame: clampFrame(a, f) });
-  useShortcuts({ ArrowLeft: () => setFrame(frame - 1), ArrowRight: () => setFrame(frame + 1) });
-  const bad = a.badFrames.includes(frame);
-
-  return (
-    <div className="align-body align-frames">
-      <FramePanel
-        ds={ds}
-        a={a}
-        frame={frame}
-        title={`Frame ${frame}${bad ? " (marked bad)" : ""}`}
-      />
-      <div className="align-frame-bar">
-        <input
-          type="range"
-          className="stack-slider"
-          min={a.first}
-          max={a.last - 1}
-          value={frame}
-          onChange={(e) => setFrame(Number(e.target.value))}
-          aria-label="Frame"
-        />
-        <span className="stack-index">
-          {frame} ({a.first}–{a.last - 1})
-        </span>
-        <button
-          className={bad ? "primary small-button" : "secondary small-button"}
-          onClick={() =>
-            patch(ds.id, { badFrames: bad ? a.badFrames.filter((f) => f !== frame) : [...a.badFrames, frame].sort((x, y) => x - y) })
-          }
-          title="Leave this frame out of the registration"
-        >
-          {bad ? "Marked bad" : "Mark bad"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ---------- step 2: Fourier mask ----------
 
 /** Position of a centred cross-correlation's maximum: the shift (px). */
 function peakOf(cc: Frame | null): { dx: number; dy: number; x: number; y: number } | null {

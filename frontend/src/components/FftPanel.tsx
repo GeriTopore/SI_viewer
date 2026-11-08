@@ -72,8 +72,9 @@ function cutPatch(img: ViewerImage): { data: Float32Array; patch: Patch } | null
   };
 }
 
-/** Power spectrum (FFT) of the visible part of the viewer's image. Hovering
- * gives the spatial frequency and the matching real-space spacing. */
+/** Power spectrum (FFT) of the visible part of the viewer's image. Clicking
+ * marks a spatial frequency and gives the matching real-space spacing; the
+ * mark stays until moved or hidden. */
 export function FftPanel() {
   const open = useUi((s) => s.fftOpen);
   const setOpen = useUi((s) => s.setFftOpen);
@@ -81,6 +82,8 @@ export function FftPanel() {
   const fftMask = useViewerImage((s) => s.fftMask);
   const showMask = useViewerImage((s) => s.showFftMask);
   const setShowMask = useViewerImage((s) => s.setShowFftMask);
+  const measure = useUi((s) => s.fftMeasure);
+  const setMeasure = useUi((s) => s.setFftMeasure);
   const [zoom, setZoom] = useState(1);
 
   return (
@@ -97,6 +100,16 @@ export function FftPanel() {
           </span>
           FFT
         </button>
+        {open && (
+          <button
+            className={`fft-mask-toggle${measure ? " active" : ""}`}
+            aria-pressed={measure}
+            onClick={() => setMeasure(!measure)}
+            title={measure ? "Hide the spacing mark (clicks no longer place it)" : "Click the FFT to measure a spacing"}
+          >
+            Measure
+          </button>
+        )}
         {open && fftMask && (
           <button
             className={`fft-mask-toggle${showMask ? " active" : ""}`}
@@ -123,7 +136,7 @@ export function FftPanel() {
           </div>
         )}
       </div>
-      {open && <FftView image={image} zoom={zoom} mask={fftMask && showMask ? fftMask : null} />}
+      {open && <FftView image={image} zoom={zoom} mask={fftMask && showMask ? fftMask : null} measure={measure} />}
     </section>
   );
 }
@@ -132,14 +145,21 @@ export function FftPanel() {
 const MASK_RGB = [255, 150, 30];
 const MASK_ALPHA = 0.5;
 
-function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: number; mask: MaskSettings | null }) {
+function FftView({
+  image, zoom, mask, measure,
+}: { image: ViewerImage | null; zoom: number; mask: MaskSettings | null; measure: boolean }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [side, setSide] = useState(0);
   const [shown, setShown] = useState<Shown | null>(null);
   const [tooSmall, setTooSmall] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [hover, setHover] = useState<{ u: number; v: number } | null>(null);
+  // The clicked spatial frequency (units⁻¹, x right, y down): kept as a
+  // frequency so it stays put as the FFT is redone (pan, zoom, another
+  // frame). Cleared when hidden or when the units change.
+  const [mark, setMark] = useState<{ kx: number; ky: number } | null>(null);
+  const units = shown?.patch.units;
+  useEffect(() => setMark(null), [units, measure]);
 
   // One worker; only the latest request's result is shown.
   const worker = useRef<Worker | null>(null);
@@ -237,22 +257,22 @@ function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: numbe
     ctx.putImageData(img, 0, 0);
   }, [shown, side, zoom, mask]);
 
-  // Hover position in FFT pixels from the centre (u right, v down).
-  const onMove = (e: React.PointerEvent) => {
-    if (!shown || !side) return;
+  const p = shown?.patch;
+  // Click: mark that frequency. FFT pixel u (from the centre) is u/n cycles
+  // per patch pixel, i.e. u / (n · pixel size) per unit length.
+  const onClick = (e: React.MouseEvent) => {
+    if (!measure || !p || !shown || !side) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const span = shown.result.n / zoom;
-    setHover({
-      u: ((e.clientX - rect.left) / rect.width - 0.5) * span,
-      v: ((e.clientY - rect.top) / rect.height - 0.5) * span,
-    });
+    const u = ((e.clientX - rect.left) / rect.width - 0.5) * span;
+    const v = ((e.clientY - rect.top) / rect.height - 0.5) * span;
+    setMark({ kx: u / (p.n * p.px), ky: v / (p.n * p.py) });
   };
 
-  const p = shown?.patch;
-  // Spatial frequency: FFT pixel u is u/n cycles per pixel.
-  const freq = p && hover && { kx: hover.u / (p.n * p.px), ky: hover.v / (p.n * p.py) };
+  const freq = measure && p ? mark : null;
   const k = freq && Math.hypot(freq.kx, freq.ky);
-  // Screen radius and position of the hovered frequency (for the ring).
+  // The mark in FFT pixels, then on screen (for the spots and the ring).
+  const at = p && freq ? { u: freq.kx * p.n * p.px, v: freq.ky * p.n * p.py } : null;
   const toScreen = (u: number) => (shown ? (u / (shown.result.n / zoom) + 0.5) * side : 0);
   // The mask's cutoff ring (an ellipse for an elliptical mask): f cycles
   // per frame pixel is f·n·bin FFT pixels, i.e. f·bin·zoom·side on screen.
@@ -294,10 +314,9 @@ function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: numbe
     <div className="fft-body">
       <div
         ref={wrapRef}
-        className="fft-canvas-wrap"
-        onPointerMove={onMove}
-        onPointerLeave={() => setHover(null)}
-        title={p ? `FFT of ${p.label}` : undefined}
+        className={`fft-canvas-wrap${measure && p ? " measuring" : ""}`}
+        onClick={onClick}
+        title={p ? `FFT of ${p.label}${measure ? ": click to measure a spacing" : ""}` : undefined}
       >
         <canvas ref={canvasRef} style={{ width: side, height: side }} />
         {ring && ringR !== null && ringR > 0 && (
@@ -316,16 +335,16 @@ function FftView({ image, zoom, mask }: { image: ViewerImage | null; zoom: numbe
             </g>
           </svg>
         )}
-        {shown && hover && k ? (
+        {shown && at && k ? (
           <svg className="fft-overlay" width={side} height={side}>
             <circle
               cx={side / 2}
               cy={side / 2}
-              r={Math.hypot(toScreen(hover.u) - side / 2, toScreen(hover.v) - side / 2)}
+              r={Math.hypot(toScreen(at.u) - side / 2, toScreen(at.v) - side / 2)}
               className="fft-ring"
             />
-            <circle cx={toScreen(hover.u)} cy={toScreen(hover.v)} r={4} className="fft-spot" />
-            <circle cx={toScreen(-hover.u)} cy={toScreen(-hover.v)} r={4} className="fft-spot" />
+            <circle cx={toScreen(at.u)} cy={toScreen(at.v)} r={4} className="fft-spot" />
+            <circle cx={toScreen(-at.u)} cy={toScreen(-at.v)} r={4} className="fft-spot" />
           </svg>
         ) : null}
         {busy && <span className="spinner fft-busy" aria-hidden />}

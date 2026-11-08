@@ -103,6 +103,9 @@ const valueAt = (frame: Frame, ix: number, iy: number) => {
   return fx < frame.width && fy < frame.height ? frame.data[fy * frame.width + fx] : null;
 };
 
+// The image view under the mouse (its owner id), which takes F and 1.
+let hoveredView: string | null = null;
+
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
   interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true,
@@ -319,8 +322,15 @@ export function ImageView({
 
   const bar = view && niceScaleBar(calX.scale / view.zoom, calX.units);
 
-  // Keys act on the main view only (not on diagnostic panels beside it).
-  useShortcuts({ f: () => fit(), "1": () => view && setView({ ...view, zoom: 1 }) }, publishes);
+  // F / 1 act on the view under the mouse, else on the main (published) one.
+  const ownsKeys = () => (hoveredView ? hoveredView === owner : publishes);
+  useEffect(() => () => {
+    if (hoveredView === owner) hoveredView = null;
+  }, [owner]);
+  useShortcuts({
+    f: () => (ownsKeys() ? fit() : false),
+    "1": () => (ownsKeys() && view ? setView({ ...view, zoom: 1 }) : false),
+  });
   // ⌘/Ctrl+S saves the image (instead of the browser saving the page).
   const save = useRef<() => void>(() => {});
   useEffect(() => {
@@ -358,7 +368,11 @@ export function ImageView({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerEnter={() => {
+          hoveredView = owner;
+        }}
         onPointerLeave={() => {
+          if (hoveredView === owner) hoveredView = null;
           setHover(null);
           interaction?.onHover?.(null);
         }}

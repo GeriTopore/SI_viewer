@@ -51,7 +51,7 @@ function crop(f: Frame, x: number, y: number, half: number) {
   return { frame: { data, width: size, height: size, bin: 1 } as Frame, origin: { x: x0, y: y0 } };
 }
 
-/** Step 3: how each pair's shift is read from its correlation, for the pair
+/** Step 2: how each pair's shift is read from its correlation, for the pair
  * chosen in the Process tab (or clicked in the shift matrices). */
 export function PeaksStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
   const g = imageGeometry(ds, "signal");

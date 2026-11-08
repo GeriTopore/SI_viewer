@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchCorrectedMatrices, fetchOutlierMask, fetchShiftMatrices, type Frame } from "../api/arrays";
 import { api, type DatasetSummary } from "../api/client";
 import { ArrayPanel } from "../components/ArrayPanel";
@@ -11,11 +11,13 @@ import { DriftPlot } from "../components/DriftPlot";
 import { imageGeometry } from "./geometry";
 
 const ACTIVE = new Set(["queued", "running"]);
+// Longer than the gap between the clicks of a double-click.
+const OPEN_DELAY_MS = 300;
 
 /** Largest |value| of a matrix (its colour range is ± this). */
 const maxAbs = (f: Frame | null) => (f ? f.data.reduce((m, v) => Math.max(m, Math.abs(v)), 0) || 1 : 1);
 
-/** Step 4: every pair's shift, as Δx and Δy matrices (row i, column j: frame
+/** Step 3: every pair's shift, as Δx and Δy matrices (row i, column j: frame
  * j relative to frame i). Hover reads a cell; clicking one opens that pair
  * in Peak finding. */
 export function MatricesStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
@@ -44,14 +46,23 @@ export function MatricesStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
     const i = Math.floor(p.y);
     return i >= 0 && j >= 0 && i < n && j < n ? { i: a.first + i, j: a.first + j } : null;
   };
+  // A click opens the pair in Peak finding, after a pause so that a
+  // double-click (fit the view) can cancel it.
+  const opening = useRef<number | undefined>(undefined);
+  useEffect(() => () => clearTimeout(opening.current), []);
   const interaction: Interaction = {
     cursor: "pointer",
     onHover: (p) => setHover(p ? cell(p) : null),
     onDown: (p) => {
       const c = cell(p);
       if (!c || c.i === c.j) return false;
-      patch(ds.id, { pair: [c.i, c.j], step: "peaks" });
+      clearTimeout(opening.current);
+      opening.current = window.setTimeout(() => patch(ds.id, { pair: [c.i, c.j], step: "peaks" }), OPEN_DELAY_MS);
       return true;
+    },
+    onDoubleClick: () => {
+      clearTimeout(opening.current);
+      return false; // and fit
     },
   };
 

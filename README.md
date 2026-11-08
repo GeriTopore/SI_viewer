@@ -114,6 +114,7 @@ Process tab. So far:
     projections, profiles, export), with an *Original / Aligned* switch and
     an *Alignment* tab (drift and settings) under the image, and adds the
     average as an image. *Remove alignment* in the Process tab undoes it.
+  - *Save* in the Result step: the shifts (CSV) and a report (PDF).
 
 The package is installed editable from `../rigidRegistration` (see
 `environment.yml`).

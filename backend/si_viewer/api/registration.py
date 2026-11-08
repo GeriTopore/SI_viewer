@@ -6,11 +6,14 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 
 from ..jobs import Job
+from ..processing.export import safe_name
 from ..processing.registration import (
     CorrelationType, MaskEdits, MaskSettings, MaskType, OutlierSettings, PeakSettings, RegistrationSession,
 )
+from ..processing.registration_export import report_pdf, shifts_csv
 from ..session import Dataset, DatasetKind
 from .datasets import _dataset, array_response
+from .export import download
 
 router = APIRouter(tags=["registration"])
 
@@ -259,3 +262,41 @@ def get_compare_n(
     except ValueError as e:
         raise HTTPException(422, str(e))
     return array_response(ccs, i=i, j=j, n=n)
+
+
+def _image_scale(ds: Dataset) -> tuple[float | None, str]:
+    """Scale and units of the stack's image x axis, as loaded (the drift is in
+    pixels of the loaded frames)."""
+    axis = ds.loaded_signal.axes_manager.signal_axes[0]
+    return float(axis.scale), axis.units if isinstance(axis.units, str) else ""
+
+
+@router.get("/api/datasets/{dataset_id}/registration/shifts.csv")
+def get_shifts_csv(dataset_id: str, request: Request) -> Response:
+    """Each kept frame's shift and drift (px, and Å when calibrated) of the
+    current correction, as a CSV with the settings in comment lines."""
+    ds = _stack(request, dataset_id)
+    s = _session(request, dataset_id)
+    info = _frame_error(s.applied)["info"]
+    text = shifts_csv(info, ds.title, *_image_scale(ds))
+    return download(text.encode("utf-8"), f"{safe_name(ds.title)}_shifts.csv")
+
+
+@router.get("/api/datasets/{dataset_id}/registration/report.pdf")
+def get_report_pdf(dataset_id: str, request: Request) -> Response:
+    """A two-page PDF report of the current correction: settings, drift,
+    aligned average and its FFT, and the shift matrices."""
+    ds = _stack(request, dataset_id)
+    s = _session(request, dataset_id)
+    pdf = _frame_error(report_pdf, s, ds.title, *_image_scale(ds))
+    return download(pdf, f"{safe_name(ds.title)}_alignment_report.pdf")
+
+
+@router.get("/api/datasets/{dataset_id}/alignment/shifts.csv")
+def get_alignment_csv(dataset_id: str, request: Request) -> Response:
+    """The shifts and drift of the alignment applied to the stack."""
+    ds = _stack(request, dataset_id)
+    if ds.alignment is None:
+        raise HTTPException(404, f"{ds.title} has no applied alignment")
+    text = shifts_csv(ds.alignment, ds.title, *_image_scale(ds))
+    return download(text.encode("utf-8"), f"{safe_name(ds.title)}_shifts.csv")

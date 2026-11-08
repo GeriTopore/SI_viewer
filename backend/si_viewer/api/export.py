@@ -18,6 +18,7 @@ MEDIA_TYPES = {
     "msa": "text/plain",
     "hspy": "application/x-hdf5",
     "zip": "application/zip",
+    "pdf": "application/pdf",
 }
 
 

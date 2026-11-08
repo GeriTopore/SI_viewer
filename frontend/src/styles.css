@@ -2645,6 +2645,14 @@ kbd {
   margin: 0;
 }
 
+.align-save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+}
+
 .align-crop {
   fill: none;
   stroke: #ffd60a;

@@ -230,6 +230,12 @@ export interface ExportFormat {
 export const exportUrl = (id: string, format: string) =>
   `/api/datasets/${id}/export?format=${encodeURIComponent(format)}`;
 
+/** Download URLs of a drift correction: the current registration's shifts
+    (CSV) and report (PDF), and the applied alignment's shifts (CSV). */
+export const registrationShiftsUrl = (id: string) => `/api/datasets/${id}/registration/shifts.csv`;
+export const registrationReportUrl = (id: string) => `/api/datasets/${id}/registration/report.pdf`;
+export const alignmentShiftsUrl = (id: string) => `/api/datasets/${id}/alignment/shifts.csv`;
+
 /** Download URL of a zip of every element map of a file. */
 export const mapsZipUrl = (fileId: string) => `/api/files/${fileId}/maps`;
 

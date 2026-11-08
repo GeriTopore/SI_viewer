@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  api, type CorrelationType, type DatasetSummary, type MaskSettings, type MaskType, type OutlierSettings,
+  api, registrationReportUrl, registrationShiftsUrl, type CorrelationType, type DatasetSummary, type MaskSettings, type MaskType, type OutlierSettings,
   type PeakMethod, type PeakSettings,
 } from "../api/client";
 import { maskLabel } from "../viewer/fourierMask";
 import { ALIGN_STEPS, clampFrame, editsOf, useAlignment, useStackAlignment, type Alignment } from "../state/alignment";
 import { useDatasets } from "../state/datasets";
+import { downloadUrl } from "../download";
 
 const MASKS: { id: MaskType; label: string }[] = [
   { id: "hann", label: "Hann (lowpass, cos²)" },
@@ -133,6 +134,15 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
         Apply shows the stack's frames aligned and cropped (switch back with Original under the image) and adds
         the average as an image.{d.alignment ? " It replaces the current alignment." : ""}
       </p>
+      <div className="align-save">
+        <span className="muted small">Save</span>
+        <button onClick={() => downloadUrl(registrationShiftsUrl(d.id))} disabled={!a.session?.shifts}>
+          Shifts (CSV)
+        </button>
+        <button onClick={() => downloadUrl(registrationReportUrl(d.id))} disabled={!a.session?.shifts}>
+          Report (PDF)
+        </button>
+      </div>
       {error && <p className="field-error">{error}</p>}
       <div className="process-actions">
         <button onClick={() => patch(d.id, { step: ALIGN_STEPS[k - 1].id })}>Back</button>

@@ -665,7 +665,9 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
      notebook does (done: *Edit mask* in the matrices; edits are stored per
      pair, applied to both triangles, and kept with the applied alignment).
    - Apply the shifts to other stacks of the same scan.
-   - Save the shifts (CSV) and a report (PNG/PDF of the steps).
+   - Save the shifts (CSV) and a report (PNG/PDF of the steps): done. CSV
+     of shifts and drift in px and Å; 2-page PDF: settings, drift, average
+     + FFT; matrices measured/corrected.
 
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses

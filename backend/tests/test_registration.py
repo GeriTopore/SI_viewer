@@ -350,6 +350,83 @@ def test_apply(stack):
     assert [d["title"] for d in gone["file"]["datasets"]] == ["drift"]
 
 
+def _csv_rows(r):
+    import csv
+    import io
+
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/csv")
+    text = r.text
+    comments = [line for line in text.splitlines() if line.startswith("# ")]
+    rows = list(csv.DictReader(io.StringIO("\n".join(line for line in text.splitlines() if not line.startswith("#")))))
+    return comments, rows
+
+
+def test_export_shifts_and_report(stack):
+    import re
+
+    client, ds = stack
+    url = f"/api/datasets/{ds['id']}/registration"
+    client.post(url, json={})
+    client.put(url, json={"mask": {"type": "hann", "n": 4}})
+    assert _wait(client, client.post(f"{url}/shifts").json())["status"] == "done"
+    assert client.get(f"{url}/shifts.csv").status_code == 422  # not corrected yet
+    assert client.get(f"{url}/report.pdf").status_code == 422
+    assert client.get(f"/api/datasets/{ds['id']}/alignment/shifts.csv").status_code == 404  # nothing applied
+
+    body = {"outliers": {"method": "none", "off_diagonal": 2}, "bad_frames": [3]}
+    drift = client.post(f"{url}/correct", json=body).json()
+
+    r = client.get(f"{url}/shifts.csv")
+    assert 'filename="drift_shifts.csv"' in r.headers["content-disposition"]
+    comments, rows = _csv_rows(r)
+    assert [int(row["frame"]) for row in rows] == [0, 1, 2, 4, 5] == drift["frames"]
+    for key, values in (("drift_x_px", drift["x"]), ("drift_y_px", drift["y"])):
+        np.testing.assert_allclose([float(row[key]) for row in rows], values, atol=1e-4)
+    for key, values in (("shift_x_px", drift["x"]), ("shift_y_px", drift["y"])):
+        np.testing.assert_allclose([float(row[key]) for row in rows], -np.array(values), atol=1e-4)
+    assert "shift_x_A" not in rows[0]  # the test stack has no length units
+    text = "\n".join(comments)
+    assert "Frames left out: 3" in text and "Frames registered: 0 to 5" in text
+    assert "hann" in text and "only pairs up to 2 frames apart" in text and "Crop (square)" in text
+
+    r = client.get(f"{url}/report.pdf")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.headers["content-disposition"].startswith('attachment; filename="drift_alignment_report.pdf"')
+    assert r.content.startswith(b"%PDF")
+    assert len(re.findall(rb"/Type\s*/Page[^s]", r.content)) == 2
+
+    # Applied, the same rows come from the stack itself.
+    assert client.post(f"{url}/apply").status_code == 200
+    _, applied = _csv_rows(client.get(f"/api/datasets/{ds['id']}/alignment/shifts.csv"))
+    assert applied == rows
+
+
+def test_export_calibrated_columns():
+    from si_viewer.processing.registration_export import angstrom_per_pixel, shifts_csv
+
+    info = {
+        "frames": [0, 2], "first": 0, "last": 3, "square": [1, 2, 50, 50],
+        "drift": {"frames": [0, 2], "x": [0.5, -0.5], "y": [-0.25, 0.25]},
+        "settings": {
+            "mask": {"type": "elliptical", "n": 12, "n2": 9.1, "theta": 81.4},
+            "peaks": {"correlation": "cc", "method": "gf", "num_peaks": 3, "sigma_guess": 3, "window_radius": 4},
+            "outliers": {"method": "transitivity", "threshold": 10, "max_paths": 5, "max_shift": 5, "off_diagonal": None},
+            "bad_frames": [1],
+        },  # no "edits": data stored before they existed
+    }
+    out = shifts_csv(info, "Nb3Cl8", 0.02, "nm")
+    assert "n1 = 12, n2 = 9.1, θ = 81.4°" in out and "Frames left out: 1" in out and "Manual edits" not in out
+    rows = [line.split(",") for line in out.splitlines() if not line.startswith("#")]
+    assert rows[0][-4:] == ["shift_x_A", "shift_y_A", "drift_x_A", "drift_y_A"]
+    assert rows[1] == ["0", "-0.5", "0.25", "0.5", "-0.25", "-0.1", "0.05", "0.1", "-0.05"]
+    assert angstrom_per_pixel(1, "µm") == angstrom_per_pixel(1, "μm") == angstrom_per_pixel(1, "um") == 1e4
+    assert angstrom_per_pixel(1, "Å") == angstrom_per_pixel(1, "A") == angstrom_per_pixel(1, "Angstrom") == 1.0
+    assert angstrom_per_pixel(1, "pm") == 0.01 and angstrom_per_pixel(1, "m") == 1e10
+    assert angstrom_per_pixel(1, "") is None and angstrom_per_pixel(1, "<undefined>") is None
+    assert angstrom_per_pixel(None, "nm") is None and angstrom_per_pixel(1, "1/nm") is None
+
+
 def test_elliptical_mask_is_the_packages(stack):
     """The elliptical Gaussian mask (makeFourierMask_eg) with theta in degrees."""
     import rigidregistration

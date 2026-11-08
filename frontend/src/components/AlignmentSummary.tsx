@@ -1,4 +1,6 @@
 import type { AppliedAlignment, DatasetSummary } from "../api/client";
+import { alignmentShiftsUrl } from "../api/client";
+import { downloadUrl } from "../download";
 import { formatValue } from "../format";
 import { maskLabel } from "../viewer/fourierMask";
 import { DriftPlot } from "./DriftPlot";
@@ -53,6 +55,10 @@ export function AlignmentSummary({ ds, calX }: { ds: DatasetSummary; calX: AxisC
           </>
         )}
       </dl>
+      <div className="align-save">
+        <span className="muted small">Save</span>
+        <button onClick={() => downloadUrl(alignmentShiftsUrl(ds.id))}>Shifts (CSV)</button>
+      </div>
     </div>
   );
 }

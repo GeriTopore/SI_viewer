@@ -8,15 +8,58 @@ export const KIND_LABEL: Record<DatasetKind, string> = {
   other: "Data",
 };
 
+/** A spectrum image with a single navigation axis (positions × energy). */
+export const isLineScan = (d: DatasetSummary) => d.kind === "spectrum_image" && d.navigation_shape.length === 1;
+
+/** Spectra and spectrum images (including line scans), which have a signal type. */
+export const hasTechnique = (d: DatasetSummary) =>
+  (d.kind === "spectrum" || d.kind === "spectrum_image") && !d.is_element_map;
+
+/** A map of an energy window kept from a spectrum image. */
+export const isWindowMap = (d: DatasetSummary) => d.origin === "window";
+
 export function kindLabel(d: DatasetSummary): string {
+  if (isWindowMap(d)) return "Window";
   if (d.origin === "composition") return "at%";
+  const t = hasTechnique(d) ? d.technique : null;
+  // EELS spectrum images say whether they are low loss or core loss.
+  const role = d.eels ? (d.eels.role === "low_loss" ? "LL" : "HL") : null;
+  if (isLineScan(d)) return role ? `${role} line` : t ? `${t} line` : "Line";
+  if (t) return d.kind === "spectrum" ? t : role ? `${t} ${role}` : `${t} SI`;
   return d.is_element_map ? "Map" : KIND_LABEL[d.kind];
 }
 
+/** e.g. "EELS spectrum image" (the technique is left out when unknown). */
+export function kindName(d: DatasetSummary): string {
+  const t = hasTechnique(d) && d.technique ? `${d.technique} ` : "";
+  const name = isLineScan(d)
+    ? "line scan"
+    : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", other: "data" } as const)[d.kind];
+  return t ? t + name : name[0].toUpperCase() + name.slice(1);
+}
+
+export const TECHNIQUE_SOURCE_NOTE: Record<string, string> = {
+  dm_tag: "from the DM tags",
+  energy_axis: "guessed from the energy axis",
+  user: "set by hand",
+};
+
 /** Hover text describing a dataset (what an element map contains). */
-export function datasetTooltip(d: DatasetSummary): string {
+export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string {
   const filters = filterLabel(d.filters);
-  const base = `${d.title} — ${shapeLabel(d)}${filters ? `\nFiltered: ${filters}` : ""}`;
+  const t = hasTechnique(d) && d.technique ? d.technique : "";
+  const role = d.eels ? ` (${d.eels.role === "low_loss" ? "low loss" : "core loss"})` : "";
+  const scan = isLineScan(d)
+    ? `\n${t ? `${t} line scan` : "Line scan"}${role}, ${d.navigation_shape[0]} points × ${d.signal_shape.join("×")} channels`
+    : t && !d.is_element_map
+      ? `\n${kindName(d)}${role}, ${d.navigation_shape.concat(d.signal_shape).join(" × ")}`
+      : "";
+  const base = `${d.title} — ${shapeLabel(d)}${scan}${filters ? `\nFiltered: ${filters}` : ""}`;
+  if (isWindowMap(d)) {
+    const w = d.window;
+    const range = w ? `${formatValue(w.lo)}–${formatValue(w.hi)} ${w.units}` : d.title;
+    return `${base}\nEnergy window ${range}${parentTitle ? ` of ${parentTitle}` : ""}`;
+  }
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "fitted") return `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;
   if (d.origin === "composition") return `${base}\nComposition (at%) per pixel: Cliff-Lorimer on the fitted maps`;

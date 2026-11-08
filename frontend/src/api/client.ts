@@ -1,5 +1,8 @@
 // Typed client for the FastAPI backend. Mirrors si_viewer/session.py summaries.
 
+export type Technique = "EDS" | "EELS";
+export type TechniqueSource = "metadata" | "dm_tag" | "energy_axis" | "user";
+
 export type DatasetKind = "image" | "stack" | "spectrum" | "spectrum_image" | "other";
 
 export interface Axis {
@@ -29,6 +32,27 @@ export interface EdsInfo {
   map_options?: MapOptions;
 }
 
+export type EelsRole = "low_loss" | "core_loss";
+
+/** EELS spectrum images (incl. line scans): low or core loss, and the
+ * partner they are linked with (possibly in another file). */
+export interface EelsInfo {
+  role: EelsRole;
+  partner_id: string | null;
+  beam_energy: number | null;
+  convergence_angle: number | null;
+  collection_angle: number | null;
+}
+
+/** A dataset of the opposite role that a low/core loss can be linked with. */
+export interface EelsPartner {
+  id: string;
+  title: string;
+  file_id: string;
+  /** The dataset it is linked with now, if any. */
+  linked_to: string | null;
+}
+
 export interface DatasetSummary {
   id: string;
   file_id: string;
@@ -44,9 +68,16 @@ export interface DatasetSummary {
   axes: Axis[];
   /** Present for EDS spectra and spectrum images. */
   eds: EdsInfo | null;
+  /** Spectra and spectrum images only; null when unknown (or not a spectrum). */
+  technique: Technique | null;
+  technique_source: TechniqueSource | null;
+  /** EELS spectrum images only. */
+  eels: EelsInfo | null;
   /** "computed": an element map made from a spectrum image (window +
    * background); "fitted"/"composition": from fitting every pixel. */
-  origin: "file" | "computed" | "fitted" | "composition" | "aligned-average";
+  origin: "file" | "computed" | "fitted" | "composition" | "aligned-average" | "window";
+  /** Window maps: the energy window (in the spectrum's units) it sums. */
+  window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
   element: string | null;
   /** Spectrum image a computed map was made from. */
@@ -393,8 +424,27 @@ export const api = {
     request<DatasetSummary>(`/api/datasets/${id}/axes`, { method: "PATCH", body: JSON.stringify(axes) }),
   setElements: (id: string, elements: string[]) =>
     request<DatasetAndFile>(`/api/datasets/${id}/elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
+  /** Switching away from EDS may remove computed maps, hence the file. */
+  setTechnique: (id: string, technique: Technique | null) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/technique`, { method: "PUT", body: JSON.stringify({ technique }) }),
   setMapOptions: (id: string, options: Partial<MapOptions>) =>
     request<DatasetAndFile>(`/api/datasets/${id}/map-options`, { method: "PUT", body: JSON.stringify(options) }),
+  eelsPartners: (id: string) => request<EelsPartner[]>(`/api/datasets/${id}/eels-partners`),
+  /** Link a low/core loss with its partner (null: unlink); every changed file comes back. */
+  setEelsPartner: (id: string, partnerId: string | null) =>
+    request<{ files: FileSummary[] }>(`/api/datasets/${id}/eels-partner`, {
+      method: "PUT",
+      body: JSON.stringify({ partner_id: partnerId }),
+    }),
+  /** Keep an energy window of a spectrum image as a map (label null: named after the window). */
+  addWindowMap: (siId: string, lo: number, hi: number, label: string | null) =>
+    request<DatasetAndFile>(`/api/datasets/${siId}/window-maps`, {
+      method: "POST",
+      body: JSON.stringify({ lo, hi, label }),
+    }),
+  /** Move a window map to [lo, hi]: recomputed in place (same id, new revision). */
+  setWindowMap: (id: string, lo: number, hi: number) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/window`, { method: "PATCH", body: JSON.stringify({ lo, hi }) }),
   deleteDataset: (id: string) => request<{ file: FileSummary }>(`/api/datasets/${id}`, { method: "DELETE" }),
   fit: (id: string, source: FitSource, options: FitOptions) =>
     request<FitResult>(`/api/datasets/${id}/fit`, { method: "POST", body: JSON.stringify({ source, options }) }),

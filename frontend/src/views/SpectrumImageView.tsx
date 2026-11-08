@@ -2,13 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchEnergyMap, fetchFrame, type Frame, type PixelsSpectrum } from "../api/arrays";
 import { Coalescer } from "../api/coalesce";
 import { api, dataVersion, type DatasetSummary, type NavigatorSource } from "../api/client";
+import { ContextMenu } from "../components/ContextMenu";
 import { ElementsPicker } from "../components/ElementsPicker";
-import { LayeredViewer } from "../components/LayeredViewer";
+import { BASE_LAYER, LayeredViewer } from "../components/LayeredViewer";
 import { RoiOverlay } from "../components/RoiOverlay";
 import { SeriesLegend } from "../components/SeriesLegend";
-import { SpectrumPlot, type EnergyRange, type Marker, type SpectrumSeries } from "../components/SpectrumPlot";
+import { SpectrumPlot, type EnergyRange, type Marker, type PlotWindow, type SpectrumSeries } from "../components/SpectrumPlot";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
+import { baseLayerKey, useLayers } from "../state/layers";
 import { CURSOR_COLOR, getSiState, useSi, useSiState, type Reduce, type Tool } from "../state/si";
 import { autoRange, sortedSample } from "../viewer/contrast";
 import { isColour } from "../viewer/colormaps";
@@ -22,15 +24,16 @@ import { useShortcuts } from "../keyboard";
 import { bandPolygon, pixelLength, pointAt } from "../viewer/profile";
 import { fwhmAt, useLineMarkers } from "./si/xray";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
+import { LinkedSpectrum, lossTabs, useLossLog, usePartner } from "./si/LinkedSpectrum";
 import { useFitSeries } from "./useFitSeries";
 
 /** Navigator source meaning "no base image": only the overlaid maps are shown. */
 const NONE = "none";
-/** Navigator source showing the map of the energy window picked on the spectrum. */
-const WINDOW = "window";
+/** Navigator source: the spectrum image summed over the main window. */
+const VIRTUAL = "virtual";
 
 const TOOLS: { tool: Tool; label: string; title: string }[] = [
-  { tool: "cursor", label: "✛", title: "Cursor: click or drag to see the spectrum at a pixel (arrow keys nudge it)" },
+  { tool: "cursor", label: "✛", title: "Cursor: drag its marker to see the spectrum at another pixel (arrow keys nudge it)" },
   { tool: "rect", label: "▭", title: "Rectangle region: drag to draw, drag inside to move" },
   { tool: "ellipse", label: "◯", title: "Ellipse region: drag to draw, drag inside to move" },
   { tool: "polygon", label: "⬠", title: "Polygon region: click vertices; click the first, double-click or Enter to close" },
@@ -42,10 +45,19 @@ const TOOLS: { tool: Tool; label: string; title: string }[] = [
   { tool: "pan", label: "✋", title: "Pan (or hold Space / middle-drag with any tool)" },
 ];
 
+/** Band colour of a window with no solid colour of its own. */
+const NEUTRAL_WINDOW = "#4c8dff";
+/** Id of the main window (the virtual image's) among the plot's windows. */
+const MAIN = "main";
+/** Id of the window being drawn. */
+const DRAFT = "draft";
+/** Band colour of the main window: neutral, apart from the coloured windows. */
+const MAIN_COLOUR = "#8a8f98";
+
 const scaled = (data: Float32Array, k: number) => (k === 1 ? data : data.map((v) => v * k));
 
-/** Navigator image (ADF, total counts, a map or an energy window) with the
- * spectrum cursor and regions, beside their spectra. */
+/** Navigator image (ADF, the virtual image, a map) with the spectrum cursor
+ * and regions, beside their spectra. */
 export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: DatasetSummary[] }) {
   const updateDataset = useDatasets((s) => s.updateDataset);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -80,98 +92,113 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     h: () => setTool("pan"),
   });
   // Cursor and region tools bring the spectrum tab back (the line tool shows profiles).
+  // A linked low/core loss pair has a tab for each instead of "Spectrum".
+  const partner = usePartner(ds);
+  const linked = !!(ds.eels && partner?.eels);
   const setBottomTab = useUi((s) => s.setBottomTab);
   useEffect(() => {
-    if (tool !== "line" && tool !== "pan") setBottomTab("spectrum");
-  }, [tool, setBottomTab]);
+    if (tool === "line" || tool === "pan") return;
+    const tab = useUi.getState().bottomTab;
+    const mine = linked ? ["low-loss", "core-loss"] : ["spectrum"];
+    if (!mine.includes(tab)) setBottomTab(linked ? (ds.eels!.role === "low_loss" ? "low-loss" : "core-loss") : "spectrum");
+  }, [tool, setBottomTab, linked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------- navigator ----------
+  const axis = useEnergyAxis(ds);
   const [sources, setSources] = useState<NavigatorSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const files = useDatasets((s) => s.files);
   // Refetched when the file's maps change (computed maps added or removed).
-  const fileKey = files.find((f) => f.id === ds.file_id)?.datasets.map((d) => d.id).join(",");
+  const fileKey = files.find((f) => f.id === ds.file_id)?.datasets.map((d) => `${d.id}:${d.title}`).join(",");
   useEffect(() => {
-    api.navigators(ds.id).then((s) => {
+    api.navigators(ds.id).then((list) => {
+      // The spectrum image itself (total counts) is the virtual image.
+      const s = list.map((x) => (x.id === ds.id ? { ...x, id: VIRTUAL, label: "Virtual image" } : x));
       setSources(s);
       // Keep the current source unless it was deleted.
-      setSourceId((cur) =>
-        cur && (cur === NONE || cur === WINDOW || s.some((x) => x.id === cur)) ? cur : (s[0]?.id ?? ds.id),
-      );
+      setSourceId((cur) => (cur && (cur === NONE || s.some((x) => x.id === cur)) ? cur : (s[0]?.id ?? VIRTUAL)));
     });
   }, [ds.id, fileKey]);
 
+  // The main window: the range the virtual image sums (null: all of it).
+  const isVirtual = sourceId === VIRTUAL;
+  const main = st.main;
+  const energyUnits = ds.axes.find((a) => !a.navigate)?.units ?? "";
+  const rangeText = (r: { lo: number; hi: number }) =>
+    `${formatValue(r.lo)}–${formatValue(r.hi)}${energyUnits && ` ${energyUnits}`}`;
+  const setMain = (r: { lo: number; hi: number } | null) => {
+    const x = axis.x;
+    // The whole range is the total counts.
+    if (r && x.length > 1 && r.lo <= x[0] + (x[1] - x[0]) / 2 && r.hi >= x[x.length - 1] - (x[1] - x[0]) / 2) r = null;
+    if (r?.lo !== main?.lo || r?.hi !== main?.hi) patch(ds.id, { main: r });
+  };
+
   // The frame is kept with the source it came from: right after switching
   // source the previous image must not be used (e.g. for auto contrast).
-  const [nav, setNav] = useState<{ source: string; version: string; frame: Frame } | null>(null);
+  const [nav, setNav] = useState<{ source: string; version: string; windowed: boolean; frame: Frame } | null>(null);
   const [navError, setNavError] = useState<string | null>(null);
-  // The total-counts map (source = the SI itself) needs the SI in memory.
-  const sourceReady =
-    sourceId !== null && sourceId !== NONE && sourceId !== WINDOW && (sourceId !== ds.id || ready);
-  const sourceSummary = allDatasets(files).find((d) => d.id === sourceId);
+  // Fetched as a plain image: a navigator image, or the total counts (the
+  // virtual image over the whole range), which needs the SI in memory.
+  const frameId = isVirtual ? (main ? null : ds.id) : sourceId;
+  const sourceReady = frameId !== null && frameId !== NONE && (frameId !== ds.id || ready);
+  const sourceSummary = allDatasets(files).find((d) => d.id === (isVirtual ? ds.id : sourceId));
   const sourceVersion = sourceSummary ? dataVersion(sourceSummary) : "";
   useEffect(() => {
     if (!sourceReady) return;
     const ac = new AbortController();
     const source = sourceId!;
     const version = sourceVersion;
-    fetchFrame(source, {}, ac.signal)
-      .then((frame) => setNav({ source, version, frame }))
+    fetchFrame(frameId!, {}, ac.signal)
+      .then((frame) => setNav({ source, version, windowed: false, frame }))
       .catch((e) => !isAbort(e) && setNavError((e as Error).message));
     return () => ac.abort();
-  }, [sourceId, sourceReady, sourceVersion]);
+  }, [sourceId, frameId, sourceReady, sourceVersion]);
 
-  // Energy-window maps follow the window live (latest-only while dragging).
-  const windowMaps = useRef<Coalescer<Frame>>();
+  // The virtual image over a narrower main window follows it live (latest-only
+  // while dragging).
+  const windowMaps = useRef<Coalescer<{ frame: Frame; version: string }>>();
   windowMaps.current ??= new Coalescer(
-    (_c, frame) => setNav({ source: WINDOW, version: "", frame }),
+    (_c, r) => setNav({ source: VIRTUAL, version: r.version, windowed: true, frame: r.frame }),
     (_c, e) => setNavError(e.message),
   );
-  const win = st.window;
   useEffect(() => {
-    if (sourceId !== WINDOW || !win || !ready) return;
-    // Keyed by the filter too: the map follows the spectrum image's spatial filter.
-    windowMaps.current!.request("map", `${win.lo},${win.hi}@${ds.filter_rev}`, () =>
-      fetchEnergyMap(ds.id, win.lo, win.hi),
+    if (!isVirtual || !main || !ready) {
+      windowMaps.current!.forget("map");
+      return;
+    }
+    // Keyed by the version too: the map follows the spectrum image's filters.
+    const version = sourceVersion;
+    windowMaps.current!.request("map", `${main.lo},${main.hi}@${version}`, () =>
+      fetchEnergyMap(ds.id, main.lo, main.hi).then((frame) => ({ frame, version })),
     );
-  }, [sourceId, win, ready, ds.id, ds.filter_rev]);
+  }, [isVirtual, main?.lo, main?.hi, ready, ds.id, sourceVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const navFrame =
-    nav && nav.source === sourceId && (sourceId === WINDOW || nav.version === sourceVersion) ? nav.frame : null;
-  const sourceDataset =
-    sourceId && sourceId !== ds.id ? allDatasets(files).find((d) => d.id === sourceId) : undefined;
+    nav && nav.source === sourceId && nav.version === sourceVersion && (!isVirtual || nav.windowed === !!main)
+      ? nav.frame
+      : null;
+  const sourceDataset = sourceId && sourceId !== VIRTUAL ? allDatasets(files).find((d) => d.id === sourceId) : undefined;
   // A navigator image shares its display settings (contrast, element colour)
-  // with the dataset itself; total counts and window maps have their own.
-  const navKey =
-    sourceId === ds.id ? `${ds.id}:total` : sourceId === WINDOW ? `${ds.id}:window` : (sourceId ?? "");
+  // with the dataset itself; the virtual image has its own.
+  const navKey = isVirtual ? `${ds.id}:total` : (sourceId ?? "");
 
-  // Each new window map is auto-contrasted; a window taken from an element's
-  // line is shown in that element's colour.
+  // The virtual image is auto-contrasted whenever its window changes (it
+  // stays greyscale); the whole range keeps the viewer's own contrast.
+  const windowed = useRef(false);
   useEffect(() => {
-    if (sourceId !== WINDOW || !navFrame) return;
+    if (!isVirtual) windowed.current = false;
+    if (!isVirtual || !navFrame) return;
+    if (!main && !windowed.current) return;
+    windowed.current = !!main;
     const [lo, hi] = autoRange(sortedSample(navFrame.data));
-    const { display, elementColours, setDisplay, initDisplay } = useDisplay.getState();
-    // A manual window drops an element colour left over from a line window,
-    // but keeps a named colormap the user picked.
-    const current = display[navKey]?.colormap;
-    const colormap = win?.element
-      ? elementColours[win.element]
-      : current && isColour(current)
-        ? "gray"
-        : undefined;
-    if (!display[navKey]) initDisplay(navKey, { lo, hi, gamma: 1, colormap: colormap ?? "gray" });
-    else setDisplay(navKey, { lo, hi, ...(colormap && { colormap }) });
+    const { display, setDisplay, initDisplay } = useDisplay.getState();
+    if (!display[navKey]) initDisplay(navKey, { lo, hi, gamma: 1, colormap: "gray" });
+    else setDisplay(navKey, { lo, hi });
   }, [navFrame]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const windowLabel = win
-    ? win.label
-      ? `${win.label} (${formatValue(win.lo)}–${formatValue(win.hi)} keV)`
-      : `${formatValue(win.lo)}–${formatValue(win.hi)} keV`
-    : "";
-  const sourceOptions = [...sources, ...(win ? [{ id: WINDOW, label: `Energy window: ${windowLabel}` }] : [])];
+  const virtualLabel = main ? `Virtual image (${rangeText(main)})` : "Virtual image";
 
   // ---------- spectra ----------
-  const axis = useEnergyAxis(ds);
   const whole = useSpectrum(ds, ready);
   // A point or stretch picked on a line's profile: its spectrum (the band
   // across the line's width; a point covers one pixel along it).
@@ -212,20 +239,156 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // ---------- elements, line markers and energy windows ----------
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, [axis.x[0], axis.x[axis.x.length - 1]]);
-  const showWindow = (w: EnergyRange & { element?: string; label?: string }) => {
-    patch(ds.id, { window: { ...w, lo: Math.min(w.lo, w.hi), hi: Math.max(w.lo, w.hi) } });
-    setSourceId(WINDOW);
+
+  // Windows drawn on the spectrum: the main one (grey, the virtual image's)
+  // and the window maps in the view, each in its map's colour. Selecting one
+  // makes its layer the one edited (and the other way round).
+  const displays = useDisplay((s) => s.display);
+  const windowColours = useDisplay((s) => s.windowColours);
+  const layerProps = useLayers((s) => s.props);
+  const showMain = useSi((s) => s.showMain);
+  const [edit, setEdit] = useState<{ id: string; lo: number; hi: number } | null>(null); // a window map being dragged
+  const [draft, setDraft] = useState<EnergyRange | null>(null); // a window being drawn
+  const [activate, setActivate] = useState<{ key: string } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const plotWindows = useMemo<PlotWindow[]>(() => {
+    const solid = (c: string | undefined) => (c && isColour(c) ? c : NEUTRAL_WINDOW);
+    const out: PlotWindow[] = [];
+    const x = axis.x;
+    if (isVirtual && showMain && x.length && layerProps[baseLayerKey(navView)]?.visible !== false) {
+      out.push({ id: MAIN, lo: main?.lo ?? x[0], hi: main?.hi ?? x[x.length - 1], color: MAIN_COLOUR, label: virtualLabel });
+    }
+    for (const d of allDatasets(files)) {
+      if (d.origin !== "window" || d.parent_id !== ds.id || !d.window) continue;
+      const asBase = d.id === sourceId;
+      if (!asBase && !images.some((i) => i.id === d.id)) continue;
+      if (layerProps[asBase ? baseLayerKey(navView) : d.id]?.visible === false) continue;
+      const cm = displays[d.id]?.colormap;
+      const w = edit?.id === d.id ? edit : d.window;
+      out.push({ id: d.id, lo: w.lo, hi: w.hi, color: cm ? solid(cm) : (windowColours[d.id] ?? NEUTRAL_WINDOW), label: d.title });
+    }
+    if (draft) out.push({ id: DRAFT, ...draft, color: useDisplay.getState().nextWindowColour(), label: "", draft: true });
+    return out;
+  }, [files, images, sourceId, isVirtual, main, axis.x, displays, windowColours, layerProps, edit, draft, navView, ds.id, virtualLabel, showMain]);
+  const windowMapIds = plotWindows.filter((w) => w.id !== MAIN && w.id !== DRAFT).map((w) => w.id);
+  const selectedWindow = plotWindows.some((w) => w.id === st.selectedWindow) ? st.selectedWindow : null;
+  /** Selects a window; a window map also deselects the region (Delete acts on one at a time). */
+  const pickWindow = (id: string | null) => {
+    if (id === MAIN && !useSi.getState().showMain) id = null; // its band is hidden
+    const s = getSiState(ds.id);
+    if (s.selectedWindow !== id || (id && id !== MAIN && s.selected)) {
+      patch(ds.id, { selectedWindow: id, ...(id && id !== MAIN && s.selected && { selected: null }) });
+    }
+  };
+  const selectWindow = (id: string | null) => {
+    pickWindow(id);
+    const key = id === MAIN ? (isVirtual ? BASE_LAYER : null) : id === sourceId ? BASE_LAYER : id;
+    if (key) setActivate({ key });
+  };
+  // The layer being edited changed: select its window, if it has one.
+  const onActiveLayer = (key: string) => {
+    const id = key === BASE_LAYER ? (isVirtual ? MAIN : sourceId) : key;
+    const isWindow =
+      id === MAIN || allDatasets(files).some((d) => d.id === id && d.origin === "window" && d.parent_id === ds.id);
+    pickWindow(isWindow ? id : null);
+  };
+  // Selecting a region leaves the window selection (to the main one).
+  useEffect(() => {
+    const s = getSiState(ds.id);
+    if (s.selected && s.selectedWindow && s.selectedWindow !== MAIN) {
+      patch(ds.id, { selectedWindow: isVirtual && useSi.getState().showMain ? MAIN : null });
+    }
+  }, [st.selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Hiding the main band deselects it.
+  useEffect(() => {
+    if (!showMain && getSiState(ds.id).selectedWindow === MAIN) patch(ds.id, { selectedWindow: null });
+  }, [showMain]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Shift-drag: the new window shows as a provisional band; on release it
+  // becomes a window map, added to the view and selected.
+  const drawWindow = async (range: EnergyRange, final: boolean) => {
+    const r = { lo: Math.min(range.lo, range.hi), hi: Math.max(range.lo, range.hi) };
+    setDraft(r);
+    if (!final || !ready) return;
+    try {
+      const res = await api.addWindowMap(ds.id, r.lo, r.hi, null);
+      const { replaceFile, addToSelection } = useDatasets.getState();
+      replaceFile(res.file);
+      const made = allDatasets(useDatasets.getState().files).find((d) => d.id === res.dataset.id) ?? res.dataset;
+      addToSelection(made);
+      pickWindow(made.id);
+    } catch (e) {
+      useLayers.getState().notify(`Could not make the window: ${(e as Error).message}`);
+    } finally {
+      setDraft(null);
+    }
+  };
+  // Dragging the selected window's edge or inside: the main window follows
+  // live; a window map's band follows the pointer and its map is remade on release.
+  const editWindow = async (id: string, range: EnergyRange, final: boolean) => {
+    if (id === MAIN) return setMain(range);
+    setEdit({ id, ...range });
+    if (!final) return;
+    try {
+      const colour = useDisplay.getState().display[id]?.colormap;
+      const r = await api.setWindowMap(id, range.lo, range.hi);
+      // The remade map starts afresh, but keeps the colour the user gave it.
+      if (colour && isColour(colour)) useDisplay.setState((s) => ({ windowColours: { ...s.windowColours, [id]: colour } }));
+      useDatasets.getState().replaceFile(r.file);
+    } catch (e) {
+      useLayers.getState().notify(`Could not move the window: ${(e as Error).message}`);
+    } finally {
+      setEdit(null);
+    }
+  };
+  // Delete windows (window maps; the main window stays).
+  const removeWindows = async (ids: string[]) => {
+    for (const id of ids) {
+      const d = allDatasets(useDatasets.getState().files).find((x) => x.id === id);
+      if (d) await useDatasets.getState().deleteDataset(d);
+    }
+    pickWindow(isVirtual ? MAIN : null);
+  };
+  const deleteSelectedWindow = (e: KeyboardEvent) => {
+    // A focused dataset-list row handles Delete itself.
+    if (e.target instanceof Element && e.target.closest("[role=button][aria-pressed]")) return false;
+    const id = getSiState(ds.id).selectedWindow;
+    if (!id || id === MAIN || !windowMapIds.includes(id) || !useSi.getState().showWindows) return false;
+    void removeWindows([id]);
+    return true;
+  };
+  useShortcuts({ Delete: deleteSelectedWindow, Backspace: deleteSelectedWindow });
+  const onWindowMenu = (id: string, x: number, y: number) => {
+    if (id === MAIN || !windowMapIds.includes(id)) return false;
+    selectWindow(id);
+    setMenu({ x, y, id });
+    return true;
+  };
+  // Double-click on the main band: back to the whole range.
+  const onWindowDoubleClick = (id: string) => {
+    if (id !== MAIN || !main) return false;
+    setMain(null);
+    return true;
   };
   const onMarkerClick = (m: Marker) => {
     const fw = fwhmAt(m.energy, ds.eds?.energy_resolution_MnKa ?? 130);
-    showWindow({ lo: m.energy - fw, hi: m.energy + fw, element: m.element, label: m.label });
+    setMain({ lo: Math.max(m.energy - fw, axis.x[0]), hi: Math.min(m.energy + fw, axis.x[axis.x.length - 1]) });
+    setSourceId(VIRTUAL);
+    useSi.getState().setShowMain(true); // so the new range is seen
+    patch(ds.id, { selectedWindow: MAIN });
+    setActivate({ key: BASE_LAYER });
   };
 
+  const ownLog = useLossLog(ds.eels?.role, linked);
   const loadingMsg = `Loading spectrum image into memory (${bytesLabel(ds.nbytes)})…`;
 
+  const legend = (
+    <SeriesLegend si={ds.id} state={st} spectra={spectra} totalPixels={totalPixels} wholeColor={SPECTRUM_COLOR} />
+  );
   const spectrumPlot = (
     <SpectrumPlot
       name={`${ds.title}_spectra`}
+      zoomKey={`${ds.id}:spectra`}
+      {...ownLog}
       x={axis.x}
       series={series}
       xLabel={axis.label}
@@ -233,8 +396,14 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       loading={whole.data ? null : ready ? "Summing spectra…" : loadingMsg}
       error={whole.error ?? loadError}
       markers={markers}
-      window={win}
-      onWindow={(range) => showWindow(range)}
+      windows={plotWindows}
+      mainToggle={isVirtual}
+      selectedId={selectedWindow}
+      onSelectWindow={selectWindow}
+      onWindow={drawWindow}
+      onEditWindow={editWindow}
+      onWindowMenu={onWindowMenu}
+      onWindowDoubleClick={onWindowDoubleClick}
       onMarkerClick={onMarkerClick}
       toolbar={
         <>
@@ -254,15 +423,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           </div>
         </>
       }
-      legend={
-        <SeriesLegend
-          si={ds.id}
-          state={st}
-          spectra={spectra}
-          totalPixels={totalPixels}
-          wholeColor={SPECTRUM_COLOR}
-        />
-      }
+      legend={legend}
     />
   );
 
@@ -273,7 +434,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           <label className="field">
             Navigator
             <select value={sourceId ?? ""} onChange={(e) => setSourceId(e.target.value)}>
-              {sourceOptions.map((s) => (
+              {sources.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.label}
                 </option>
@@ -299,39 +460,56 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           viewKey={navView}
           lineTool={tool === "line"}
           profilePick
+          gridContext="si"
           base={
             sourceId === NONE
               ? null
               : {
                   key: navKey,
-                  label:
-                    sourceId === WINDOW
-                      ? windowLabel
-                      : (sources.find((s) => s.id === sourceId)?.label ?? "Navigator"),
+                  label: isVirtual ? virtualLabel : (sources.find((s) => s.id === sourceId)?.label ?? "Navigator"),
                   frame: navFrame,
                   dataset: sourceDataset,
                   version: sourceVersion,
                 }
           }
-          onRemoveBase={() => setSourceId(NONE)}
           images={images.filter((d) => d.id !== sourceId)}
           geometry={g}
           loading={
             navFrame || sourceId === NONE
               ? null
-              : (sourceId === ds.id || sourceId === WINDOW) && !ready
+              : isVirtual && !ready
                 ? loadingMsg
                 : "Loading navigator…"
           }
           error={navError ?? loadError}
           empty="No navigator image. Click element maps in the dataset pane to show them here."
+          requestActive={activate}
+          onActiveChange={onActiveLayer}
           interaction={tools.interaction}
           renderOverlay={(t) => (
             <RoiOverlay t={t} state={st} cursorSize={cursorSize} draft={tools.draft} hover={tools.hover} />
           )}
-          bottomTabs={[{ id: "spectrum", label: "Spectrum", content: spectrumPlot }]}
+          bottomTabs={lossTabs(
+            ds,
+            partner,
+            spectrumPlot,
+            partner && <LinkedSpectrum partner={partner} st={st} lineScan={false} legend={legend} />,
+          )}
         />
       </section>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            { label: "Delete window", danger: true, onSelect: () => removeWindows([menu.id]) },
+            ...(windowMapIds.length > 1
+              ? [{ label: "Delete all windows", danger: true, onSelect: () => removeWindows(windowMapIds) }]
+              : []),
+          ]}
+        />
+      )}
     </div>
   );
 }

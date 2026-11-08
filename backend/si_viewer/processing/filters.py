@@ -75,7 +75,9 @@ SPATIAL_KINDS = {"image", "stack", "spectrum_image"}
 SPECTRAL_KINDS = {"spectrum", "spectrum_image"}
 
 
-def check_applicable(kind: str, f: Filters) -> None:
+def check_applicable(kind: str, f: Filters, line_scan: bool = False) -> None:
+    if f.has_spatial and line_scan:
+        raise ValueError("Spatial filters don't apply to line scans (only spectral smoothing does)")
     if f.has_spatial and kind not in SPATIAL_KINDS:
         raise ValueError(f"Spatial filters don't apply to {kind.replace('_', ' ')} datasets")
     if f.has_spectral and kind not in SPECTRAL_KINDS:

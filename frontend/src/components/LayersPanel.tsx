@@ -18,10 +18,12 @@ interface Props {
   onChange: (id: string, patch: { visible?: boolean; opacity?: number }) => void;
   onColour: (id: string, colour: string) => void;
   onRemove: (id: string) => void;
+  /** Show the opacity sliders (not in a grid, where nothing is blended). */
+  opacity?: boolean;
 }
 
 /** Floating list of image layers: visibility, colour, opacity, remove. */
-export function LayersPanel({ layers, active, onActivate, onChange, onColour, onRemove }: Props) {
+export function LayersPanel({ layers, active, onActivate, onChange, onColour, onRemove, opacity = true }: Props) {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
@@ -37,14 +39,14 @@ export function LayersPanel({ layers, active, onActivate, onChange, onColour, on
             return (
               <li
                 key={l.id}
-                className={`layer-row${l.id === active ? " active" : ""}${l.visible ? "" : " hidden"}`}
+                className={`layer-row${l.id === active ? " active" : ""}${l.visible ? "" : " hidden"}${opacity ? "" : " no-opacity"}`}
                 onClick={() => onActivate(l.id)}
                 title="Click to edit this layer's contrast and colour"
               >
                 <button
                   className="layer-eye"
                   aria-pressed={l.visible}
-                  title={l.visible ? "Hide layer" : "Show layer"}
+                  title={opacity ? (l.visible ? "Hide layer" : "Show layer") : l.visible ? "Hide panel" : "Show panel"}
                   onClick={(e) => {
                     e.stopPropagation();
                     onChange(l.id, { visible: !l.visible });
@@ -65,7 +67,7 @@ export function LayersPanel({ layers, active, onActivate, onChange, onColour, on
                   />
                 </label>
                 <span className="layer-label">{l.label}</span>
-                <input
+                {opacity && <input
                   type="range"
                   className="layer-opacity"
                   min={0}
@@ -75,7 +77,7 @@ export function LayersPanel({ layers, active, onActivate, onChange, onColour, on
                   title={`Opacity ${Math.round(l.opacity * 100)}%`}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => onChange(l.id, { opacity: Number(e.target.value) })}
-                />
+                />}
                 {l.removable ? (
                   <button
                     className="icon-button"

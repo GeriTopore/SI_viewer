@@ -7,6 +7,7 @@ centre lies inside it.
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 import numpy as np
@@ -115,13 +116,33 @@ def pixel_spectrum(data: np.ndarray, x: int, y: int, size: int = 1) -> tuple[np.
     return block.sum(axis=(0, 1), dtype=_accumulator(data.dtype, n)).astype(np.float64), n
 
 
+def channel_span(n: int, offset: float, scale: float, lo: float, hi: float) -> tuple[int, int]:
+    """Channels [i0, i1) of an ``n``-channel axis covering energies ``lo`` to
+    ``hi``. A limit that sits on a channel (to rounding error) is that channel's
+    edge, so a window snapped to channels sums exactly those."""
+    lo, hi = sorted((lo, hi))
+    eps = 1e-6
+    i0 = int(np.clip(np.floor((lo - offset) / scale + eps), 0, n - 1))
+    i1 = int(np.clip(np.ceil((hi - offset) / scale - eps), i0 + 1, n))
+    return i0, i1
+
+
 def energy_map(data: np.ndarray, offset: float, scale: float, lo: float, hi: float) -> np.ndarray:
     """Counts summed over channels from energy ``lo`` to ``hi`` (axis units)."""
-    lo, hi = sorted((lo, hi))
-    n = data.shape[-1]
-    i0 = int(np.clip(np.floor((lo - offset) / scale), 0, n - 1))
-    i1 = int(np.clip(np.ceil((hi - offset) / scale), i0 + 1, n))
+    i0, i1 = channel_span(data.shape[-1], offset, scale, lo, hi)
     return data[..., i0:i1].sum(axis=-1, dtype=np.float32)
+
+
+def window_label(lo: float, hi: float, units: str | None, step: float | None = None) -> str:
+    """Name of an energy window, e.g. "640–660 eV": numbers to the precision
+    of the channel width ``step`` (else to 3 decimals)."""
+    digits = 3 if not step else max(0, math.ceil(-math.log10(abs(step))))
+
+    def num(v: float) -> str:
+        return f"{round(v, digits) + 0.0:.{digits}f}".rstrip("0").rstrip(".") if digits else f"{round(v) + 0:d}"
+
+    lo, hi = sorted((lo, hi))
+    return f"{num(lo)}–{num(hi)}" + (f" {units}" if units else "")
 
 
 # ---------- spectra of the processed (filtered) spectrum image ----------
@@ -154,10 +175,8 @@ def processed_region_spectrum(data: np.ndarray, region: Region, f: Filters) -> t
 def processed_energy_map(data: np.ndarray, offset: float, scale: float, lo: float, hi: float, f: Filters) -> np.ndarray:
     """``energy_map`` of the spectrum image with its filters applied."""
     if f.has_spectral:
-        lo, hi = sorted((lo, hi))
         n = data.shape[-1]
-        i0 = int(np.clip(np.floor((lo - offset) / scale), 0, n - 1))
-        i1 = int(np.clip(np.ceil((hi - offset) / scale), i0 + 1, n))
+        i0, i1 = channel_span(n, offset, scale, lo, hi)
         weights = np.zeros(n)
         weights[i0:i1] = 1
         counts = weighted_channel_map(data, weights, f)

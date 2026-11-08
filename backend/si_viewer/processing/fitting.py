@@ -41,7 +41,7 @@ class FitSource(BaseModel):
 def source_spectrum(dataset, source: FitSource):
     """The 1D EDS signal to fit (summed counts of the processed data: the
     dataset's filters applied) and how many pixels it sums."""
-    from ..session import DatasetKind
+    from ..session import DatasetKind, si_cube
 
     f = dataset.filter_spec
     if dataset.kind is DatasetKind.SPECTRUM:
@@ -54,7 +54,7 @@ def source_spectrum(dataset, source: FitSource):
         raise ValueError(f"{dataset.title} is not a spectrum or spectrum image")
 
     dataset.materialise()
-    data = dataset.signal.data
+    data = si_cube(dataset)
     if source.type == "pixel":
         counts, n = processed_pixel_spectrum(data, source.x, source.y, source.size, f)
     elif source.type == "region":
@@ -68,7 +68,7 @@ def source_spectrum(dataset, source: FitSource):
         counts = filter_spectrum(data.sum(axis=(0, 1), dtype=np.float64), f)
         n = data.shape[0] * data.shape[1]
     # A 1D signal with the spectrum image's metadata (elements, detector, …).
-    spec = dataset.signal.inav[0, 0].deepcopy()
+    spec = dataset.signal.inav[(0,) * dataset.signal.axes_manager.navigation_dimension].deepcopy()
     spec.change_dtype("float64")
     spec.data[:] = counts
     return spec, n

@@ -32,7 +32,6 @@ export function AlignmentWorkspace({ ds }: { ds: DatasetSummary }) {
       <header className="align-header">
         <div className="align-title">
           <strong>Align frames</strong>
-          <span className="muted">{ds.title}</span>
         </div>
         <ol className="align-steps">
           {ALIGN_STEPS.map((s, k) => (

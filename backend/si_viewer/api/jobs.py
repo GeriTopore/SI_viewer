@@ -40,6 +40,8 @@ def start_fit_maps(dataset_id: str, body: FitMapsBody, request: Request) -> dict
     asked, at% composition maps."""
     session = request.app.state.session
     si = _dataset(request, dataset_id)
+    if si.is_line_scan:
+        raise HTTPException(400, f"{si.title} is a line scan: fitting every pixel needs a 2D scan")
     if si.kind is not DatasetKind.SPECTRUM_IMAGE or si.summary()["eds"] is None:
         raise HTTPException(400, f"{si.title} is not an EDS spectrum image")
     if not si.summary()["eds"]["elements"]:

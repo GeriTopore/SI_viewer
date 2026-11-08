@@ -37,7 +37,7 @@ export interface Interaction {
   onMove?: (p: Pt, e: React.PointerEvent, t: Transform) => void;
   onUp?: (p: Pt, e: React.PointerEvent, t: Transform) => void;
   /** Pointer moved without a drag (null when it leaves). */
-  onHover?: (p: Pt | null) => void;
+  onHover?: (p: Pt | null, t?: Transform) => void;
   /** Return true to stop double-click from fitting the image. */
   onDoubleClick?: (p: Pt) => boolean;
   /** Keys while the image has focus; return true if handled. */
@@ -87,6 +87,21 @@ interface Props {
   /** Publish the analysed layer for the FFT panel (default true; off for
    * secondary views such as diagnostic panels). */
   publish?: boolean;
+  /** Follow the view stored under ``viewKey`` when another view with the
+   * same key changes it (linked panels of a grid). */
+  follow?: boolean;
+  /** Show the hovered pixel and value over the image (for panels without a
+   * readout bar). */
+  hoverChip?: boolean;
+  /** Replaces saving this image on ⌘/Ctrl+S (the grid saves all panels). */
+  onSave?: () => void;
+  /** Receives Fit and 1:1 for this view (null on unmount). */
+  controlRef?: { current: ViewControls | null };
+}
+
+export interface ViewControls {
+  fit: () => void;
+  oneToOne: () => void;
 }
 
 const MAX_ZOOM = 64;
@@ -109,7 +124,7 @@ let hoveredView: string | null = null;
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
   interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true,
-  readout = true,
+  readout = true, follow = false, hoverChip = false, onSave, controlRef,
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -120,6 +135,7 @@ export function ImageView({
   const [view, setViewState] = useState<ViewTransform | null>(
     () => useDisplay.getState().views[viewKey] ?? null,
   );
+  const viewRef = useRef(view);
   // While "fitted", the image re-fits when the panel resizes.
   const fitted = useRef(view === null);
   const [hover, setHover] = useState<Hover | null>(null);
@@ -128,6 +144,7 @@ export function ImageView({
   const setView = useCallback(
     (v: ViewTransform, isFit = false) => {
       fitted.current = isFit;
+      viewRef.current = v;
       setViewState(v);
       useDisplay.getState().setView(viewKey, v);
     },
@@ -176,8 +193,24 @@ export function ImageView({
     const saved = useDisplay.getState().views[viewKey];
     fitted.current = !saved;
     imageSize.current = { w: fullWidth, h: fullHeight };
+    viewRef.current = saved ?? null;
     setViewState(saved ?? null);
   }, [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Linked panels: take over a view another panel with this key stored. It
+  // is applied without storing it again, so there is no echo.
+  useEffect(() => {
+    if (!follow) return;
+    return useDisplay.subscribe((s, prev) => {
+      const v = s.views[viewKey];
+      if (!v || v === prev.views[viewKey]) return;
+      const c = viewRef.current;
+      if (c && c.zoom === v.zoom && c.cx === v.cx && c.cy === v.cy) return;
+      fitted.current = false;
+      viewRef.current = v;
+      setViewState(v);
+    });
+  }, [follow, viewKey]);
 
   useEffect(() => {
     const resized = imageSize.current.w !== fullWidth || imageSize.current.h !== fullHeight;
@@ -300,7 +333,7 @@ export function ImageView({
     }
     const p = toData(e.clientX, e.clientY, view);
     if (tooling.current) interaction?.onMove?.(p, e, transform!);
-    else interaction?.onHover?.(p);
+    else interaction?.onHover?.(p, transform!);
     const ix = Math.floor(p.x);
     const iy = Math.floor(p.y);
     if (ix < 0 || iy < 0 || ix >= fullWidth || iy >= fullHeight) {
@@ -356,7 +389,16 @@ export function ImageView({
       .then((blob) => downloadBlob(blob, name))
       .catch((e) => useLayers.getState().notify(`Could not save the image: ${(e as Error).message}`));
   };
-  save.current = saveImage;
+  save.current = onSave ?? saveImage;
+
+  useEffect(() => {
+    if (!controlRef) return;
+    const mine = { fit, oneToOne: () => view && setView({ ...view, zoom: 1 }) };
+    controlRef.current = mine;
+    return () => {
+      if (controlRef.current === mine) controlRef.current = null;
+    };
+  });
 
   return (
     <div className="image-view">
@@ -399,6 +441,14 @@ export function ImageView({
             onDoubleClick={(e) => e.stopPropagation()}
           >
             {panel}
+          </div>
+        )}
+        {hoverChip && hover && (
+          <div className="hover-chip">
+            {hover.x}, {hover.y}
+            {hover.values.map((v, i) => (
+              <span key={i}> · {formatValue(v.value)}</span>
+            ))}
           </div>
         )}
         {scaleBar && bar && anyFrame && (

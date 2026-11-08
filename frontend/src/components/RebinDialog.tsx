@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, planeSize, useDatasets } from "../state/datasets";
-import { formatValue } from "../format";
+import { formatValue, isLineScan } from "../format";
 
-/** Only spectrum images are rebinned, together with everything on their scan. */
-export const canRebin = (d: DatasetSummary) => d.kind === "spectrum_image";
+/** Only spectrum images are rebinned, together with everything on their scan
+ * (not line scans: they have no 2D scan). */
+export const canRebin = (d: DatasetSummary) => d.kind === "spectrum_image" && !isLineScan(d);
 
 /** Indices (in ``d.axes``) of the scan's y and x axes. */
 function planeAxes(d: DatasetSummary): [number, number] | null {

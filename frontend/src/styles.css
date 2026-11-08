@@ -17,7 +17,16 @@
   --badge-spectrum: #0d9488;
   --badge-spectrum_image: #d97706;
   --badge-map: #db2777;
+  --badge-window: #0891b2;
   --badge-other: #6b7280;
+
+  /* Colours of linked EELS pairs (read on light and dark panels) */
+  --pair-0: #0d9488;
+  --pair-1: #d97706;
+  --pair-2: #8b5cf6;
+  --pair-3: #db2777;
+  --pair-4: #2f8f3a;
+  --pair-5: #0284c7;
 
   --radius: 6px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -431,6 +440,7 @@ button.primary:disabled {
 .badge-spectrum { background: var(--badge-spectrum); }
 .badge-spectrum_image { background: var(--badge-spectrum_image); }
 .badge-map { background: var(--badge-map); }
+.badge-window { background: var(--badge-window); }
 
 .empty-list {
   margin: 0;
@@ -1197,6 +1207,10 @@ button.primary:disabled {
   border-radius: 5px;
 }
 
+.layer-row.no-opacity {
+  grid-template-columns: 20px 18px 1fr 18px;
+}
+
 .layer-row:hover {
   background: rgba(255, 255, 255, 0.06);
 }
@@ -1411,10 +1425,6 @@ button.primary:disabled {
   border-radius: 2px;
 }
 
-.spectrum-plot.window-mode .u-over {
-  cursor: col-resize;
-}
-
 /* Elements picker + periodic table */
 .elements-picker {
   position: relative;
@@ -1617,6 +1627,73 @@ button.primary:disabled {
 
 .context-menu button.danger {
   color: var(--danger);
+}
+
+.context-menu button:disabled {
+  color: var(--muted);
+  background: none;
+  cursor: default;
+}
+
+.context-menu button.indent {
+  padding-left: 20px;
+}
+
+/* Chain glyph on a low/core loss linked with its partner */
+.link-glyph {
+  display: inline-block;
+  margin-right: 4px;
+  vertical-align: -2px;
+  color: var(--muted);
+}
+
+/* Box around a linked EELS pair (two file blocks, or two rows of one file) */
+.pair-box {
+  position: relative;
+  list-style: none;
+  margin: 6px 0;
+  padding: 10px 6px 6px;
+  border: 1.5px solid var(--pair);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pair) 12%, transparent);
+}
+
+.pair-box .file + .file {
+  margin-top: 8px;
+}
+
+.pair-box.pair-rows {
+  margin: 6px 0 6px -6px;
+  padding: 10px 2px 2px;
+}
+
+.pair-box.pair-rows > .dataset-list,
+.pair-box.pair-rows > .dataset-grid {
+  margin: 0;
+}
+
+.dataset-grid > .pair-box {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.pair-box .dataset-grid {
+  margin-top: 6px;
+}
+
+.pair-label {
+  position: absolute;
+  top: -7px;
+  right: 8px;
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  letter-spacing: 0.03em;
+  color: var(--pair);
+  background: var(--panel);
+  border-radius: 3px;
+  pointer-events: none;
 }
 
 /* Rebin dialog */
@@ -2492,8 +2569,6 @@ kbd {
 }
 
 .align-title {
-  display: flex;
-  flex-direction: column;
   font-size: 12px;
   min-width: 0;
 }
@@ -3044,4 +3119,231 @@ kbd {
 
 .drift-head {
   fill: var(--text);
+}
+
+/* ---------- Line scan: energy × position image ---------- */
+.linescan {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.linescan-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  grid-template-rows: 1fr 36px;
+  min-height: 0;
+}
+
+.linescan-wrap {
+  position: relative;
+  min-height: 60px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--viewport);
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+
+.linescan-wrap:focus-visible {
+  outline: 1px solid var(--accent);
+}
+
+/* Stretched to the panel: the pixels are not square. */
+.linescan-wrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.linescan-cursor {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1.5px solid;
+  transform: translateY(-0.75px);
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+
+.linescan-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  min-height: 2px;
+  background: color-mix(in srgb, var(--range-color) 18%, transparent);
+  border-top: 1px solid var(--range-color);
+  border-bottom: 1px solid var(--range-color);
+  pointer-events: none;
+}
+
+.linescan-band.selected {
+  background: color-mix(in srgb, var(--range-color) 32%, transparent);
+  border-top-width: 2px;
+  border-bottom-width: 2px;
+}
+
+.linescan-yaxis,
+.linescan-xaxis {
+  position: relative;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.linescan-yaxis .linescan-tick {
+  position: absolute;
+  right: 5px;
+  transform: translateY(-50%);
+}
+
+.linescan-xaxis .linescan-tick {
+  position: absolute;
+  top: 3px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.linescan-yaxis .linescan-title {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translate(0, -50%) rotate(180deg);
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+}
+
+.linescan-xaxis .linescan-title {
+  position: absolute;
+  bottom: 1px;
+  left: 0;
+  right: 0;
+  text-align: center;
+}
+
+.technique-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.technique-popover {
+  position: fixed;
+  z-index: 30;
+  width: 260px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.technique-popover p {
+  margin: 6px 0 0;
+}
+
+.technique-options {
+  display: flex;
+  gap: 14px;
+}
+
+.technique-options label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.technique-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ---------- Grid of image panels ---------- */
+.viewer-grid-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+.viewer-grid {
+  position: relative;
+  flex: 1;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
+  min-height: 120px;
+  min-width: 0;
+}
+
+.grid-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+}
+
+.grid-panel.active {
+  border-color: var(--accent);
+}
+
+.grid-panel .image-canvas-wrap {
+  min-height: 0;
+}
+
+.panel-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.panel-label .editing-swatch {
+  width: 9px;
+  height: 9px;
+}
+
+.panel-remove {
+  pointer-events: auto;
+  margin-left: 2px;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.panel-remove:hover {
+  color: #fff;
+}
+
+.hover-chip {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }

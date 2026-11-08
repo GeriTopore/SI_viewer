@@ -2,8 +2,10 @@ import { useMemo } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, planeSize, useDatasets } from "../state/datasets";
 import { useAlignment } from "../state/alignment";
+import { isLineScan } from "../format";
 import { AlignmentWorkspace } from "./AlignmentWorkspace";
 import { ImagesView } from "./ImagesView";
+import { LineScanView } from "./LineScanView";
 import { SpectrumImageView } from "./SpectrumImageView";
 import { SpectrumView } from "./SpectrumView";
 import { StackView } from "./StackView";
@@ -39,6 +41,7 @@ export function MainView() {
   const key = primary && `${primary.id}@${primary.revision}`;
   switch (primary?.kind) {
     case "spectrum_image":
+      if (isLineScan(primary)) return <LineScanView key={key} ds={primary} />;
       return <SpectrumImageView key={key} ds={primary} images={images} />;
     case "stack":
       // Drift correction of this stack fills the viewer while it is open.

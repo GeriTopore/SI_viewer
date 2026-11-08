@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..session import Dataset, DatasetKind
+from ..session import Dataset, DatasetKind, si_cube
 from .filters import filter_image, filter_spectrum
 
 # Stacks smaller than this are loaded into RAM on first access so scrubbing is
@@ -42,6 +42,8 @@ def get_frame(
     - image: the image
     - stack: frame ``index``, or the ``"mean"``/``"sum"`` projection
     - spectrum image: the total-counts map
+    - line scan: the line-scan image itself, positions (rows) × energy
+      channels (columns), spectrally smoothed if asked; ``bin`` is ignored
     """
     f = ds.filter_spec
     if ds.kind is DatasetKind.IMAGE:
@@ -65,6 +67,11 @@ def get_frame(
             frame = filter_image(_numpy(ds.signal.data[index]), f)
     elif ds.kind is DatasetKind.SPECTRUM_IMAGE:
         ds.materialise()
+        if ds.is_line_scan:
+            raw = _cached(ds, "line-scan", lambda: _numpy(ds.signal.data))
+            if not f.has_spectral:
+                return raw
+            return _cached(ds, "line-scan|smoothed", lambda: filter_spectrum(raw, f).astype(np.float32))
         frame = _cached(ds, "total-counts", lambda: _numpy(ds.signal.data.sum(axis=-1)))
         if f.has_spatial:
             frame = _cached(ds, "total-counts|filtered", lambda: filter_image(frame, f))
@@ -82,7 +89,7 @@ def get_spectrum(ds: Dataset) -> np.ndarray:
         ds.materialise()
         raw = _cached(
             ds, "sum-spectrum",
-            lambda: ds.signal.data.sum(axis=(0, 1), dtype=np.float64).astype(np.float32),
+            lambda: si_cube(ds).sum(axis=(0, 1), dtype=np.float64).astype(np.float32),
         )
     else:
         raise NotApplicable(f"{ds.kind.value} datasets have no spectrum")
@@ -102,6 +109,8 @@ def navigator_sources(si: Dataset, siblings: list[Dataset]) -> list[dict]:
 
     if si.kind is not DatasetKind.SPECTRUM_IMAGE:
         raise NotApplicable("Only spectrum images have navigators")
+    if si.is_line_scan:
+        return [{"id": si.id, "label": "Line scan"}]
     shape = tuple(si.signal.axes_manager.navigation_shape)
     companion = si_companion_image(si, siblings)
     others = [

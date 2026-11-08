@@ -7,12 +7,14 @@ import {
 type Corner = { x: "x0" | "x1"; y: "y0" | "y1" };
 
 type Drag =
-  | { mode: "cursor" }
+  | { mode: "cursor"; start: Pt; orig: { x: number; y: number } }
   | { mode: "draw" }
   | { mode: "move"; id: string; orig: Shape; start: Pt }
   | { mode: "resize"; id: string; orig: Shape & { kind: "rect" | "ellipse" }; corner: Corner };
 
 const HANDLE_PX = 7;
+/** How close (screen px) a press must be to the cursor marker to grab it. */
+const GRAB_PX = 8;
 
 /** Rectangle/ellipse with x0 < x1 and y0 < y1. */
 function normalise(shape: Shape): Shape {
@@ -28,8 +30,9 @@ function dedupe(points: [number, number][]) {
 
 /**
  * Pointer and keyboard handling for the SI navigator:
- * - cursor tool: click/drag places the spectrum cursor; arrows nudge it
- *   (Shift: ×10)
+ * - cursor tool: the spectrum cursor moves only by dragging its marker (a
+ *   press within a few px of it; snapped to pixels) — a click or drag
+ *   elsewhere leaves it alone (the image pans); arrows nudge it (Shift: ×10)
  * - rect/ellipse: drag draws a region; drag inside a region moves it
  * - polygon: click adds vertices; click the first vertex, double-click or
  *   Enter closes it; Esc cancels
@@ -38,10 +41,14 @@ function dedupe(points: [number, number][]) {
  */
 export function useNavigatorTools(si: string, width: number, height: number) {
   const tool = useSi((s) => s.tool);
+  const cursorSize = useSi((s) => s.cursorSize);
   const { patch, addRoi, updateRoi, removeRoi } = useSi.getState();
   const [draft, setDraft] = useState<Shape | null>(null);
   const [hover, setHover] = useState<Pt | null>(null);
   const drag = useRef<Drag | null>(null);
+  // The pointer is over the cursor marker / dragging it (sets the mouse cursor).
+  const [near, setNear] = useState(false);
+  const [grabbing, setGrabbing] = useState(false);
 
   const snap = Math.round; // region edges sit on pixel edges
   const toCursor = (p: Pt) => ({
@@ -52,6 +59,17 @@ export function useNavigatorTools(si: string, width: number, height: number) {
     const c = toCursor(p);
     const cur = getSiState(si).cursor;
     if (!cur || cur.x !== c.x || cur.y !== c.y) patch(si, { cursor: c, showCursor: true });
+  };
+
+  /** The pointer is within GRAB_PX screen pixels of the cursor marker. */
+  const onMarker = (p: Pt, t: Transform) => {
+    const c = getSiState(si).cursor;
+    if (!c || !getSiState(si).showCursor) return false;
+    const half = Math.floor((cursorSize - 1) / 2);
+    const [x0, y0] = t.toScreen(c.x - half, c.y - half);
+    const [x1, y1] = t.toScreen(c.x - half + cursorSize, c.y - half + cursorSize);
+    const [px, py] = t.toScreen(p.x, p.y);
+    return Math.hypot(Math.max(x0 - px, 0, px - x1), Math.max(y0 - py, 0, py - y1)) <= GRAB_PX;
   };
 
   const cornerAt = (shape: Shape, p: Pt, t: Transform): Corner | null => {
@@ -74,7 +92,8 @@ export function useNavigatorTools(si: string, width: number, height: number) {
   };
 
   const interaction: Interaction = {
-    cursor: tool === "pan" ? "grab" : tool === "cursor" ? "crosshair" : "cell",
+    cursor:
+      tool === "pan" ? "grab" : tool === "cursor" ? (grabbing ? "grabbing" : near ? "move" : undefined) : "cell",
 
     onDown(p, _e, t) {
       if (tool === "pan" || tool === "line") return false; // lines: the viewer's line tool
@@ -89,8 +108,10 @@ export function useNavigatorTools(si: string, width: number, height: number) {
         }
       }
       if (tool === "cursor") {
-        drag.current = { mode: "cursor" };
-        setCursor(p);
+        const cur = s.cursor;
+        if (!cur || !onMarker(p, t)) return false; // elsewhere the image pans
+        drag.current = { mode: "cursor", start: p, orig: cur };
+        setGrabbing(true);
         return true;
       }
       if (tool === "polygon") {
@@ -123,8 +144,13 @@ export function useNavigatorTools(si: string, width: number, height: number) {
     onMove(p) {
       const d = drag.current;
       if (!d) return;
-      if (d.mode === "cursor") setCursor(p);
-      else if (d.mode === "draw") {
+      if (d.mode === "cursor") {
+        // Move by whole pixels from where the marker was grabbed.
+        setCursor({
+          x: d.orig.x + Math.floor(p.x) - Math.floor(d.start.x) + 0.5,
+          y: d.orig.y + Math.floor(p.y) - Math.floor(d.start.y) + 0.5,
+        });
+      } else if (d.mode === "draw") {
         setDraft((cur) => (cur && cur.kind !== "polygon" ? { ...cur, x1: snap(p.x), y1: snap(p.y) } : cur));
       } else if (d.mode === "move") {
         updateRoi(si, d.id, {
@@ -138,7 +164,8 @@ export function useNavigatorTools(si: string, width: number, height: number) {
     onUp() {
       const d = drag.current;
       drag.current = null;
-      if (d?.mode === "draw" && draft && draft.kind !== "polygon") {
+      if (d?.mode === "cursor") setGrabbing(false);
+      else if (d?.mode === "draw" && draft && draft.kind !== "polygon") {
         const n = normalise(draft) as Shape & { kind: "rect" | "ellipse" };
         if (n.x1 - n.x0 >= 1 && n.y1 - n.y0 >= 1) addRoi(si, n);
         setDraft(null);
@@ -148,8 +175,9 @@ export function useNavigatorTools(si: string, width: number, height: number) {
       }
     },
 
-    onHover(p) {
+    onHover(p, t) {
       if (tool === "polygon") setHover(p);
+      setNear(tool === "cursor" && !!p && !!t && onMarker(p, t));
     },
 
     onDoubleClick() {

@@ -53,7 +53,7 @@ def frame(
     bin: int = 1,
 ) -> Response:
     ds = _dataset(request, dataset_id)
-    bin = max(1, min(bin, 64))
+    bin = 1 if ds.is_line_scan else max(1, min(bin, 64))
     try:
         arr = get_frame(ds, index=index, projection=projection, bin=bin)
     except NotApplicable as e:

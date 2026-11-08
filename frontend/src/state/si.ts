@@ -2,7 +2,6 @@ import { create } from "zustand";
 
 export type Tool = "cursor" | "rect" | "ellipse" | "polygon" | "line" | "pan";
 export type Reduce = "mean" | "sum";
-export type SpectrumDrag = "zoom" | "window";
 
 /** Region geometry in data pixel coordinates (pixel i spans [i, i+1)). */
 export type Shape =
@@ -17,14 +16,6 @@ export interface Roi {
   shape: Shape;
 }
 
-export interface EnergyWindow {
-  lo: number;
-  hi: number;
-  /** Set when the window was taken from an element's X-ray line. */
-  element?: string;
-  label?: string;
-}
-
 /** Interaction state of one spectrum image. */
 export interface SiState {
   cursor: { x: number; y: number } | null;
@@ -32,14 +23,18 @@ export interface SiState {
   showWhole: boolean;
   rois: Roi[];
   selected: string | null;
-  window: EnergyWindow | null;
+  /** The main window: the energy range summed into the virtual image
+   * (null: the whole range, i.e. the total counts). */
+  main: { lo: number; hi: number } | null;
+  /** The energy window selected on the spectrum: "main" or the id of a window map. */
+  selectedWindow: string | null;
 }
 
 export const CURSOR_COLOR = "#ff9f0a";
 const ROI_COLORS = ["#00e5ff", "#ff6bd6", "#8cff5a", "#b18cff", "#ffd60a", "#ff7a59"];
 
 const EMPTY: SiState = {
-  cursor: null, showCursor: true, showWhole: true, rois: [], selected: null, window: null,
+  cursor: null, showCursor: true, showWhole: true, rois: [], selected: null, main: null, selectedWindow: null,
 };
 
 interface SiStore {
@@ -47,17 +42,21 @@ interface SiStore {
   tool: Tool;
   cursorSize: number;
   reduce: Reduce;
-  spectrumDrag: SpectrumDrag;
+  /** Energy windows are drawn on the spectrum plot. */
+  showWindows: boolean;
+  /** The main window's band is drawn (the virtual image's range; needs showWindows). */
+  showMain: boolean;
   patch: (si: string, patch: Partial<SiState>) => void;
   addRoi: (si: string, shape: Shape) => string;
   updateRoi: (si: string, id: string, patch: Partial<Roi>) => void;
   removeRoi: (si: string, id: string) => void;
-  /** Forget a spectrum image's cursor, regions and window (e.g. after rebinning). */
+  /** Forget a spectrum image's cursor, regions and main window (e.g. after rebinning). */
   reset: (si: string) => void;
   setTool: (tool: Tool) => void;
   setCursorSize: (n: number) => void;
   setReduce: (r: Reduce) => void;
-  setSpectrumDrag: (d: SpectrumDrag) => void;
+  setShowWindows: (show: boolean) => void;
+  setShowMain: (show: boolean) => void;
 }
 
 let nextId = 1;
@@ -74,7 +73,8 @@ export const useSi = create<SiStore>((set) => {
     tool: "cursor",
     cursorSize: 1,
     reduce: "mean",
-    spectrumDrag: "zoom",
+    showWindows: true,
+    showMain: true,
     patch: (si, patch) => update(si, () => patch),
     addRoi: (si, shape) => {
       const id = `roi${nextId++}`;
@@ -102,7 +102,8 @@ export const useSi = create<SiStore>((set) => {
     setTool: (tool) => set({ tool }),
     setCursorSize: (cursorSize) => set({ cursorSize }),
     setReduce: (reduce) => set({ reduce }),
-    setSpectrumDrag: (spectrumDrag) => set({ spectrumDrag }),
+    setShowWindows: (showWindows) => set({ showWindows }),
+    setShowMain: (showMain) => set({ showMain }),
   };
 });
 

@@ -6,6 +6,7 @@ import { useSi } from "../state/si";
 import { useUi } from "../state/ui";
 import { formatValue } from "../format";
 import { downloadBlob, downloadCsv, safeFileName } from "../download";
+import { isTyping } from "../keyboard";
 
 export interface SpectrumSeries {
   label: string;
@@ -37,6 +38,18 @@ export interface EnergyRange {
   hi: number;
 }
 
+/** An energy window drawn as a band on the plot. */
+export interface PlotWindow {
+  id: string;
+  lo: number;
+  hi: number;
+  /** Colour of the band (a CSS colour). */
+  color: string;
+  label: string;
+  /** Being drawn (provisional): dashed edges, not selectable. */
+  draft?: boolean;
+}
+
 interface Props {
   /** Channel centres along the spectral axis. */
   x: Float64Array;
@@ -46,11 +59,28 @@ interface Props {
   loading?: string | null;
   error?: string | null;
   markers?: Marker[];
-  /** Highlighted energy window. */
-  window?: EnergyRange | null;
-  /** Called while dragging a window (final = false) and on release. Enables
-   * the "Map window" drag mode. */
+  /** Energy windows drawn as bands (toggled by the "Windows" checkbox). */
+  windows?: PlotWindow[];
+  /** Offers the "Main" checkbox (hiding the main window's band; the caller
+   * leaves that band out of `windows` when the setting is off). */
+  mainToggle?: boolean;
+  /** Id of the selected window: highlighted and annotated, its edges and
+   * inside can be dragged. */
+  selectedId?: string | null;
+  /** A window was clicked (its id) or the empty plot (null; also Esc). */
+  onSelectWindow?: (id: string | null) => void;
+  /** Called while Shift-dragging a new window (final = false) and on release.
+   * Enables drawing windows (a Shift-click without a drag does nothing). */
   onWindow?: (range: EnergyRange, final: boolean) => void;
+  /** The selected window's edge or inside is being dragged (snapped to
+   * channels): the new range, final = true on release. */
+  onEditWindow?: (id: string, range: EnergyRange, final: boolean) => void;
+  /** A window was right-clicked (client coordinates); return true to handle it
+   * (else the browser's menu shows). */
+  onWindowMenu?: (id: string, x: number, y: number) => boolean;
+  /** A window was double-clicked; return true to handle it (else the plot's
+   * zoom is reset). */
+  onWindowDoubleClick?: (id: string) => boolean;
   onMarkerClick?: (m: Marker) => void;
   /** Extra controls at the start of the toolbar. */
   toolbar?: ReactNode;
@@ -58,32 +88,51 @@ interface Props {
   legend?: ReactNode;
   /** Base name of saved files (CSV, PNG). */
   name?: string;
+  /** Linear/Log of this plot; without them the shared setting is used. */
+  log?: boolean;
+  onLog?: (log: boolean) => void;
+  /** Remembers this plot's energy zoom while it is unmounted (e.g. on
+   * another tab) and across rebuilds. */
+  zoomKey?: string;
 }
+
+const zoomMemory = new Map<string, { min: number; max: number }>();
 
 const cssVar = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-/** Spectrum plot (uPlot): drag to zoom energy (or select a window), wheel to
- * zoom, double-click to reset. X-ray lines are drawn as markers. */
+/** Spectrum plot (uPlot): drag to zoom energy, Shift-drag to draw an energy
+ * window, wheel to zoom, double-click to reset. X-ray lines are drawn as
+ * markers; windows as bands, the selected one annotated and editable. */
 export function SpectrumPlot({
-  x, series, xLabel, xUnits, loading, error, markers = [], window, onWindow, onMarkerClick, toolbar, legend,
-  name = "spectrum",
+  x, series, xLabel, xUnits, loading, error, markers = [], windows = [], mainToggle, selectedId = null, onSelectWindow, onWindow,
+  onEditWindow, onWindowMenu, onWindowDoubleClick, onMarkerClick, toolbar, legend, name = "spectrum", log: logProp, onLog, zoomKey,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
-  const log = useDisplay((s) => s.spectrumLog);
+  const sharedLog = useDisplay((s) => s.spectrumLog);
+  const log = logProp ?? sharedLog;
   const theme = useUi((s) => s.theme); // axis colours are read from CSS on build
-  const setLog = useDisplay((s) => s.setSpectrumLog);
-  const dragMode = useSi((s) => (onWindow ? s.spectrumDrag : "zoom"));
-  const setDragMode = useSi((s) => s.setSpectrumDrag);
+  const setSharedLog = useDisplay((s) => s.setSpectrumLog);
+  const setLog = onLog ?? setSharedLog;
+  const showWindows = useSi((s) => s.showWindows);
+  const setShowWindows = useSi((s) => s.setShowWindows);
+  const showMain = useSi((s) => s.showMain);
+  const setShowMain = useSi((s) => s.setShowMain);
   const [hover, setHover] = useState<{ x: number; values: (number | null)[] } | null>(null);
 
   // Read inside uPlot hooks, which are created once per layout.
   const labelBoxes = useRef<LabelBox[]>([]);
   // Counts-axis range set by dragging the axis; null = auto-range to the data.
   const manualY = useRef<{ min: number; max: number } | null>(null);
-  const live = useRef({ markers, window, onWindow, onMarkerClick, dragMode, series });
-  live.current = { markers, window, onWindow, onMarkerClick, dragMode, series };
+  const live = useRef({
+    markers, windows, selectedId, showWindows, onSelectWindow, onWindow, onEditWindow, onWindowMenu,
+    onWindowDoubleClick, onMarkerClick, series, xUnits,
+  });
+  live.current = {
+    markers, windows, selectedId, showWindows, onSelectWindow, onWindow, onEditWindow, onWindowMenu,
+    onWindowDoubleClick, onMarkerClick, series, xUnits,
+  };
 
   const toData = (): uPlot.AlignedData => [
     x,
@@ -98,6 +147,7 @@ export function SpectrumPlot({
   useLayoutEffect(() => {
     const el = wrapRef.current!;
     manualY.current = null;
+    const saved = zoomKey ? zoomMemory.get(zoomKey) : undefined;
     const yRange: uPlot.Range.Function = (_u, lo, hi) => {
       if (manualY.current) return [manualY.current.min, manualY.current.max];
       if (lo == null || hi == null) return log ? [1, 10] : [0, 1];
@@ -150,51 +200,164 @@ export function SpectrumPlot({
             );
           },
         ],
-        // Drag released: zoom (default mode) or set the energy window.
+        // Drag released: zoom, or (Shift) set the energy window.
         setSelect: [
           (u) => {
             if (u.select.width < 2) return;
             const lo = u.posToVal(u.select.left, "x");
             const hi = u.posToVal(u.select.left + u.select.width, "x");
-            if (live.current.dragMode === "window" && live.current.onWindow) live.current.onWindow({ lo, hi }, true);
+            if (shiftDrag && live.current.onWindow) live.current.onWindow({ lo, hi }, true);
             else u.setScale("x", { min: lo, max: hi });
             u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
           },
         ],
-        draw: [(u) => (labelBoxes.current = drawOverlays(u, live.current.markers, live.current.window ?? null))],
+        setScale: [
+          (u, key) => {
+            if (key !== "x" || !zoomKey) return;
+            const { min, max } = u.scales.x;
+            if (min == null || max == null) return;
+            const eps = (x[1] - x[0]) * 0.5;
+            if (min <= x[0] + eps && max >= x[x.length - 1] - eps) zoomMemory.delete(zoomKey);
+            else zoomMemory.set(zoomKey, { min, max });
+          },
+        ],
+        draw: [
+          (u) => {
+            const l = live.current;
+            labelBoxes.current = drawOverlays(u, l.markers, l.showWindows ? l.windows : [], l.selectedId, l.xUnits);
+          },
+        ],
       },
     };
     const plot = new uPlot(opts, toData(), el);
     plotRef.current = plot;
+    if (saved && x.length > 1 && saved.max > x[0] && saved.min < x[x.length - 1]) {
+      plot.setScale("x", { min: Math.max(saved.min, x[0]), max: Math.min(saved.max, x[x.length - 1]) });
+    }
 
-    // Live window updates while dragging in window mode.
+    const step = x.length > 1 ? x[1] - x[0] : 1;
+    const [xFirst, xLast] = [x[0], x[x.length - 1]];
+    /** The pointer's x in plot pixels (css, from the plot area's left edge). */
+    const plotX = (e: MouseEvent) => e.clientX - plot.over.getBoundingClientRect().left;
+    const snapTo = (v: number) => xFirst + Math.round((v - xFirst) / step) * step;
+    const shown = () => (live.current.showWindows ? live.current.windows.filter((w) => !w.draft) : []);
+    const selected = () => shown().find((w) => w.id === live.current.selectedId);
+    /** Where the pointer is on the selected window: an edge or inside. */
+    const partAt = (px: number): "lo" | "hi" | "in" | null => {
+      const w = selected();
+      if (!w) return null;
+      const a = plot.valToPos(w.lo, "x");
+      const b = plot.valToPos(w.hi, "x");
+      const da = Math.abs(px - a);
+      const db = Math.abs(px - b);
+      if (Math.min(da, db) <= EDGE_PX) return da <= db ? "lo" : "hi";
+      // A window spanning the whole spectrum can't move: its inside zooms.
+      if (w.lo <= xFirst + step / 2 && w.hi >= xLast - step / 2) return null;
+      return px > a && px < b ? "in" : null;
+    };
+    /** The narrowest window under the pointer. */
+    const windowAt = (px: number) => {
+      const under = shown().filter((w) => px >= plot.valToPos(w.lo, "x") && px <= plot.valToPos(w.hi, "x"));
+      under.sort((a, b) => a.hi - a.lo - (b.hi - b.lo));
+      return under[0]?.id ?? null;
+    };
+    /** Click (no drag): select the narrowest window under the pointer, else none. */
+    const clickWindow = (px: number) => live.current.onSelectWindow?.(windowAt(px));
+
+    // Shift-drag draws a window (live while dragging); other drags zoom.
     let down = false;
     let downX = 0;
+    let shiftDrag = false;
     const onDown = (e: MouseEvent) => {
       down = true;
       downX = e.clientX;
+      shiftDrag = e.shiftKey && !!live.current.onWindow;
+      if (shiftDrag && !live.current.showWindows) useSi.getState().setShowWindows(true);
     };
-    const onMove = () => {
-      if (!down || live.current.dragMode !== "window" || !live.current.onWindow) return;
+    const onMove = (e: MouseEvent) => {
+      if (!down) {
+        // Pointer over the selected window: edges resize, inside moves.
+        const part = e.shiftKey ? null : partAt(plotX(e));
+        plot.over.style.cursor = part === "in" ? "grab" : part ? "ew-resize" : "";
+        return;
+      }
+      if (!shiftDrag) return;
       const s = plot.select;
       if (s.width < 2) return;
-      live.current.onWindow(
-        { lo: plot.posToVal(s.left, "x"), hi: plot.posToVal(s.left + s.width, "x") },
-        false,
-      );
+      live.current.onWindow?.({ lo: plot.posToVal(s.left, "x"), hi: plot.posToVal(s.left + s.width, "x") }, false);
     };
-    // A click (no drag) near a labelled line marker selects it.
+    // A click (no drag) on a labelled line marker maps it; else it selects a window.
     const onUp = (e: MouseEvent) => {
       down = false;
-      if (Math.abs(e.clientX - downX) > 3 || !live.current.onMarkerClick) return;
-      // Hit-test label boxes (canvas pixels, which include the plot's offset).
-      const rect = plot.root.querySelector("canvas")!.getBoundingClientRect();
-      const dpr = devicePixelRatio || 1;
-      const px = (e.clientX - rect.left) * dpr;
-      const py = (e.clientY - rect.top) * dpr;
-      const hit = labelBoxes.current.find((b) => px >= b.x0 - 4 * dpr && px <= b.x1 && py >= b.y0 && py <= b.y1);
-      if (hit) live.current.onMarkerClick(hit.marker);
+      if (Math.abs(e.clientX - downX) > 3 || e.shiftKey) return;
+      if (live.current.onMarkerClick) {
+        // Hit-test label boxes (canvas pixels, which include the plot's offset).
+        const rect = plot.root.querySelector("canvas")!.getBoundingClientRect();
+        const dpr = devicePixelRatio || 1;
+        const px = (e.clientX - rect.left) * dpr;
+        const py = (e.clientY - rect.top) * dpr;
+        const hit = labelBoxes.current.find((b) => px >= b.x0 - 4 * dpr && px <= b.x1 && py >= b.y0 && py <= b.y1);
+        if (hit) {
+          live.current.onMarkerClick(hit.marker);
+          return;
+        }
+      }
+      clickWindow(plotX(e));
     };
+
+    // Dragging the selected window's edge, or its inside, edits it. This runs
+    // before uPlot's own drag-to-zoom, which it replaces for such a press.
+    interface Edit {
+      id: string;
+      part: "lo" | "hi" | "in";
+      lo: number;
+      hi: number;
+      at: number; // energy where the press was
+      x0: number; // screen x of the press
+      moved: boolean;
+    }
+    let edit: Edit | null = null;
+    const rangeOf = (edit: Edit, e: MouseEvent): EnergyRange => {
+      const v = plot.posToVal(plotX(e), "x");
+      // An edge drag moves that edge only; moving snaps both.
+      if (edit.part === "lo") return { lo: Math.min(Math.max(snapTo(v), xFirst), edit.hi - step), hi: edit.hi };
+      if (edit.part === "hi") return { lo: edit.lo, hi: Math.max(Math.min(snapTo(v), xLast), edit.lo + step) };
+      const lo0 = snapTo(edit.lo);
+      const hi0 = Math.max(snapTo(edit.hi), lo0 + step);
+      const shift = Math.round((v - edit.at) / step) * step;
+      const d = Math.min(Math.max(shift, xFirst - lo0), xLast - hi0);
+      return { lo: lo0 + d, hi: hi0 + d };
+    };
+    const onEditMove = (e: MouseEvent) => {
+      if (!edit) return;
+      if (!edit.moved && Math.abs(e.clientX - edit.x0) <= 3) return;
+      edit.moved = true;
+      live.current.onEditWindow?.(edit.id, rangeOf(edit, e), false);
+    };
+    const onEditUp = (e: MouseEvent) => {
+      document.removeEventListener("mousemove", onEditMove);
+      document.removeEventListener("mouseup", onEditUp);
+      const done = edit;
+      edit = null;
+      plot.over.style.cursor = "";
+      if (!done) return;
+      if (done.moved) live.current.onEditWindow?.(done.id, rangeOf(done, e), true);
+      else clickWindow(plotX(e));
+    };
+    const onEditDown = (e: MouseEvent) => {
+      const w = selected();
+      if (!w || !live.current.onEditWindow || e.button !== 0 || e.shiftKey || !plot.over.contains(e.target as Node)) return;
+      const px = plotX(e);
+      const part = partAt(px);
+      if (!part) return;
+      e.stopPropagation(); // not a zoom drag
+      e.preventDefault();
+      edit = { id: w.id, part, lo: w.lo, hi: w.hi, at: plot.posToVal(px, "x"), x0: e.clientX, moved: false };
+      plot.over.style.cursor = part === "in" ? "grabbing" : "ew-resize";
+      document.addEventListener("mousemove", onEditMove);
+      document.addEventListener("mouseup", onEditUp);
+    };
+    plot.root.addEventListener("mousedown", onEditDown, true);
     // Wheel zooms the energy axis around the cursor.
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -207,7 +370,15 @@ export function SpectrumPlot({
       const hi = Math.min(x[x.length - 1], at + (max - at) * f);
       if (hi - lo > (x[1] - x[0]) * 4) plot.setScale("x", { min: lo, max: hi });
     };
-    const onDblClick = () => resetScales(plot);
+    const onDblClick = (e: MouseEvent) => {
+      const id = windowAt(plotX(e));
+      if (id && live.current.onWindowDoubleClick?.(id)) return;
+      resetScales(plot);
+    };
+    const onContextMenu = (e: MouseEvent) => {
+      const id = windowAt(plotX(e));
+      if (id && live.current.onWindowMenu?.(id, e.clientX, e.clientY)) e.preventDefault();
+    };
 
     // Drag on an axis (where the tick labels are): zoom that axis around the
     // point where the drag started (right/up zooms in); Shift-drag pans it.
@@ -291,11 +462,14 @@ export function SpectrumPlot({
     plot.over.addEventListener("mouseup", onUp);
     plot.over.addEventListener("wheel", onWheel, { passive: false });
     plot.over.addEventListener("dblclick", onDblClick);
+    plot.over.addEventListener("contextmenu", onContextMenu);
 
     const ro = new ResizeObserver(() => plot.setSize({ width: el.clientWidth, height: el.clientHeight }));
     ro.observe(el);
     return () => {
       ro.disconnect();
+      document.removeEventListener("mousemove", onEditMove);
+      document.removeEventListener("mouseup", onEditUp);
       plot.destroy();
       plotRef.current = null;
     };
@@ -312,7 +486,17 @@ export function SpectrumPlot({
 
   useEffect(() => {
     plotRef.current?.redraw(false);
-  }, [markers, window]);
+  }, [markers, windows, selectedId, showWindows]);
+
+  // Esc deselects the window.
+  useEffect(() => {
+    if (!selectedId || !onSelectWindow) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !isTyping(e) && !document.querySelector(".modal-backdrop")) onSelectWindow(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedId, onSelectWindow]);
 
   /** Full energy range and an automatic counts range. */
   const resetScales = (plot: uPlot) => {
@@ -359,24 +543,24 @@ export function SpectrumPlot({
           </button>
         </div>
         {onWindow && (
-          <div className="segmented" role="group" aria-label="Drag action">
-            <button
-              className={dragMode === "zoom" ? "active" : undefined}
-              aria-pressed={dragMode === "zoom"}
-              onClick={() => setDragMode("zoom")}
-              title="Drag on the plot to zoom the energy axis"
-            >
-              Zoom
-            </button>
-            <button
-              className={dragMode === "window" ? "active" : undefined}
-              aria-pressed={dragMode === "window"}
-              onClick={() => setDragMode("window")}
-              title="Drag on the plot to map that energy window in the navigator"
-            >
-              Map window
-            </button>
-          </div>
+          <label className="field" title="Show the energy windows on the plot (Shift-drag makes a new one)">
+            <input type="checkbox" checked={showWindows} onChange={(e) => setShowWindows(e.target.checked)} />
+            Windows
+          </label>
+        )}
+        {onWindow && mainToggle && (
+          <label
+            className="field"
+            title={showWindows ? "Show the main window (the virtual image's range)" : "Show the main window (needs Windows on)"}
+          >
+            <input
+              type="checkbox"
+              checked={showMain}
+              disabled={!showWindows}
+              onChange={(e) => setShowMain(e.target.checked)}
+            />
+            Main
+          </label>
         )}
         <button
           className="secondary small-button"
@@ -400,7 +584,7 @@ export function SpectrumPlot({
       </div>
       {legend}
       <div className="spectrum-plot-wrap">
-        <div ref={wrapRef} className={`spectrum-plot${dragMode === "window" ? " window-mode" : ""}`} />
+        <div ref={wrapRef} className="spectrum-plot" />
         {(loading || error) && (
           <div className={`image-message${error ? " error" : ""}`}>
             {loading && !error && <span className="spinner" aria-hidden />}
@@ -424,7 +608,10 @@ export function SpectrumPlot({
           ) : (
             <span className="muted">
               {x.length} channels · {formatValue(x[0] ?? 0)}–{formatValue(x[x.length - 1] ?? 0)} {xUnits}
+              {" · drag to zoom"}
+              {onWindow && " · Shift-drag for a new energy window"}
               {" · drag an axis to zoom it, Shift-drag to pan"}
+              {onWindow && showWindows && selectedId && " · drag a window's edges or inside to edit · right-click a window for more · Esc"}
               {onMarkerClick && markers.length > 0 && " · click a line label to map it"}
             </span>
           )}
@@ -442,9 +629,14 @@ interface LabelBox {
   y1: number;
 }
 
-/** Energy window band and X-ray line markers (labels staggered to avoid
- * overlap). Returns the label boxes, in canvas pixels, for click hit-testing. */
-function drawOverlays(u: uPlot, markers: Marker[], window: EnergyRange | null): LabelBox[] {
+const EDGE_PX = 4;
+
+/** Energy window bands, X-ray line markers (labels staggered to avoid
+ * overlap) and the selected window's annotation. Returns the marker label
+ * boxes, in canvas pixels, for click hit-testing. */
+function drawOverlays(
+  u: uPlot, markers: Marker[], windows: PlotWindow[], selectedId: string | null, units: string,
+): LabelBox[] {
   const boxes: LabelBox[] = [];
   const ctx = u.ctx;
   const { left, top, width, height } = u.bbox;
@@ -456,14 +648,33 @@ function drawOverlays(u: uPlot, markers: Marker[], window: EnergyRange | null): 
   ctx.rect(left, top, width, height);
   ctx.clip();
 
-  if (window) {
-    const a = u.valToPos(window.lo, "x", true);
-    const b = u.valToPos(window.hi, "x", true);
-    ctx.fillStyle = "rgba(76, 141, 255, 0.16)";
-    ctx.fillRect(Math.min(a, b), top, Math.abs(b - a), height);
-    ctx.strokeStyle = "rgba(76, 141, 255, 0.7)";
-    ctx.lineWidth = dpr;
-    ctx.strokeRect(Math.min(a, b), top, Math.abs(b - a), height);
+  // Translucent bands with solid edges: wider ones underneath, the selected one on top.
+  const ordered = [...windows].sort(
+    (a, b) => Number(a.id === selectedId) - Number(b.id === selectedId) || Math.abs(b.hi - b.lo) - Math.abs(a.hi - a.lo),
+  );
+  for (const w of ordered) {
+    const sel = w.id === selectedId;
+    const a = u.valToPos(Math.min(w.lo, w.hi), "x", true);
+    const b = u.valToPos(Math.max(w.lo, w.hi), "x", true);
+    ctx.fillStyle = w.color;
+    ctx.globalAlpha = sel ? 0.3 : 0.14;
+    ctx.fillRect(a, top, b - a, height);
+    ctx.globalAlpha = sel ? 1 : 0.85;
+    ctx.fillStyle = w.color;
+    const lw = Math.max(1, Math.round((sel ? 2.5 : 1.25) * dpr));
+    if (w.draft) {
+      ctx.strokeStyle = w.color;
+      ctx.lineWidth = lw;
+      ctx.setLineDash([5 * dpr, 4 * dpr]);
+      for (const e of [a, b]) {
+        ctx.beginPath();
+        ctx.moveTo(Math.round(e) + 0.5, top);
+        ctx.lineTo(Math.round(e) + 0.5, top + height);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    } else for (const e of [a, b]) ctx.fillRect(Math.round(e - lw / 2), top, lw, height);
+    ctx.globalAlpha = 1;
   }
 
   const visible = markers.filter((m) => m.energy >= xmin && m.energy <= xmax);
@@ -494,6 +705,139 @@ function drawOverlays(u: uPlot, markers: Marker[], window: EnergyRange | null): 
       boxes.push({ marker: m, x0: px, x1: px + 3 * dpr + w, y0: ty - 2 * dpr, y1: ty + rowH });
     }
   }
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+
+  const chosen = windows.find((w) => w.id === selectedId);
+  if (chosen) drawAnnotation(u, chosen, boxes, units);
   ctx.restore();
   return boxes;
+}
+
+/** The selected window's width above a dotted double arrow across
+ * it, and its two limits: an arrow pointing in to a tick on each edge, with
+ * the limit's energy beside the arrow (inside the window when there is no room
+ * outside it). */
+function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: string) {
+  const ctx = u.ctx;
+  const { left, top, width } = u.bbox;
+  const right = left + width;
+  const dpr = devicePixelRatio || 1;
+  const lo = Math.min(w.lo, w.hi);
+  const hi = Math.max(w.lo, w.hi);
+  const pa = u.valToPos(lo, "x", true);
+  const pb = u.valToPos(hi, "x", true);
+  if (pb < left || pa > right) return;
+
+  // Energies to the channel width.
+  const xs = u.data[0];
+  const step = Math.abs((xs[1] ?? 0) - (xs[0] ?? 0));
+  const digits = step > 0 ? Math.min(6, Math.max(0, Math.ceil(-Math.log10(step)))) : 3;
+  const fmt = (v: number) => String(Number(v.toFixed(digits)));
+  const unit = units ? ` ${units}` : "";
+  const text = `Δ ${fmt(hi - lo)}${unit}`;
+
+  const px = 11 * dpr; // text height
+  ctx.font = `${px}px -apple-system, sans-serif`;
+  ctx.lineCap = "butt";
+  const panel = cssVar("--panel") || "#fff";
+  const clamp = (v: number) => Math.min(right, Math.max(left, v));
+  const ea = clamp(pa);
+  const eb = clamp(pb);
+  const tw = ctx.measureText(text).width;
+  const cx = Math.min(Math.max((ea + eb) / 2, left + tw / 2 + 3 * dpr), Math.max(right - tw / 2 - 3 * dpr, left));
+
+  // Below any line label in the way.
+  let ty = top + 4 * dpr;
+  for (const b of boxes) if (b.x1 > cx - tw / 2 - 6 * dpr && b.x0 < cx + tw / 2 + 6 * dpr) ty = Math.max(ty, b.y1 + 2 * dpr);
+  const ay = Math.round(ty + px + 10 * dpr);
+
+  const label = (s: string, x: number, y: number, align: "left" | "right" | "center") => {
+    const tw2 = ctx.measureText(s).width;
+    const x0 = align === "left" ? x : align === "right" ? x - tw2 : x - tw2 / 2;
+    ctx.globalAlpha = 0.8;
+    ctx.fillStyle = panel;
+    ctx.fillRect(x0 - 2 * dpr, y - px / 2 - 2 * dpr, tw2 + 4 * dpr, px + 4 * dpr);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = w.color;
+    ctx.textAlign = align;
+    ctx.textBaseline = "middle";
+    ctx.fillText(s, x, y);
+  };
+  ctx.strokeStyle = w.color;
+  ctx.fillStyle = w.color;
+
+  label(text, cx, ty + px / 2, "center");
+
+  const head = Math.min(5 * dpr, (eb - ea) / 2);
+  const hw = 3 * dpr;
+  const triangle = (tip: number, dir: 1 | -1) => {
+    ctx.beginPath();
+    ctx.moveTo(tip, ay);
+    ctx.lineTo(tip - dir * head, ay - hw);
+    ctx.lineTo(tip - dir * head, ay + hw);
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  // Dotted double-headed arrow across the window (no head where it is cut off).
+  const lineW = Math.max(1, Math.round(1.5 * dpr));
+  ctx.lineWidth = lineW;
+  ctx.lineCap = "round";
+  ctx.setLineDash([0.01, 4 * dpr]);
+  ctx.beginPath();
+  ctx.moveTo(ea + (pa >= left ? head : 0), ay);
+  ctx.lineTo(eb - (pb <= right ? head : 0), ay);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineCap = "butt";
+  if (pa >= left) triangle(ea, -1);
+  if (pb <= right) triangle(eb, 1);
+
+  // The limits: tick on the edge, arrow pointing in, energy beside it.
+  const L = 24 * dpr;
+  const gap = 5 * dpr;
+  const arrowH = 5 * dpr;
+  const inside: { s: string; align: "left" | "right" }[] = [];
+  for (const side of [-1, 1] as const) {
+    const edge = side < 0 ? pa : pb;
+    const s = `${fmt(side < 0 ? lo : hi)}${unit}`;
+    const room = side < 0 ? edge - left : right - edge; // outside the window
+    if (edge < left || edge > right) {
+      inside.push({ s, align: side < 0 ? "left" : "right" });
+      continue;
+    }
+    // Tick on the limit.
+    const tickW = Math.max(1, Math.round(2 * dpr));
+    ctx.fillRect(Math.round(edge - tickW / 2), ay - 6 * dpr, tickW, 12 * dpr);
+    // Arrow: shaft and head from outside, the tip on the tick.
+    const len = Math.min(L, room);
+    if (len >= arrowH + 4 * dpr) {
+      const tip = edge + (side * tickW) / 2; // touches the tick's outer side
+      const base = tip + side * arrowH;
+      ctx.lineWidth = Math.max(1, Math.round(dpr));
+      ctx.beginPath();
+      ctx.moveTo(edge + side * len, ay);
+      ctx.lineTo(base, ay);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(tip, ay);
+      ctx.lineTo(base, ay - 3 * dpr);
+      ctx.lineTo(base, ay + 3 * dpr);
+      ctx.closePath();
+      ctx.fill();
+    }
+    if (room >= L + gap + ctx.measureText(s).width + 2 * dpr) {
+      label(s, edge + side * (L + gap), ay, side < 0 ? "right" : "left");
+    } else inside.push({ s, align: side < 0 ? "left" : "right" });
+  }
+  // Labels that don't fit outside go inside, under the arrow row.
+  let row = 0;
+  for (const { s, align } of inside) {
+    const x = align === "left" ? ea + gap : eb - gap;
+    const overlap = row > 0 || (inside.length > 1 && eb - ea < 2 * ctx.measureText(s).width + 4 * gap);
+    label(s, x, ay + (px + 6 * dpr) * (overlap ? ++row : 1), align);
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
 }

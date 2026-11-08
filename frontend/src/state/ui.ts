@@ -3,7 +3,11 @@ import { create } from "zustand";
 export type ListMode = "list" | "grid";
 export type Theme = "light" | "dark";
 export type RightTab = "info" | "quantify" | "process";
-export type BottomTab = "spectrum" | "profile" | "alignment";
+/** How several images are shown: one composite, or a panel each. */
+export type GridMode = "merged" | "grid";
+/** Kinds of view with their own mode: a spectrum image (with maps), plain images. */
+export type GridContext = "si" | "images";
+export type BottomTab = "spectrum" | "low-loss" | "core-loss" | "profile" | "alignment";
 
 // Pane sizes: default and limits (side panes in px, the viewer's bottom pane
 // as a fraction of the viewer's height).
@@ -39,6 +43,11 @@ function save(key: string, value: string) {
   }
 }
 
+function loadGridMode(context: GridContext): GridMode | null {
+  const v = load<string>(`si-viewer.gridMode.${context}`, "auto");
+  return v === "merged" || v === "grid" ? v : null;
+}
+
 interface UiState {
   /** Set on <html data-theme> by index.html before first paint. */
   theme: Theme;
@@ -69,6 +78,10 @@ interface UiState {
   /** Clicking the FFT marks a spatial frequency (and shows the mark). */
   fftMeasure: boolean;
   setFftMeasure: (on: boolean) => void;
+  /** Merged/Grid choice per kind of view; null follows the content
+   * (spectrum image: merged, images: grid). */
+  gridMode: Record<GridContext, GridMode | null>;
+  setGridMode: (context: GridContext, mode: GridMode | null) => void;
   lastDir: string;
   browserOpen: boolean;
   setListMode: (mode: ListMode) => void;
@@ -128,6 +141,11 @@ export const useUi = create<UiState>((set) => ({
   setRightTab: (rightTab) => {
     save("si-viewer.rightTab", rightTab);
     set({ rightTab });
+  },
+  gridMode: { si: loadGridMode("si"), images: loadGridMode("images") },
+  setGridMode: (context, mode) => {
+    save(`si-viewer.gridMode.${context}`, mode ?? "auto");
+    set((s) => ({ gridMode: { ...s.gridMode, [context]: mode } }));
   },
   lastDir: load("si-viewer.lastDir", ""),
   browserOpen: false,

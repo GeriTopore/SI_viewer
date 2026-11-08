@@ -403,8 +403,7 @@ viewer's active layer.
 - The window title names the dataset in focus.
 
 ### 4.9 Later (not in the first draft)
-EELS SIs (`exspy.signals.EELSSpectrum`, background power law, edges), PCA/NMF
-denoising (`decomposition`), drift correction of EDS spectrum images (applying
+PCA/NMF denoising (`decomposition`), drift correction of EDS spectrum images (applying
 the HAADF stack's shifts to the EDS frames, see 4.10), batch processing
 recipes across files, and saved sessions.
 
@@ -669,6 +668,207 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
      of shifts and drift in px and Å; 2-page PDF: settings, drift, average
      + FFT; matrices measured/corrected.
 
+### 4.11 EELS spectrum images (M10, planned)
+
+**Example data** (`examples/`):
+
+| File | Navigation | Energy | Notes |
+|---|---|---|---|
+| `STEM SI_EELS Spectrum Image_summed.dm4` | 120 × 120 | 3456 ch, 362–673 eV (0.09 eV) | Core loss only. GIF Continuum K3 HR, 300 kV, α 2.68 / β 55.41 mrad. A "Summed" image of a parent SI's frames (drift-aligned in GMS). `SI.Acquisition` has the date, start/end time and the survey image's ID and rectangle. |
+| `CuZn_EELS_mapping_tutorial.hspy` | 40 × 50 | 162 ch, 700–1988 eV (8 eV) | Core loss only (Cu, Zn L edges), 200 kV. |
+| `LSMO_linescan.hspy` + `LSMO_linescan_low_loss.hspy` | line scan, 40 points (3.2 nm) | 586 ch, 428.5–721 eV / 1024 ch, −50–461.5 eV | A core-loss / low-loss pair. Titles end in "(high-loss)" / "(low-loss)" (from the original .dm3 names). No date or time. |
+
+All four have `signal_type = "EELS"` in their metadata, so HyperSpy loads them
+as `EELSSpectrum`.
+
+**Where we are.**
+- `.dm3`, `.dm4` and `.hspy` already open.
+- The 2D EELS SIs get the generic SI viewer (navigator, spectra, ROIs,
+  profiles). EDS features stay off because they need `signal_type` EDS.
+- Line scans (1D navigation) are classed as "other" and can't be viewed.
+- `.dm5` isn't read by RosettaSciIO 0.15 (open issue
+  hyperspy/rosettasciio#315).
+
+**M10a: reading.**
+- **Line-scan SIs:** a spectrum image with one navigation axis. The
+  navigator is an image of energy (x) against position (y), as GMS shows
+  them. Click a row for its spectrum, or drag over rows to sum them.
+- **`.dm5`:** a reader of our own in `si_viewer/io/dm5.py` (DM5 is HDF5),
+  like the VeloxLite shim. It sets the calibrations, puts the DM tags in
+  `original_metadata` and maps them to `metadata` the way RosettaSciIO's DM
+  reader does. Needs a sample file. Add `.dm5` to the supported suffixes and
+  `.gitignore`.
+- **EELS SIs in memory:** load them into RAM under `SI_IN_MEMORY_LIMIT`, as
+  EDS SIs are. The .dm4 opens lazily today.
+- **Tests:** `conftest.py` finds files in `examples/`, with one fixture per
+  file (skipped when missing). Check each EELS example's kind, shape, energy
+  calibration and signal type.
+
+**M10b: EDS or EELS.** Each SI and spectrum gets a `technique` (EDS, EELS or
+unknown), from, in order:
+1. `metadata.Signal.signal_type` (EDS_TEM / EDS_SEM / EELS), set by the
+   Velox, DM and hspy readers;
+2. the DM tag `Meta Data.Signal`;
+3. the energy axis: named "Energy loss" → EELS; in keV from about 0 → EDS.
+
+When it's unknown, or the guess is wrong, a *Signal type* choice in the
+Info tab sets it (`set_signal_type`, so exSpy's class follows).
+
+The technique decides what is offered:
+- **EDS only:** X-ray lines, periodic-table maps, the Quantify tab, the
+  maps computed on opening.
+- **EELS only:** the EELS tools (M10d).
+- **Both:** navigator, ROIs, spectra, profiles, filters, rebinning, export.
+
+**M10c: low loss and core loss.**
+- **Role:** an EELS SI is *low loss* when its energy range contains 0 eV and
+  its sum spectrum peaks near 0 (the zero-loss peak), else *core loss*. The
+  dataset list tags them LL / HL.
+- **Automatic linking:** when a file opens, its EELS SIs are compared with
+  the EELS SIs already open. They need:
+  - one LL and one HL;
+  - the same navigation shape and scale (within 1 %);
+  - the same beam energy, where both give one;
+  - plus one strong sign: the same DM `SI.Acquisition` date and start time,
+    or the same survey image ID, or titles or file names that differ only
+    by low-loss / high-loss / core-loss / LL / HL (as the LSMO pair).
+- **Manual linking:** when only the shapes match, nothing is linked
+  automatically. Right-click the core loss → *Link low loss…* lists the
+  compatible low-loss SIs; *Unlink* undoes it. Opening both files together
+  (several files in the Open dialog) or one after the other both work.
+- **Viewer:**
+  - The core loss is the primary dataset, and its navigator drives both SIs.
+  - The pane under the image gets a *Low loss* and a *Core loss* tab, each
+    with its own energy axis, at the same cursor and ROIs. They show one at
+    a time (the low loss on a log scale by default); M11b adds side by side.
+  - The low loss can still be viewed alone.
+- **Processing:** rebinning and spatial filters apply to both SIs of a pair,
+  so their pixels keep matching.
+- **Backend:** `Session.eels_links` maps the core loss to its low loss. The
+  summary gets `eels: {role, partner_id, beam_energy, convergence_angle,
+  collection_angle}`, with the angles from the metadata and editable in the
+  Info tab, since thickness and deconvolution use them.
+
+**M10d: EELS analysis** (an EELS section in the Process tab). Each step runs
+as a job with progress, and its results are new datasets under the SI, like
+the fitted maps.
+- **Zero-loss alignment:** `align_zero_loss_peak` on the low loss with
+  `also_align=[core loss]`, which corrects the energy drift from pixel to
+  pixel and puts the ZLP at 0 eV. It can be removed again, as a stack's
+  alignment can.
+- **Thickness:** `estimate_thickness` on the low loss gives a t/λ map (an
+  image dataset).
+  - The ZLP threshold is estimated
+    (`estimate_elastic_scattering_threshold`), editable, and drawn on the
+    low-loss spectrum.
+  - Absolute thickness in nm needs a mean free path or a density (exSpy's
+    estimate from the beam energy and the angles).
+- **Plural-scattering deconvolution:**
+  - Fourier-ratio: the core loss with its low loss.
+  - Fourier-log: the low loss alone.
+  - Richardson–Lucy: the core loss with the low loss as the PSF, with a
+    number of iterations.
+
+  The result is a new SI, "(deconvolved)", whose spectrum can be overlaid
+  on the original's.
+
+**M10e: later.**
+- Background subtraction (power law, with its window drawn on the spectrum).
+- Edge maps from the periodic table using exSpy's EELS edges (the EELS
+  version of M3).
+- `EELSModel` fitting with the low loss for quantification.
+- Spike removal.
+
+**Verification on the examples.**
+- **Detection:** all four EELS files are classed EELS; the Velox `.emd` SI
+  is classed EDS.
+- **LSMO pair:** it links automatically. Its thickness map and Fourier-ratio
+  result equal exSpy's own calls on the same signals.
+- **LSMO line scan:** it is viewable, with spectra at single points and
+  over ranges of rows.
+- **CuZn and the .dm4:** core loss with no partner; *Link low loss…* offers
+  nothing; the EELS tools that need a low loss are disabled, with the
+  reason given.
+
+**Open questions.**
+- EDS tests: the only `.emd` in `examples/` is a HAADF stack. Which EDS SI
+  `.emd` should the tests use?
+- A `.dm5` sample.
+- A GMS dual-EELS pair (low- and core-loss `.dm4`) to test linking from the
+  DM metadata. The LSMO pair only has names and shapes to go by.
+
+### 4.12 Grid and merged views, split bottom pane (M11, planned)
+
+For every kind of data: the images in the viewer can be shown **merged**
+(one composite, as overlays work now) or as a **grid** (one panel each).
+The pane under the image can be split to show two of its tabs side by side.
+
+**M11a: Grid / Merged switch.**
+- **The switch:** a *Merged | Grid* toggle in the viewer toolbar, plus a
+  shortcut (G).
+  - The default follows the content: **merged** for element maps over a
+    spectrum image (as now), **grid** for several plain images (ADF, BF,
+    DPC… from one `.emd`).
+  - Once the user picks a mode, it is remembered for that kind of view
+    (spectrum image, images).
+- **What can be shown together:**
+  - The selection rules relax. Several plain images can now be selected
+    together (⌘-click), which today is refused ("Images can only be
+    overlaid on a spectrum image").
+  - Merged needs the same pixel size, as overlays do now. Grid accepts mixed
+    sizes.
+  - Stacks and line scans stay on their own, as now.
+- **Grid layout:**
+  - One panel per layer: the SI navigator (ADF or total counts) first, then
+    the maps or images in selection order.
+  - Columns are chosen to make the panels as large as possible for their
+    aspect ratio.
+  - Each panel shows its name and value readout; only the first shows a
+    scale bar.
+- **Linked panels:**
+  - Panels of the same pixel size share pan and zoom (one view transform),
+    so zooming one zooms all.
+  - The SI cursor, ROIs and profile lines are drawn on every panel, and can
+    be moved or drawn from any of them.
+  - Mixed sizes pan and zoom independently.
+- **Contrast:** each panel keeps its own display settings (contrast,
+  colormap or element colour, as in merged). Clicking a panel makes it the
+  one the toolbar edits (the "editing" chip, as for layers now).
+- **Profiles:** the Line profile tab plots every panel's profile, as it does
+  for layers.
+- **Save PNG:** saves the grid as shown, with a label per panel, or the
+  composite in merged mode.
+- **Implementation:**
+  - A `ViewerGrid` built from the same `ViewLayer` list that
+    `LayeredViewer` builds, so both modes share loading, contrast and
+    profiles.
+  - `ImageView` gains an optional shared view transform from the display
+    store, so linked panels stay in step.
+- **Maps for EELS (and EDS) from energy windows:**
+  - Shift-drag on the spectrum makes an energy window: a map dataset under
+    the SI (e.g. "640–660 eV") that joins the view and can join the grid or
+    the composite like an element map. Windows are edited by dragging their
+    edges or inside, and deleted with Delete or the right-click menu.
+  - The grey *main window* (the whole range by default) is the *Virtual
+    image* navigator: the SI summed over it. It can be resized and moved but
+    not deleted; double-click it to get the whole range back.
+  - Background-subtracted EELS edge maps come with M10e.
+
+**M11b: split bottom pane.**
+- Any two tabs of the pane under the image (Spectrum, Line profile, and
+  later Low loss / Core loss) can be shown side by side, with a draggable
+  divider.
+- Two ways to split:
+  - a *Split* button in the tab bar, which puts the next tab beside the
+    current one;
+  - dragging a tab onto the left or right half of the pane, with the half
+    highlighted while dragging, as editors do.
+- Dragging a tab back onto the tab bar, or *Unsplit*, returns to one tab.
+- The split and its divider position are remembered.
+- Each half keeps its own controls (axis zoom, Linear/Log, legend).
+
+**Order:** after M10c. Linked low/core-loss pairs then gain the split pane.
+
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
@@ -696,6 +896,8 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
 | M7 | Export, keyboard shortcuts, polish | Done |
 | M8 | pywebview desktop window and installers (deferred until the features are complete) | |
 | M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Result + Apply (M9c, done), extras (M9d) | In progress |
+| M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d) | In progress (M10a, M10b done) |
+| M11 | Grid / Merged views for images and maps (M11a), split pane under the image (M11b) | Planned |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

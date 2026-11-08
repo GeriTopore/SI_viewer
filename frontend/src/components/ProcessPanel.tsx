@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type DatasetSummary, type Filters, type SpatialFilter, type SpectralFilter } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useLayers } from "../state/layers";
-import { filterLabel } from "../format";
+import { useAlignment } from "../state/alignment";
+import { filterLabel, isLineScan } from "../format";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { AlignSection } from "./AlignSection";
 
@@ -18,6 +19,8 @@ const SPECTRAL: { id: SpectralFilter; label: string; title: string }[] = [
   { id: "gaussian", label: "Gaussian", title: "Gaussian smoothing along the energy axis" },
   { id: "savgol", label: "Savitzky–Golay", title: "Savitzky–Golay smoothing: keeps peak heights better" },
 ];
+
+const spatialKey = (f: Filters) => `${f.spatial}|${f.sigma}|${f.size}`;
 
 const ODD_SIZES = [3, 5, 7, 9, 11, 15, 21];
 const SAVGOL_WINDOWS = [5, 7, 9, 11, 15, 21, 31];
@@ -56,6 +59,8 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   const [draft, setDraft] = useState<Filters>(d.filters);
   const [error, setError] = useState<string | null>(null);
   const [rebinOpen, setRebinOpen] = useState(false);
+  // No dataset name while its alignment workspace is open.
+  const aligning = useAlignment((s) => s.openId) === d.id;
 
   // Follow changes made elsewhere (e.g. "Apply to all maps" from another map).
   const sent = useRef(JSON.stringify(d.filters));
@@ -71,11 +76,16 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
     setError(null);
     try {
       let notes: string[] = [];
+      let partnerChanged = false;
       for (const id of ids) {
+        const before = allDatasets(useDatasets.getState().files).find((x) => x.id === id);
         const r = await api.setFilters(id, filters);
         replaceFile(r.file);
         notes = [...notes, ...r.notes];
+        // A linked EELS partner gets the same spatial filter.
+        if (before?.eels?.partner_id && spatialKey(before.filters) !== spatialKey(filters)) partnerChanged = true;
       }
+      if (partnerChanged) await useDatasets.getState().syncFiles();
       if (notes.length) notify(notes.join(" "));
     } catch (e) {
       setError((e as Error).message);
@@ -110,7 +120,9 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   const set = (patch: Partial<Filters>) => setDraft((f) => ({ ...f, ...patch }));
 
   const isSi = d.kind === "spectrum_image";
-  const spatial = d.kind === "image" || d.kind === "stack" || isSi;
+  // A line scan has no 2D scan to blur, and no maps to follow.
+  const lineScan = isLineScan(d);
+  const spatial = d.kind === "image" || d.kind === "stack" || (isSi && !lineScan);
   const spectral = d.kind === "spectrum" || isSi;
   // A median isn't linear, so it can't be carried over to an SI's maps and spectra.
   const spatialChoices = isSi ? SPATIAL.filter((s) => s.id !== "median") : SPATIAL;
@@ -126,15 +138,18 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
 
   return (
     <div className="quantify process">
-      <section>
-        <h3 className="q-title">{d.title}</h3>
-        {isSi && (
-          <p className="muted small q-elements">
-            Processing the spectrum image: it applies to all its spectra, fits and element maps, whichever are
-            overlaid in the viewer.
-          </p>
-        )}
-      </section>
+      {!aligning && (
+        <section>
+          <h3 className="q-title">{d.title}</h3>
+          {isSi && (
+            <p className="muted small q-elements">
+              {lineScan
+                ? "Processing the line scan: it applies to all its spectra and to the image."
+                : "Processing the spectrum image: it applies to all its spectra, fits and element maps, whichever are overlaid in the viewer."}
+            </p>
+          )}
+        </section>
+      )}
 
       {d.kind === "stack" && (
         <section className="q-maps">
@@ -289,7 +304,9 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
             </>
           )}
           <p className="muted small process-note">
-            {isSi
+            {lineScan
+              ? "Smooths every spectrum of the line scan, and the image of it."
+              : isSi
               ? "Smooths every spectrum of the spectrum image, and the maps and fits made from them."
               : "Smooths the spectrum; fits use the smoothed spectrum."}
           </p>

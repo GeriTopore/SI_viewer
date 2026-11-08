@@ -47,6 +47,7 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
     keys: [
       ["F", "Fit the image under the mouse (else the main one) to its window, or double-click"],
       ["1", "One screen pixel per data pixel (same image)"],
+      ["G", "Several images: merged or a grid of panels"],
       ["⌘/Ctrl S", "Save the image as shown as PNG"],
       ["Space + drag", "Pan with any tool (or middle-drag)"],
       ["← / →", "Previous / next frame of a stack"],
@@ -60,12 +61,15 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
       ["R / E / P", "Rectangle / ellipse / polygon region"],
       ["L", "Line profile"],
       ["H", "Pan"],
-      ["Delete", "Remove the selected region or line"],
+      ["Delete", "Remove the selected region, line or energy window"],
       ["Shift + drag", "Line: snap the angle to 15°"],
     ],
   },
   {
     group: "Below the image",
-    keys: [["T", "Switch between the Spectrum and Line profile tabs"]],
+    keys: [
+      ["T", "Switch between the Spectrum and Line profile tabs"],
+      ["Shift + drag", "Spectrum: new energy window (map); right-click a window to delete it"],
+    ],
   },
 ];

@@ -2,8 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface MenuItem {
   label: string;
-  onSelect: () => void;
+  onSelect?: () => void;
   danger?: boolean;
+  /** Greyed out and not clickable (a heading or a placeholder). */
+  disabled?: boolean;
+  /** An entry under a heading item. */
+  indent?: boolean;
+  title?: string;
 }
 
 interface Props {
@@ -24,7 +29,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
       left: Math.min(x, window.innerWidth - r.width - 4),
       top: Math.min(y, window.innerHeight - r.height - 4),
     });
-  }, [x, y]);
+  }, [x, y, items.length]);
 
   useEffect(() => {
     const close = (e: Event) => {
@@ -48,14 +53,16 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
 
   return (
     <div className="context-menu" ref={ref} role="menu" style={pos} onContextMenu={(e) => e.preventDefault()}>
-      {items.map((item) => (
+      {items.map((item, i) => (
         <button
-          key={item.label}
+          key={i}
           role="menuitem"
-          className={item.danger ? "danger" : undefined}
+          disabled={item.disabled}
+          title={item.title}
+          className={[item.danger && "danger", item.indent && "indent"].filter(Boolean).join(" ") || undefined}
           onClick={() => {
             onClose();
-            item.onSelect();
+            item.onSelect?.();
           }}
         >
           {item.label}

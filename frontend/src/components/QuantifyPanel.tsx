@@ -4,19 +4,26 @@ import { allDatasets, useDatasets } from "../state/datasets";
 import { cliffLorimer, datasetKey, useQuant, type SourceChoice } from "../state/quant";
 import { shapeToRegion, useSi, useSiState } from "../state/si";
 import { lineLabel, useElementTable } from "../views/si/xray";
-import { filterLabel, formatValue } from "../format";
+import { filterLabel, formatValue, hasTechnique, isLineScan } from "../format";
 import { downloadCsv, safeFileName } from "../download";
 import { FitMapsSection } from "./FitMapsSection";
 
-/** The EDS spectrum image or spectrum shown in the viewer, if any. */
-function useEdsTarget(): DatasetSummary | undefined {
+/** The EDS spectrum image or spectrum shown in the viewer, if any, and
+ * whether what is shown is a line scan (which can't be fitted). */
+function useEdsTarget(): { ds?: DatasetSummary; lineScan: boolean; other?: DatasetSummary } {
   const files = useDatasets((s) => s.files);
   const selection = useDatasets((s) => s.selection);
   return useMemo(() => {
     const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
-    return selection
-      .map((id) => byId.get(id))
-      .find((d) => d && d.eds && (d.kind === "spectrum_image" || d.kind === "spectrum"));
+    const shown = selection.map((id) => byId.get(id));
+    const lineScan = shown.some((d) => d && isLineScan(d));
+    // A shown spectrum or SI that isn't EDS (to say why there is nothing to fit).
+    const other = shown.find((d) => d && !d.eds && hasTechnique(d));
+    return {
+      other,
+      ds: shown.find((d) => d && d.eds && !isLineScan(d) && (d.kind === "spectrum_image" || d.kind === "spectrum")),
+      lineScan,
+    };
   }, [files, selection]);
 }
 
@@ -25,7 +32,16 @@ const BACKGROUND_ORDERS = [2, 3, 4, 5, 6, 7, 8, 10];
 /** Quantify tab: fit one spectrum with exSpy's model and quantify it
  * (Cliff-Lorimer with editable k-factors). */
 export function QuantifyPanel() {
-  const ds = useEdsTarget();
+  const { ds, lineScan, other } = useEdsTarget();
+  if (!ds && other?.technique === "EELS") {
+    return <p className="muted">EDS fitting doesn't apply to EELS data. EELS tools come later.</p>;
+  }
+  if (!ds && lineScan) {
+    return <p className="muted">Fitting and quantification need a 2D spectrum image or a spectrum; line scans can't be quantified yet.</p>;
+  }
+  if (!ds && other && !other.technique) {
+    return <p className="muted">Set the signal type to EDS in the Info tab to fit and quantify this data.</p>;
+  }
   if (!ds) {
     return <p className="muted">Show an EDS spectrum image or spectrum in the viewer to fit and quantify it.</p>;
   }

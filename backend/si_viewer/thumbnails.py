@@ -37,6 +37,11 @@ def _preview_array(dataset: Dataset, siblings: list[Dataset]) -> np.ndarray:
         return filter_image(_to_numpy(data), dataset.filter_spec)
     if dataset.kind is DatasetKind.STACK:
         return filter_image(_to_numpy(data.mean(axis=0)), dataset.filter_spec)
+    if dataset.is_line_scan:
+        from .processing.frames import get_frame
+
+        dataset.materialise()
+        return get_frame(dataset)  # the line-scan image: positions × energy
     if dataset.kind is DatasetKind.SPECTRUM_IMAGE:
         companion = si_companion_image(dataset, siblings)
         if companion is not None:
@@ -51,6 +56,8 @@ def _preview_array(dataset: Dataset, siblings: list[Dataset]) -> np.ndarray:
 
 def si_companion_image(si: Dataset, siblings: list[Dataset]) -> Dataset | None:
     """The ADF-type image acquired with a spectrum image, if the file has one."""
+    if si.is_line_scan:
+        return None
     shape = tuple(si.signal.axes_manager.navigation_shape)
     candidates = [
         d

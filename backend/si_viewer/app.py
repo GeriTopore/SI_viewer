@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import background, datasets, eds, eels, examples, export, files, fs, jobs, process, registration
+from .api import background, datasets, eds, eels, examples, export, files, fs, jobs, process, registration, thickness, zlp
 from .jobs import JobManager
 from .session import Session
 
@@ -31,6 +31,8 @@ def create_app(session: Session | None = None) -> FastAPI:
     app.include_router(eds.router)
     app.include_router(eels.router)
     app.include_router(background.router)
+    app.include_router(thickness.router)
+    app.include_router(zlp.router)
     app.include_router(examples.router)
     app.include_router(jobs.router)
     app.include_router(process.router)

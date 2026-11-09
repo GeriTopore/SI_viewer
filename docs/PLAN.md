@@ -753,7 +753,7 @@ file's metadata when it has a marker, else the user says.
     "430–1640 eV", when there are several core losses). Each has its own
     energy axis, at the same cursor and ROIs. The tabs keep their ids when
     another member is shown, so the split stays. They show one at a time
-    (the low loss on a log scale by default) or two side by side (the split
+    or two side by side (the split
     pane). A line scan's image follows the focused tab.
   - Unlinked SIs keep the single *Spectrum* tab. Any member can be viewed alone.
 - **Processing:** rebinning and spatial filters apply to every member of a
@@ -771,23 +771,66 @@ file's metadata when it has a marker, else the user says.
   signal-type changes return the other members as `partners` and
   `partner_files`.
 
-**M10d: EELS analysis** (an EELS section in the Process tab). Each step runs
+**M10d: EELS analysis, in progress** (an EELS section in the Process tab). Each step runs
 as a job with progress, and its results are new datasets under the SI, like
 the fitted maps.
 All of these use the low loss of the SI's link group (the one marked or
 read as low loss, M10c); they're disabled, with the reason, when the group
 has none.
-- **Zero-loss alignment:** `align_zero_loss_peak` on the group's low loss with
-  `also_align=[its core losses]`, which corrects the energy drift from pixel
-  to pixel and puts the ZLP at 0 eV. It can be removed again, as a stack's
-  alignment can.
-- **Thickness:** `estimate_thickness` on the group's low loss gives a t/λ map
-  (an image dataset).
-  - The ZLP threshold is estimated
-    (`estimate_elastic_scattering_threshold`), editable, and drawn on the
-    low-loss spectrum.
-  - Absolute thickness in nm needs a mean free path or a density (exSpy's
-    estimate from the beam energy and the angles).
+- **Zero-loss alignment** (built): a *Zero-loss alignment* section in the
+  Process tab, after Rebin (disabled, "No low loss in its group", otherwise).
+  exSpy's `align_zero_loss_peak` on the group's low loss with every linked core
+  loss of the same scan as `also_align`, with `calibrate` always on (the peak
+  ends up at 0 eV; the core losses' axes move by the same amount, and each is
+  cropped on its own axis). Run as a job (progress by phase, cancel); the
+  steps are exSpy's, taken apart to keep the shifts.
+  - **Options:** *Sub-pixel* (default; cross-correlation within ±3 eV of the
+    peak) and *Crop* (default; else the emptied channels are 0).
+  - **Overwrites, like Rebin:** the loaded data of the low loss and its core
+    losses is replaced (the file is unchanged), with the warning "Overwrites
+    the loaded data; the file is unchanged." Not reversible in the app. Each
+    gets a `zlp_aligned` entry ("sub-pixel, cropped"), shown as *ZLP aligned*
+    in the Info tab. Running it again is allowed (shifts ~0).
+  - **Remade:** window maps, thickness and background-removed spectra follow
+    the axis (their windows and a fixed threshold move by the mean shift, so
+    they stay on the same features; one that leaves the energy range is
+    removed); a ZLP shift is removed on rebinning.
+  - **Result:** a dataset under the low loss (`origin "zlp-shift"`, "ZLP
+    shift", eV): an image for a 2D scan, a profile for a line scan. Replaced
+    by a later alignment; deletable.
+  - API: `POST …/zlp-alignment {options}` (job; any member of the group;
+    400 not EELS / no low loss, 422 bad options). Result `{file,
+    partner_files, dataset_id, aligned, shift}`.
+- **Thickness** (built): a *Thickness* section in the Process tab, for an
+  EELS spectrum image or line scan that is a low loss or linked to one
+  (disabled, "No low loss in its group", otherwise). It always works on the
+  group's low loss. exSpy's `estimate_thickness`, run on chunks as a job
+  (progress, cancel).
+  - **Threshold:** *Auto* (default; `estimate_elastic_scattering_threshold` at
+    every pixel, with a *Search window*, 10 eV; the `tol` it takes over all
+    pixels is found first, so chunking changes nothing; pixels with no
+    inflexion get NaN) or *Fixed* (one energy, typed or dragged, snapped to a
+    channel). With *Show on spectrum* it is a vertical line on the low-loss
+    plot: its own plot or the *Low loss* tab. In Auto it sits at the estimate
+    for the summed spectrum; dragging it, in either mode, switches to Fixed.
+  - **Output:** t/λ, or *Absolute (nm)* from a typed mean free path or from a
+    density (exSpy's Iakoubovskii λ and angular correction, from the beam
+    energy and angles in the metadata; Apply is disabled, with the missing
+    ones named, if any is absent).
+  - **Result:** a dataset under the low loss (`origin "thickness"`, titled "t/λ"
+    or "Thickness (nm)"): an image for a 2D scan, a profile along the scan
+    (a 1D spectrum dataset on the position axis) for a line scan. Its summary
+    has `thickness: {source_id, threshold: "auto" | number, window, output,
+    mean_free_path, density, units}`. One per low loss: running again replaces
+    it (same id, new revision), and the section shows its settings. It is
+    deletable, recomputed when the low loss is rebinned or filtered (removed
+    if the settings no longer fit), and removed with its source, when the
+    source stops being a low loss or EELS, or when the file closes.
+  - **Processed data:** like the maps, it uses the filtered data: spectral
+    smoothing on the spectra, the spatial filter on the finished map.
+  - API: `POST …/thickness/threshold {window}` (the Auto estimate for the
+    summed spectrum), `POST …/thickness {options}` (job; any member of the
+    group).
 - **Plural-scattering deconvolution:**
   - Fourier-ratio: a core loss with the group's low loss.
   - Fourier-log: the low loss alone.
@@ -949,7 +992,7 @@ The pane under the image can be split to show two of its tabs side by side.
 | M7 | Export, keyboard shortcuts, polish | Done |
 | M8 | pywebview desktop window and installers (deferred until the features are complete) | |
 | M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Result + Apply (M9c, done), extras (M9d) | In progress |
-| M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d), background removal and edge maps (M10e) | In progress (M10a–c done) |
+| M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d), background removal and edge maps (M10e) | In progress (M10a–c done; M10d: thickness and ZLP alignment built) |
 | M11 | Grid / Merged views for images and maps (M11a, done), split pane under the image (M11b, done) | Done |
 
 ## 7. Verification

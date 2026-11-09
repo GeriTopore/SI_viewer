@@ -48,7 +48,7 @@ function EnergyInput({ value, step, onCommit, label }: {
  * spectrum" is on; Apply saves a new spectrum image of the signal window with
  * the background subtracted. On such a spectrum image it shows the settings
  * it was made with, to change and re-run. */
-export function BackgroundSection({ d, title }: { d: DatasetSummary; title: string }) {
+export function BackgroundSection({ d }: { d: DatasetSummary }) {
   const st = useBgState(d);
   const { options } = st;
   const info = useBackground((s) => s.info[d.id]);
@@ -94,8 +94,7 @@ export function BackgroundSection({ d, title }: { d: DatasetSummary; title: stri
 
   const message = problem ?? info?.error ?? startError;
   return (
-    <section className="q-maps q-form">
-      <h3>{title}</h3>
+    <section className="q-form">
       {made && <p className="muted small q-elements">From {source?.title ?? "its source"}</p>}
       {!made && (
         <label className="q-check" title="Draw the Background and Signal windows and the fitted backgrounds on the spectrum">

@@ -3,7 +3,7 @@ import { api, exportUrl, mapsZipUrl, type DatasetSummary, type EelsRole, type Te
 import { downloadUrl, useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
 import { useLayers } from "../state/layers";
-import { bytesLabel, filterLabel, hasTechnique, isLineScan, kindLabel, shapeLabel } from "../format";
+import { bytesLabel, filterLabel, hasTechnique, isLineScan, isThickness, isZlpShift, kindLabel, shapeLabel } from "../format";
 
 export function Inspector() {
   const d = useFocusedDataset();
@@ -16,7 +16,11 @@ export function Inspector() {
         <dd>{d.title}</dd>
         <dt>Type</dt>
         <dd>
-          {isLineScan(d) ? "Line scan" : d.kind === "spectrum_image" ? "Spectrum image" : d.kind === "spectrum" ? "Spectrum" : kindLabel(d)}
+          {isThickness(d)
+            ? d.kind === "spectrum" ? "Thickness profile" : "Thickness map"
+            : isZlpShift(d)
+              ? d.kind === "spectrum" ? "ZLP shift profile" : "ZLP shift map"
+              : isLineScan(d) ? "Line scan" : d.kind === "spectrum_image" ? "Spectrum image" : d.kind === "spectrum" ? "Spectrum" : kindLabel(d)}
         </dd>
         {hasTechnique(d) && (
           <>
@@ -45,6 +49,12 @@ export function Inspector() {
           <>
             <dt>Rebinned</dt>
             <dd title="Applied to the loaded data; the file on disk is unchanged">{d.rebinned.join("; then ")}</dd>
+          </>
+        )}
+        {d.zlp_aligned.length > 0 && (
+          <>
+            <dt>ZLP aligned</dt>
+            <dd title="Applied to the loaded data; the file on disk is unchanged">{d.zlp_aligned.join("; then ")}</dd>
           </>
         )}
         {filterLabel(d.filters) && (

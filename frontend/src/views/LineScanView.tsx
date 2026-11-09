@@ -14,6 +14,7 @@ import { eelsTab, useUi } from "../state/ui";
 import { isAbort, spectralAxis } from "./geometry";
 import { CURSOR_CHANNEL, useSiSpectra } from "./si/useSiSpectra";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
+import { useThresholdLine } from "./si/useThresholdLine";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
 import { ReduceToggle, memberLabel, memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
 import { useImageDisplay } from "./useImageDisplay";
@@ -178,6 +179,9 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
 
   // Background removal (Process tab): its fits and bands on this plot.
   const bg = useBackgroundPreview(ds, axis.x, series);
+  // Thickness (Process tab): the zero-loss threshold on a low loss.
+  const zlp = useThresholdLine(ds);
+  const bands = useMemo(() => [...bg.bands, ...zlp.windows], [bg.bands, zlp.windows]);
 
   const position = (i: number) => `${i}${rows.units ? ` · ${formatValue(rows.offset + i * rows.scale)} ${rows.units}` : ""}`;
   const legend = (
@@ -234,8 +238,8 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
       {...ownLog}
       x={axis.x}
       series={bg.series}
-      windows={bg.bands}
-      onEditWindow={bg.onEditBand}
+      windows={bands}
+      onEditWindow={(id, range, final) => zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : "Loading line scan into memory…"}

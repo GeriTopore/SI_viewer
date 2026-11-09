@@ -5,7 +5,7 @@ import { useLayers } from "../state/layers";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
 import { isColour, swatchBackground } from "../viewer/colormaps";
-import { datasetTooltip, isBackgroundRemoved, isWindowMap, kindLabel, shapeLabel } from "../format";
+import { datasetTooltip, isBackgroundRemoved, isThickness, isWindowMap, isZlpShift, kindLabel, shapeLabel } from "../format";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
@@ -16,10 +16,10 @@ import { downloadUrl, useExportFormats } from "../download";
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
 const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : d.is_element_map ? "map" : d.kind}`;
+  `badge badge-${isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.is_element_map ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
-  d.origin === "fitted" || d.origin === "composition" || isWindowMap(d)
+  d.origin === "fitted" || d.origin === "composition" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
     ? "Delete this map"
     : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
       (d.origin === "file" ? ". The file on disk is not changed." : "");

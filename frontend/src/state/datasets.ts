@@ -207,20 +207,21 @@ const KIND_ORDER: Record<string, number> = { spectrum_image: 0, spectrum: 1, sta
 const rank = (d: DatasetSummary) =>
   isWindowMap(d) ? 4.5 : d.is_element_map ? 4 : (KIND_ORDER[d.kind] ?? 5);
 
-const madeByBackground = (d: DatasetSummary) => d.origin === "background" || d.origin === "background-r";
+const madeByProcess = (d: DatasetSummary) =>
+  d.origin === "background" || d.origin === "background-r" || d.origin === "thickness" || d.origin === "zlp-shift";
 
 /** A file's datasets in list order; what background removal made (the new
- * spectrum image, then its r map) sits right under its source. */
+ * spectrum image, then its r map), the thickness and the ZLP shift sit right under their source. */
 function sortFile(f: FileSummary): FileSummary {
   const sorted = [...f.datasets].sort((a, b) => rank(a) - rank(b));
-  if (!sorted.some(madeByBackground)) return { ...f, datasets: sorted };
+  if (!sorted.some(madeByProcess)) return { ...f, datasets: sorted };
   const ids = new Set(sorted.map((d) => d.id));
   const out: DatasetSummary[] = [];
   const add = (d: DatasetSummary) => {
     out.push(d);
-    sorted.filter((x) => madeByBackground(x) && x.parent_id === d.id).forEach(add);
+    sorted.filter((x) => madeByProcess(x) && x.parent_id === d.id).forEach(add);
   };
-  sorted.filter((d) => !madeByBackground(d) || !ids.has(d.parent_id ?? "")).forEach(add);
+  sorted.filter((d) => !madeByProcess(d) || !ids.has(d.parent_id ?? "")).forEach(add);
   return { ...f, datasets: out };
 }
 
@@ -444,9 +445,10 @@ export const useDatasets = create<DatasetsState>((set, get) => {
   };
 });
 
-/** Datasets made in the app that can be deleted: maps and background-removed SIs (with their r maps). */
+/** Datasets made in the app that can be deleted: maps, thickness, ZLP shifts and background-removed SIs (with their r maps). */
 export const canDelete = (d: DatasetSummary) =>
-  d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r";
+  d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r" ||
+  d.origin === "thickness" || d.origin === "zlp-shift";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);

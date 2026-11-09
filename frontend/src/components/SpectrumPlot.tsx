@@ -50,8 +50,10 @@ export interface PlotWindow {
   draft?: boolean;
   /** A band of the Background removal tool: the fit range ("background",
    * hatched) or the range kept ("signal"). Always shown, edited by dragging
-   * its edges or inside without selecting it; not selectable, no menu. */
-  kind?: "background" | "signal";
+   * its edges or inside without selecting it; not selectable, no menu.
+   * "threshold" is the Thickness tool's zero-loss threshold: a single
+   * vertical line (lo = hi, labelled) that is dragged, not resized. */
+  kind?: "background" | "signal" | "threshold";
   /** Limits that its edges and moves stay within. */
   min?: number;
   max?: number;
@@ -334,6 +336,8 @@ export function SpectrumPlot({
     interface Edit {
       id: string;
       part: "lo" | "hi" | "in";
+      /** A single line (the threshold): dragging moves it. */
+      point?: boolean;
       lo: number;
       hi: number;
       min?: number; // limits of the window
@@ -346,6 +350,10 @@ export function SpectrumPlot({
     const rangeOf = (edit: Edit, e: MouseEvent): EnergyRange => {
       const v = plot.posToVal(plotX(e), "x");
       const [first, last] = [Math.max(xFirst, edit.min ?? xFirst), Math.min(xLast, edit.max ?? xLast)];
+      if (edit.point) {
+        const at = Math.min(Math.max(snapTo(v), first), last);
+        return { lo: at, hi: at };
+      }
       // An edge drag moves that edge only; moving snaps both.
       if (edit.part === "lo") return { lo: Math.min(Math.max(snapTo(v), first), edit.hi - step), hi: edit.hi };
       if (edit.part === "hi") return { lo: edit.lo, hi: Math.max(Math.min(snapTo(v), last), edit.lo + step) };
@@ -380,7 +388,8 @@ export function SpectrumPlot({
       e.stopPropagation(); // not a zoom drag
       e.preventDefault();
       edit = {
-        id: w.id, part, lo: w.lo, hi: w.hi, min: w.min, max: w.max, at: plot.posToVal(px, "x"), x0: e.clientX, moved: false,
+        id: w.id, part, point: w.kind === "threshold", lo: w.lo, hi: w.hi, min: w.min, max: w.max,
+        at: plot.posToVal(px, "x"), x0: e.clientX, moved: false,
       };
       plot.over.style.cursor = part === "in" ? "grabbing" : "ew-resize";
       document.addEventListener("mousemove", onEditMove);
@@ -516,7 +525,7 @@ export function SpectrumPlot({
   useEffect(() => {
     plotRef.current?.redraw(false);
   }, [markers, windows, selectedId, showWindows]);
-  const hasBands = windows.some((w) => w.kind);
+  const hasBands = windows.some((w) => w.kind === "background" || w.kind === "signal");
 
   // Esc deselects the window.
   useEffect(() => {
@@ -713,6 +722,21 @@ function drawOverlays(
     (a, b) => Number(a.id === selectedId) - Number(b.id === selectedId) || Math.abs(b.hi - b.lo) - Math.abs(a.hi - a.lo),
   );
   for (const w of ordered) {
+    if (w.kind === "threshold") {
+      // One labelled vertical line; its label goes to the side with room.
+      const p = u.valToPos(w.lo, "x", true);
+      const lw = Math.max(1, Math.round(2 * dpr));
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = w.color;
+      ctx.fillRect(Math.round(p - lw / 2), top, lw, height);
+      ctx.font = `600 ${11 * dpr}px -apple-system, sans-serif`;
+      ctx.textBaseline = "top";
+      const left_ = p > left + width * 0.8;
+      ctx.textAlign = left_ ? "right" : "left";
+      ctx.fillText(w.label, p + (left_ ? -5 : 5) * dpr, top + 4 * dpr);
+      ctx.textAlign = "left";
+      continue;
+    }
     const sel = w.id === selectedId;
     const a = u.valToPos(Math.min(w.lo, w.hi), "x", true);
     const b = u.valToPos(Math.max(w.lo, w.hi), "x", true);

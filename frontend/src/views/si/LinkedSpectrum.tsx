@@ -7,6 +7,7 @@ import { CURSOR_COLOR, useSi, type Reduce, type SiState } from "../../state/si";
 import { eelsTab, type BottomTab } from "../../state/ui";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "../SpectrumView";
 import { CURSOR_CHANNEL, useSiSpectra } from "./useSiSpectra";
+import { useThresholdLine } from "./useThresholdLine";
 
 /** The link group ``ds`` is in, itself included (low loss first, then core
  * losses by energy offset); just ``ds`` when it is not linked. */
@@ -41,8 +42,8 @@ export function memberTabs(
   }));
 }
 
-/** Linear/Log of a low-loss plot in a linked group (log by default: the
- * zero-loss peak dominates); empty for any other plot, which uses the shared one. */
+/** Linear/Log of a low-loss plot in a linked group (its own setting, linear
+ * by default); empty for any other plot, which uses the shared one. */
 export function useLossLog(role: EelsRole | undefined, linked: boolean): { log?: boolean; onLog?: (log: boolean) => void } {
   const log = useDisplay((s) => s.lowLossLog);
   const setLog = useDisplay((s) => s.setLowLossLog);
@@ -101,6 +102,8 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
   const spectra = useSiSpectra(member.id, dataVersion(member), st, lineScan ? 1 : cursorSize, ready);
   const total = member.navigation_shape.reduce((a, b) => a * b, 1);
   const lossLog = useLossLog(member.eels?.role, true);
+  // Thickness (Process tab): the zero-loss threshold, drawn on the low loss.
+  const zlp = useThresholdLine(member);
 
   const series = useMemo<SpectrumSeries[]>(() => {
     const k = (count: number) => (reduce === "mean" ? 1 / Math.max(1, count) : 1);
@@ -133,6 +136,8 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
       zoomKey={`${member.id}:spectra`}
       x={axis.x}
       series={series}
+      windows={zlp.windows}
+      onEditWindow={zlp.onEdit}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : `Loading ${role} into memory…`}

@@ -19,6 +19,8 @@
   --badge-map: #db2777;
   --badge-window: #0891b2;
   --badge-background: #65a30d;
+  --badge-thickness: #e11d48;
+  --badge-shift: #7c3aed;
   --badge-other: #6b7280;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
@@ -443,6 +445,8 @@ button.primary:disabled {
 .badge-map { background: var(--badge-map); }
 .badge-window { background: var(--badge-window); }
 .badge-background { background: var(--badge-background); }
+.badge-thickness { background: var(--badge-thickness); }
+.badge-shift { background: var(--badge-shift); }
 
 .empty-list {
   margin: 0;
@@ -2171,6 +2175,52 @@ button.primary:disabled {
 
 .q-maps p {
   margin: 0 0 8px;
+}
+
+/* A foldable process of the Process tab */
+.process-group {
+  border-top: 0;
+}
+
+.process-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.process-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.process-chevron {
+  width: 6px;
+  height: 6px;
+  margin: 0 3px 3px 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+}
+
+.process-group.collapsed .process-chevron {
+  margin: 0 3px 0 0;
+  transform: rotate(-45deg);
+}
+
+.process-group.collapsed .process-group-title {
+  margin-bottom: 0;
+}
+
+.process-group.collapsed {
+  padding-bottom: 4px;
 }
 
 .q-check-line {

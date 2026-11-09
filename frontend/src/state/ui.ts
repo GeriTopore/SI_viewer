@@ -118,6 +118,9 @@ interface UiState {
   setSplitFraction: (f: number) => void;
   splitRowFraction: number;
   setSplitRowFraction: (f: number) => void;
+  /** Ids of the Process tab's sections folded to their titles. */
+  processCollapsed: string[];
+  toggleProcess: (id: string) => void;
   /** FFT of the viewer's image, above the tabs. */
   fftOpen: boolean;
   setFftOpen: (open: boolean) => void;
@@ -223,6 +226,13 @@ export const useUi = create<UiState>((set, get) => ({
     const splitRowFraction = clamp(f, PANE_SIZES.splitRow);
     save("si-viewer.splitRowFraction", splitRowFraction.toFixed(3));
     set({ splitRowFraction });
+  },
+  processCollapsed: load<string>("si-viewer.processCollapsed", "").split(",").filter(Boolean),
+  toggleProcess: (id) => {
+    const cur = get().processCollapsed;
+    const processCollapsed = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    save("si-viewer.processCollapsed", processCollapsed.join(","));
+    set({ processCollapsed });
   },
   fftOpen: load<string>("si-viewer.fftOpen", "true") === "true",
   fftMeasure: load<string>("si-viewer.fftMeasure", "true") === "true",

@@ -82,7 +82,8 @@ export interface DatasetSummary {
   /** "computed": an element map made from a spectrum image (window +
    * background); "fitted"/"composition": from fitting every pixel. */
   origin:
-    | "file" | "computed" | "fitted" | "composition" | "aligned-average" | "window" | "background" | "background-r";
+    | "file" | "computed" | "fitted" | "composition" | "aligned-average" | "window" | "background" | "background-r"
+    | "thickness" | "zlp-shift";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -93,6 +94,8 @@ export interface DatasetSummary {
   revision: number;
   /** Rebinning applied to the loaded data, e.g. ["x×2, y×2"]. */
   rebinned: string[];
+  /** Zero-loss alignment applied to the loaded data, e.g. ["sub-pixel, cropped"]. */
+  zlp_aligned: string[];
   /** Non-destructive filters applied whenever the data is shown. */
   filters: Filters;
   /** Bumped whenever the filters change. */
@@ -107,6 +110,36 @@ export interface DatasetSummary {
   /** EELS spectrum images made by background removal: the settings used
    * (re-run with PUT /background); else null. */
   background: BackgroundInfo | null;
+  /** The thickness of a low loss (a map, or a profile for a line scan): the
+   * settings it was made with (re-run with POST /thickness); else null. */
+  thickness: ThicknessInfo | null;
+}
+
+/** Options of a thickness estimate. ``threshold`` is "auto" (estimated at
+ * every pixel) or one energy (the energy axis' units) for all pixels. */
+export interface ThicknessOptions {
+  threshold: "auto" | number;
+  /** Auto only: how far from the zero-loss peak its end is looked for. */
+  window: number;
+  output: "relative" | "absolute";
+  /** Absolute thickness: from a mean free path (nm) or a density (g/cm³). */
+  mean_free_path: number | null;
+  density: number | null;
+}
+
+/** Options of a zero-loss alignment (the peak is always put at 0 eV). */
+export interface ZlpOptions {
+  /** Refine the alignment by cross-correlation (else the peak maxima are lined up). */
+  subpixel: boolean;
+  /** Crop the channels the shifts leave empty. */
+  crop: boolean;
+}
+
+/** The settings a thickness was made with. */
+export interface ThicknessInfo extends ThicknessOptions {
+  source_id: string;
+  /** Energy units of the threshold. */
+  units: string;
 }
 
 export type BackgroundModel = "power_law" | "exponential" | "polynomial" | "offset";
@@ -403,7 +436,15 @@ export interface JobSummary {
   progress: number;
   message: string;
   error: string | null;
-  result: { file: FileSummary; skipped?: string[]; dataset_id?: string } | null;
+  result: {
+    file: FileSummary;
+    skipped?: string[];
+    dataset_id?: string;
+    /** Zero-loss alignment: the other files changed, the ids aligned, and how far their axes moved (eV). */
+    partner_files?: FileSummary[];
+    aligned?: string[];
+    shift?: number;
+  } | null;
 }
 
 /** Composition maps made alongside per-pixel fitted maps. */
@@ -515,6 +556,21 @@ export const api = {
   /** Job: redo a background-removed spectrum image in place with new options. */
   rerunBackground: (id: string, options: BackgroundOptions) =>
     request<JobSummary>(`/api/datasets/${id}/background`, { method: "PUT", body: JSON.stringify({ options }) }),
+  /** The automatic zero-loss threshold of a low loss's summed spectrum (null: none found). */
+  thicknessThreshold: (id: string, window: number, signal?: AbortSignal) =>
+    request<{ low_loss_id: string; threshold: number | null }>(`/api/datasets/${id}/thickness/threshold`, {
+      method: "POST",
+      body: JSON.stringify({ window }),
+      signal,
+    }),
+  /** Job: the thickness of a low loss (or of the low loss a linked dataset belongs to);
+   * replaces the one it has. */
+  estimateThickness: (id: string, options: ThicknessOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/thickness`, { method: "POST", body: JSON.stringify({ options }) }),
+  /** Job: align the zero-loss peak of a low loss (or of the low loss a linked dataset belongs to)
+   * and of its linked core losses, replacing their loaded data. */
+  alignZeroLoss: (id: string, options: ZlpOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/zlp-alignment`, { method: "POST", body: JSON.stringify({ options }) }),
   startFitMaps: (id: string, options: FitOptions, quant: QuantSpec) =>
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),

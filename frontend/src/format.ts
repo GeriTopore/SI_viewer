@@ -13,7 +13,7 @@ export const isLineScan = (d: DatasetSummary) => d.kind === "spectrum_image" && 
 
 /** Spectra and spectrum images (including line scans), which have a signal type. */
 export const hasTechnique = (d: DatasetSummary) =>
-  (d.kind === "spectrum" || d.kind === "spectrum_image") && !d.is_element_map;
+  (d.kind === "spectrum" || d.kind === "spectrum_image") && !d.is_element_map && d.origin !== "thickness" && d.origin !== "zlp-shift";
 
 /** A map of an energy window kept from a spectrum image. */
 export const isWindowMap = (d: DatasetSummary) => d.origin === "window";
@@ -21,9 +21,17 @@ export const isWindowMap = (d: DatasetSummary) => d.origin === "window";
 /** A spectrum image made by background removal. */
 export const isBackgroundRemoved = (d: DatasetSummary) => d.origin === "background";
 
+/** The thickness of a low loss (a map, or a profile along a line scan). */
+export const isThickness = (d: DatasetSummary) => d.origin === "thickness";
+
+/** The energy shift zero-loss alignment applied at every pixel of a low loss (a map, or a profile along a line scan). */
+export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
+
 export function kindLabel(d: DatasetSummary): string {
   if (isWindowMap(d)) return "Window";
   if (isBackgroundRemoved(d)) return "BG sub";
+  if (isThickness(d)) return d.thickness?.output === "absolute" ? "nm" : "t/λ";
+  if (isZlpShift(d)) return "eV";
   if (d.origin === "composition") return "at%";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.
@@ -66,6 +74,13 @@ export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string 
       : "background removed";
     return `${base}\nBackground removed${parentTitle ? ` from ${parentTitle}` : ""}: ${what}`;
   }
+  if (isThickness(d)) {
+    const t = d.thickness;
+    const threshold = !t ? "" : t.threshold === "auto" ? "threshold estimated" : `threshold ${formatValue(t.threshold)} ${t.units}`;
+    const given = !t ? "" : t.mean_free_path != null ? `, λ ${formatValue(t.mean_free_path)} nm` : t.density != null ? `, density ${formatValue(t.density)} g/cm³` : "";
+    return `${base}\nThickness of ${parentTitle ?? "its low loss"}${t ? `: ${threshold}${given}` : ""}`;
+  }
+  if (isZlpShift(d)) return `${base}\nEnergy shift applied by zero-loss alignment${parentTitle ? ` to ${parentTitle}` : ""}`;
   if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "fitted") return `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;

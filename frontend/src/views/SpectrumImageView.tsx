@@ -27,6 +27,7 @@ import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
 import { memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
+import { useThresholdLine } from "./si/useThresholdLine";
 
 /** Navigator source meaning "no base image": only the overlaid maps are shown. */
 const NONE = "none";
@@ -273,7 +274,9 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   }, [files, images, sourceId, isVirtual, main, axis.x, displays, windowColours, layerProps, edit, draft, navView, ds.id, virtualLabel, showMain]);
   // Background removal (Process tab): its fits and bands on this plot.
   const bg = useBackgroundPreview(ds, axis.x, series);
-  const allWindows = useMemo(() => [...plotWindows, ...bg.bands], [plotWindows, bg.bands]);
+  // Thickness (Process tab): the zero-loss threshold on a low loss.
+  const zlp = useThresholdLine(ds);
+  const allWindows = useMemo(() => [...plotWindows, ...bg.bands, ...zlp.windows], [plotWindows, bg.bands, zlp.windows]);
   const windowMapIds = plotWindows.filter((w) => w.id !== MAIN && w.id !== DRAFT).map((w) => w.id);
   const selectedWindow = plotWindows.some((w) => w.id === st.selectedWindow) ? st.selectedWindow : null;
   /** Selects a window; a window map also deselects the region (Delete acts on one at a time). */
@@ -329,7 +332,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // Dragging the selected window's edge or inside: the main window follows
   // live; a window map's band follows the pointer and its map is remade on release.
   const editWindow = async (id: string, range: EnergyRange, final: boolean) => {
-    if (bg.onEditBand(id, range, final)) return;
+    if (bg.onEditBand(id, range, final) || zlp.onEdit(id, range, final)) return;
     if (id === MAIN) return setMain(range);
     setEdit({ id, ...range });
     if (!final) return;

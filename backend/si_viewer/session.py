@@ -103,8 +103,10 @@ class Dataset:
     is_element_map: bool = False
     # "file" (loaded), "computed" (an element map made from a spectrum image),
     # "fitted" / "composition" (per-pixel fits), "window" (an energy-window map),
-    # "background" (EELS spectra with the background removed) or "background-r"
-    # (the power-law exponent map of one).
+    # "background" (EELS spectra with the background removed), "background-r"
+    # (the power-law exponent map of one), "thickness" (the thickness of an
+    # EELS low loss: a map, or a profile for a line scan) or "zlp-shift" (the
+    # energy shift zero-loss alignment applied at every pixel of a low loss).
     origin: str = "file"
     # Element symbol of an element map (Velox maps: their title).
     element: str | None = None
@@ -115,12 +117,18 @@ class Dataset:
     # Background-removed EELS spectra ("background"): the options they were made
     # with (see processing/background.py), kept to re-run them.
     background: dict | None = None
+    # Thickness of a low loss ("thickness"): the options it was made with (see
+    # processing/thickness.py) and the energy units of the threshold.
+    thickness: dict | None = None
     # Bumped whenever the data is recomputed, so clients refresh caches.
     revision: int = 0
     # Spectrum images: how their computed element maps are made.
     map_options: dict = field(default_factory=dict)
     # Rebinning applied to the loaded data, e.g. ["x×2, y×2"] (oldest first).
     rebinned: list[str] = field(default_factory=list)
+    # Zero-loss alignment applied to the loaded data, e.g. ["sub-pixel, cropped"]
+    # (oldest first).
+    zlp_aligned: list[str] = field(default_factory=list)
     # Non-destructive filters applied when the data is read (see
     # processing/filters.py); filter_rev is bumped whenever they change.
     filters: dict = field(default_factory=dict)
@@ -228,8 +236,10 @@ class Dataset:
                 **{k: list(v) if isinstance(v, (list, tuple)) else v for k, v in self.background.items()},
                 "units": _defined(am.signal_axes[0].units),
             },
+            "thickness": None if self.thickness is None else {"source_id": self.parent_id, **self.thickness},
             "revision": self.revision,
             "rebinned": list(self.rebinned),
+            "zlp_aligned": list(self.zlp_aligned),
             "filters": self.filter_spec.model_dump(),
             "filter_rev": self.filter_rev,
             "alignment": None if self.alignment is None else {
@@ -499,6 +509,9 @@ class Session:
             ds.eels_role, ds.eels_role_source = role, "user"
             if ds.eels_group is not None:
                 self._refresh_group(ds.eels_group)
+            if role != "low_loss":
+                for t in [*self.thickness_maps(ds), *self.zlp_shift_maps(ds)]:
+                    self._remove(t)  # a thickness and a ZLP shift are of a low loss
             return [ds, *others]
 
     def _compute_initial_maps(self, si: Dataset) -> None:
@@ -771,6 +784,210 @@ class Session:
             except ValueError:
                 self._remove_tree(bg)
 
+    # ---------- thickness of a low loss (EELS) ----------
+
+    def low_loss_of(self, ds: Dataset) -> Dataset | None:
+        """The low loss thickness is estimated from: ``ds`` if it is one, else
+        the low loss of its link group (None if it has none, or is not an EELS
+        spectrum image)."""
+        from .processing.eels import is_eels_si
+
+        if not is_eels_si(ds):
+            return None
+        if ds.eels_role == "low_loss":
+            return ds
+        return next((d for d in self.linked_of(ds) if d.eels_role == "low_loss"), None)
+
+    def thickness_maps(self, ll: Dataset) -> list[Dataset]:
+        """The thickness made from the low loss ``ll`` (at most one)."""
+        with self._lock:
+            return [d for d in self.siblings(ll) if d.origin == "thickness" and d.parent_id == ll.id]
+
+    def estimate_threshold(self, ll: Dataset, window: float) -> float | None:
+        """The automatic zero-loss threshold of the low loss ``ll``'s summed
+        spectrum (as shown: spectrally smoothed), or None if there is none."""
+        from .processing.frames import get_spectrum
+        from .processing.thickness import estimate_threshold
+
+        ll.materialise()
+        return estimate_threshold(get_spectrum(ll), ll.signal, window)
+
+    def compute_thickness(self, ll: Dataset, options, report=lambda f, m=None: None) -> np.ndarray:
+        """The thickness of every pixel of the low loss ``ll`` (see
+        ``processing.thickness.thickness_map``). Nothing is added to the
+        session. Raises ValueError for options that don't fit the spectra."""
+        from .processing.eels import is_eels_si
+        from .processing.thickness import thickness_map
+
+        if not is_eels_si(ll) or ll.eels_role != "low_loss":
+            raise ValueError(f"{ll.title} is not an EELS low loss")
+        ll.materialise()
+        return thickness_map(ll.signal, options, ll.filter_spec, report)
+
+    def set_thickness(self, ll: Dataset, options, data: np.ndarray) -> Dataset:
+        """Save ``data`` (from ``compute_thickness``) as the thickness of the
+        low loss ``ll``: a new dataset under it, or (it has one) that dataset
+        with its data replaced: same id, new revision. It follows ``ll``'s
+        rebinning and processing and is deleted with it."""
+        from .processing.thickness import TITLES, result_signal
+
+        signal = result_signal(ll.signal, data, options)
+        units = _defined(ll.signal.axes_manager.signal_axes[0].units)
+        info = {**options.model_dump(), "units": units}
+        existing = self.thickness_maps(ll)
+        for extra in existing[1:]:
+            self._remove(extra)
+        if existing:
+            ds = existing[0]
+            if ds.title not in TITLES:
+                signal.metadata.General.title = ds.title  # a name the user gave is kept
+            ds.replace_signal(signal)
+            ds.kind = classify(signal)
+            ds.thickness = info
+            return ds
+        ds = Dataset(
+            id=_new_id(), file_id=ll.file_id, signal=signal, kind=classify(signal),
+            origin="thickness", parent_id=ll.id, thickness=info,
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            self.files[ll.file_id].dataset_ids.append(ds.id)
+        return ds
+
+    def _remake_thickness(self, ll: Dataset, shift: float = 0.0) -> None:
+        """Recompute the thickness of ``ll`` with the options it was made with,
+        after its data or processing changed (one that no longer fits is
+        removed). ``shift``: how far its energy axis was moved, which a fixed
+        threshold follows."""
+        from .processing.thickness import ThicknessOptions
+        from .processing.zlp import round_energy
+
+        for t in self.thickness_maps(ll):
+            try:
+                options = ThicknessOptions(**{k: v for k, v in t.thickness.items() if k != "units"})
+                if not options.auto:
+                    options.threshold = round_energy(options.threshold + shift)
+                self.set_thickness(ll, options, self.compute_thickness(ll, options))
+            except ValueError:
+                self._remove(t)
+
+    # ---------- zero-loss peak alignment (EELS) ----------
+
+    def zlp_shift_maps(self, ll: Dataset) -> list[Dataset]:
+        """The ZLP shift saved with the low loss ``ll`` (at most one)."""
+        with self._lock:
+            return [d for d in self.siblings(ll) if d.origin == "zlp-shift" and d.parent_id == ll.id]
+
+    def zlp_followers(self, ll: Dataset) -> list[Dataset]:
+        """The spectrum images aligned along with the low loss ``ll``: the EELS
+        spectrum images linked to it, on its scan (a background-removed one
+        whose source is aligned too is remade from it instead)."""
+        from .processing.eels import is_eels_si
+
+        linked = [
+            d for d in self.linked_of(ll)
+            if is_eels_si(d) and tuple(d.signal.axes_manager.navigation_shape) == tuple(ll.signal.axes_manager.navigation_shape)
+        ]
+        ids = {ll.id, *(d.id for d in linked)}
+        return [d for d in linked if not (d.origin == "background" and d.parent_id in ids)]
+
+    def compute_zlp_alignment(self, ll: Dataset, options, report=lambda f, m=None: None):
+        """Align the zero-loss peak of the low loss ``ll`` and of its followers
+        (see ``processing.zlp.align_zero_loss_peak``). Nothing in the session
+        changes. Returns ``(datasets, originals, result)``: the datasets (the
+        low loss first), the signals they had, and the aligned ones with the
+        shifts. Raises ValueError if the low loss can't be aligned."""
+        from .processing.eels import is_eels_si
+        from .processing.zlp import align_zero_loss_peak
+
+        if not is_eels_si(ll) or ll.eels_role != "low_loss":
+            raise ValueError(f"{ll.title} is not an EELS low loss")
+        datasets = [ll, *self.zlp_followers(ll)]
+        for d in datasets:
+            d.materialise()
+        originals = [d.signal for d in datasets]
+        result = align_zero_loss_peak(originals[0], originals[1:], options, report)
+        return datasets, originals, result
+
+    def apply_zlp_alignment(self, datasets: list[Dataset], originals: list, result, options) -> Dataset:
+        """Replace the loaded data of ``datasets`` (from ``compute_zlp_alignment``)
+        with the aligned ``result``, like a rebin: the file on disk is not
+        changed. What was made from them is remade: energy windows, thickness
+        and background-removed spectra follow the shift of the axis (a fixed
+        threshold, a window), maps made at the old data are removed. The shifts
+        are saved as the "ZLP shift" of the low loss (replacing an earlier
+        one), which is returned. Raises ValueError, changing nothing, if a
+        dataset was deleted or changed since."""
+        ll = datasets[0]
+        for d, signal in zip(datasets, originals):
+            if self.datasets.get(d.id) is not d or d.signal is not signal:
+                raise ValueError(f"{d.title} changed while its zero-loss peak was aligned")
+        shift = result.mean_shift
+        for d, signal in zip(datasets, result.signals):
+            d.replace_signal(signal)
+            d.kind = classify(signal)
+            d.zlp_aligned.append(options.label)
+        for d in datasets:
+            self._remake_after_zlp(d, shift)
+        if ll.eels_group is not None:
+            self._refresh_group(ll.eels_group)  # linked ones are ordered by their energy offset
+        return self.set_zlp_shift(ll, result.shifts)
+
+    def _remake_after_zlp(self, d: Dataset, shift: float) -> None:
+        """Recompute what was made from ``d`` after its data was aligned, with
+        energies ``shift`` further along the axis than before."""
+        from .processing.background import BackgroundOptions
+        from .processing.zlp import round_energy
+
+        for f in self._fit_maps(d):
+            self._remove(f)  # made from the old data: fit again to update
+        for m in self.computed_maps(d):
+            new_map = self._make_map(d, m.element)
+            if new_map is None:
+                self._remove(m)
+            else:
+                m.replace_signal(new_map)
+        for m in self.window_maps(d):
+            try:
+                self.set_window_map(m, round_energy(m.window["lo"] + shift), round_energy(m.window["hi"] + shift))
+            except ValueError:  # the window left the energy range
+                self._remove(m)
+        for bg in self.background_sis(d):
+            try:
+                old = BackgroundOptions(**bg.background)
+                moved = {k: [round_energy(v + shift) for v in getattr(old, k)] for k in ("background", "signal")}
+                new = BackgroundOptions(**{**old.model_dump(), **moved})
+                self.replace_background(bg, new, self.compute_background(d, new))
+            except ValueError:  # its windows no longer fit
+                self._remove_tree(bg)
+        self._remake_thickness(d, shift)
+
+    def set_zlp_shift(self, ll: Dataset, shifts: np.ndarray) -> Dataset:
+        """Save ``shifts`` (eV, the shape of the scan) as the ZLP shift of the
+        low loss ``ll``: a new dataset under it, or (it has one) that dataset
+        with its data replaced: same id, new revision."""
+        from .processing.zlp import shift_map_signal
+
+        signal = shift_map_signal(ll.signal, shifts)
+        existing = self.zlp_shift_maps(ll)
+        for extra in existing[1:]:
+            self._remove(extra)
+        if existing:
+            ds = existing[0]
+            if ds.title != "ZLP shift":
+                signal.metadata.General.title = ds.title  # a name the user gave is kept
+            ds.replace_signal(signal)
+            ds.kind = classify(signal)
+            return ds
+        ds = Dataset(
+            id=_new_id(), file_id=ll.file_id, signal=signal, kind=classify(signal),
+            origin="zlp-shift", parent_id=ll.id,
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            self.files[ll.file_id].dataset_ids.append(ds.id)
+        return ds
+
     def set_elements(self, ds: Dataset, elements: list[str]) -> list[str]:
         """Set an EDS dataset's elements. For a spectrum image, newly added
         elements get a computed map and removed ones lose theirs (maps loaded
@@ -811,16 +1028,16 @@ class Session:
                 for d in [*self.computed_maps(ds), *self._fit_maps(ds)]:
                     self._remove(d)
             if was == "EELS":
-                for d in self.background_sis(ds):
-                    self._remove_tree(d)  # background removal is for EELS only
+                for d in [*self.background_sis(ds), *self.thickness_maps(ds), *self.zlp_shift_maps(ds)]:
+                    self._remove_tree(d)  # background removal, thickness and ZLP shifts are for EELS only
             if technique == "EELS":
                 self._set_role(ds)
             self._view_changed(ds)
         ds.technique_source = "user"
 
     def delete_dataset(self, dataset: Dataset) -> None:
-        """Delete an element map, a window map or a background-removed spectrum
-        image (with everything made from it).
+        """Delete an element map, a window map, a thickness or a
+        background-removed spectrum image (with everything made from it).
 
         Deleting an element map also unticks its element in the map's spectrum image and in the
         file's other (non-image) EDS spectra, which removes that element's
@@ -828,8 +1045,8 @@ class Session:
         """
         from .processing.xray import eds_info
 
-        if dataset.origin == "window":
-            self._remove(dataset)  # a window map has no element to untick
+        if dataset.origin in ("window", "thickness", "zlp-shift"):
+            self._remove(dataset)  # no element to untick
             return
         if dataset.origin in ("background", "background-r"):
             self._remove_tree(dataset)
@@ -931,8 +1148,8 @@ class Session:
             # Natural order: (frames |) x, y.
             _rebin_in_place(d, [1] * d.signal.axes_manager.navigation_dimension + [fx, fy])
 
-        for d in self._fit_maps(si):
-            self._remove(d)  # made at the old size: refit to update
+        for d in [*self._fit_maps(si), *self.zlp_shift_maps(si)]:
+            self._remove(d)  # made at the old size: refit or align again to update
         for m in self.computed_maps(si):
             new_map = self._make_map(si, m.element)
             if new_map is None:  # its line left the (rebinned) energy range
@@ -941,6 +1158,7 @@ class Session:
                 m.replace_signal(new_map)
         self._remake_window_maps(si)
         self._remake_backgrounds(si)
+        self._remake_thickness(si)
         if si.origin == "background":
             for r in self._background_r_maps(si):
                 self._remove(r)  # made at the old size: re-run from the source to update
@@ -995,6 +1213,7 @@ class Session:
                 if signal is not None:
                     m.replace_signal(signal)
             self._remake_window_maps(dataset)
+            self._remake_thickness(dataset)
             fits = self._fit_maps(dataset)
             for d in fits:
                 self._remove(d)

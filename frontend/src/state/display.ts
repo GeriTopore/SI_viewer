@@ -11,7 +11,7 @@ interface DisplayState {
   /** Colour of each element's maps (by element symbol, e.g. "Fe"). */
   elementColours: Record<string, string>;
   spectrumLog: boolean;
-  /** Linear/Log of the low-loss spectra of a linked pair (log by default). */
+  /** Linear/Log of the low-loss spectra of a linked group (linear by default). */
   lowLossLog: boolean;
   /** Linear/Log of a line-scan image, by dataset id (unset: the view's default). */
   imageLog: Record<string, boolean>;
@@ -78,7 +78,7 @@ export const useDisplay = create<DisplayState>((set, get) => ({
     return colour;
   },
   spectrumLog: false,
-  lowLossLog: true,
+  lowLossLog: false,
   imageLog: {},
   setDisplay: (key, patch) =>
     set((s) => ({ display: { ...s.display, [key]: { ...s.display[key], ...patch } } })),

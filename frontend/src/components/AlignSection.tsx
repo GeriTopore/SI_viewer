@@ -71,16 +71,10 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
     const applied = d.alignment;
     return (
       <>
-        {applied ? (
+        {applied && (
           <p className="small q-elements">
             Drift-corrected: {applied.frames.length} of {applied.loaded_frames} frames, cropped to {applied.square[2]} ×{" "}
             {applied.square[3]} px{applied.active ? "" : " (showing the frames as loaded)"}.
-          </p>
-        ) : (
-          <p className="muted small q-elements">
-            Registers the frames to each other (rigidregistration: every pair cross-correlated, outliers corrected)
-            so drift can be removed and the frames averaged. You choose the parameters step by step while looking
-            at their effect in the viewer.
           </p>
         )}
         <div className="process-actions">
@@ -125,15 +119,8 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   return (
     <section className="q-form">
       <h4 className="process-heading">Step 4 · Result</h4>
-      <p className="muted small process-note">
-        Scroll through the aligned frames (slider, ← / →); Original shows them as loaded, with the square kept in
-        every frame. The FFT panel shows the average's FFT.
-      </p>
       <BadFrames d={d} a={a} hint="Mark bad under the frame" />
-      <p className="muted small process-note">
-        Apply shows the stack's frames aligned and cropped (switch back with Original under the image) and adds
-        the average as an image.{d.alignment ? " It replaces the current alignment." : ""}
-      </p>
+      {d.alignment && <p className="muted small process-note">Replaces the current alignment.</p>}
       <div className="align-save">
         <span className="muted small">Save</span>
         <button onClick={() => downloadUrl(registrationShiftsUrl(d.id))} disabled={!a.session?.shifts}>
@@ -315,13 +302,6 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   return (
     <section className="q-form">
       <h4 className="process-heading">Step 1 · Fourier mask</h4>
-      <p className="muted small process-note">
-        The mask weights the frequencies the frames share; features smaller than about n pixels are ignored. It is
-        drawn on the FFT panel (top right), with a ring at the cutoff; its Mask button hides it to see the whole
-        FFT. For noisy data a cutoff near the first Bragg spots avoids correlating noise; with good signal it can
-        sit at the information limit. The cross-correlation should show one sharp, isolated peak; check several
-        pairs, especially frames far apart.
-      </p>
       <FrameRange d={d} a={a} />
       <PairInputs d={d} a={a} />
       <label>
@@ -443,10 +423,6 @@ function PeaksControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   return (
     <section className="q-form">
       <h4 className="process-heading">Step 2 · Peak finding</h4>
-      <p className="muted small process-note">
-        Each pair's shift is the position of its correlation peak. Check that the peak used (red) is the true one
-        and not a neighbouring lattice maximum, for several pairs (or click cells of the shift matrices).
-      </p>
       <PairInputs d={d} a={a} />
       <label title="Cross-correlation is the usual choice; mutual and phase correlation sharpen the peak by normalising the spectrum">
         Correlation
@@ -540,12 +516,6 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   return (
     <section className="q-form">
       <h4 className="process-heading">Step 3 · Shift matrices</h4>
-      <p className="muted small process-note">
-        Every pair of the {n} frames ({(n * (n - 1)) / 2} pairs) is correlated: row i, column j is the shift of frame
-        j relative to frame i. Correct shifts change smoothly across the matrix; isolated jumps are wrong pairs. Mask
-        them as outliers below (dark cells): the corrected matrices fill them from paths through good pairs, and
-        the drift plot shows each frame's position from those. Click a cell to inspect that pair.
-      </p>
       <p className="muted small process-note">
         With: {maskLabel(a.mask)} mask; {method}
         {a.peaks.correlation !== "cc" ? ` (${a.peaks.correlation === "mc" ? "mutual" : "phase"} correlation)` : ""}.

@@ -6,6 +6,8 @@ import { useAlignment } from "../state/alignment";
 import { filterLabel, isLineScan } from "../format";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { AlignSection } from "./AlignSection";
+import { BackgroundSection } from "./BackgroundSection";
+import { canRemoveBackground } from "../state/background";
 
 const SPATIAL: { id: SpatialFilter; label: string; title: string }[] = [
   { id: "none", label: "None", title: "No spatial filter" },
@@ -82,8 +84,8 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
         const r = await api.setFilters(id, filters);
         replaceFile(r.file);
         notes = [...notes, ...r.notes];
-        // A linked EELS partner gets the same spatial filter.
-        if (before?.eels?.partner_id && spatialKey(before.filters) !== spatialKey(filters)) partnerChanged = true;
+        // The EELS spectrum images linked to it get the same spatial filter.
+        if (before?.eels?.linked.length && spatialKey(before.filters) !== spatialKey(filters)) partnerChanged = true;
       }
       if (partnerChanged) await useDatasets.getState().syncFiles();
       if (notes.length) notify(notes.join(" "));
@@ -133,7 +135,7 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
   // The sections that apply, numbered in workflow order.
-  const sections = [d.kind === "stack" && "align", canRebin(d) && "rebin", "filters"].filter(Boolean);
+  const sections = [d.kind === "stack" && "align", canRebin(d) && "rebin", "filters", canRemoveBackground(d) && "background"].filter(Boolean);
   const num = (s: string) => `${sections.indexOf(s) + 1}. `;
 
   return (
@@ -141,13 +143,6 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       {!aligning && (
         <section>
           <h3 className="q-title">{d.title}</h3>
-          {isSi && (
-            <p className="muted small q-elements">
-              {lineScan
-                ? "Processing the line scan: it applies to all its spectra and to the image."
-                : "Processing the spectrum image: it applies to all its spectra, fits and element maps, whichever are overlaid in the viewer."}
-            </p>
-          )}
         </section>
       )}
 
@@ -161,10 +156,6 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       {canRebin(d) && (
         <section className="q-maps">
           <h3>{num("rebin")}Rebin</h3>
-          <p className="muted small q-elements">
-            Sums neighbouring pixels or channels of the spectrum image and its whole scan (HyperSpy rebin). This
-            overwrites the loaded data; the file on disk is untouched.
-          </p>
           <button className="process-rebin" onClick={() => setRebinOpen(true)}>
             Rebin…
           </button>
@@ -173,10 +164,6 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
 
       <section className="q-maps">
         <h3>{num("filters")}Filters</h3>
-        <p className="muted small q-elements">
-          Filters apply whenever the data is shown; the loaded data is unchanged and they can be removed at any
-          time.
-        </p>
       </section>
 
       {spatial && (
@@ -229,13 +216,6 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
                 ))}
               </select>
             </label>
-          )}
-          {isSi && (
-            <p className="muted small process-note">
-              Blurs the whole spectrum image: cursor and region spectra, the total-counts and energy-window maps,
-              and every element map (also ones added later from the periodic table). Fits and quantification use
-              the blurred data; fitted maps are removed when the processing changes, so fit again.
-            </p>
           )}
         </section>
       )}
@@ -303,13 +283,6 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
               </label>
             </>
           )}
-          <p className="muted small process-note">
-            {lineScan
-              ? "Smooths every spectrum of the line scan, and the image of it."
-              : isSi
-              ? "Smooths every spectrum of the spectrum image, and the maps and fits made from them."
-              : "Smooths the spectrum; fits use the smoothed spectrum."}
-          </p>
         </section>
       )}
 
@@ -330,6 +303,8 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
         </button>
         {error && <p className="field-error">{error}</p>}
       </section>
+
+      {canRemoveBackground(d) && <BackgroundSection d={d} title={`${num("background")}Background removal`} />}
 
       {rebinOpen && <RebinDialog d={d} onClose={() => setRebinOpen(false)} />}
     </div>

@@ -48,6 +48,13 @@ export interface PlotWindow {
   label: string;
   /** Being drawn (provisional): dashed edges, not selectable. */
   draft?: boolean;
+  /** A band of the Background removal tool: the fit range ("background",
+   * hatched) or the range kept ("signal"). Always shown, edited by dragging
+   * its edges or inside without selecting it; not selectable, no menu. */
+  kind?: "background" | "signal";
+  /** Limits that its edges and moves stay within. */
+  min?: number;
+  max?: number;
 }
 
 interface Props {
@@ -97,6 +104,10 @@ interface Props {
 }
 
 const zoomMemory = new Map<string, { min: number; max: number }>();
+
+/** The windows drawn: the tool's bands always, energy windows when switched on. */
+const visibleWindows = (l: { windows: PlotWindow[]; showWindows: boolean }) =>
+  l.windows.filter((w) => w.kind || l.showWindows);
 
 const cssVar = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -151,7 +162,10 @@ export function SpectrumPlot({
     const yRange: uPlot.Range.Function = (_u, lo, hi) => {
       if (manualY.current) return [manualY.current.min, manualY.current.max];
       if (lo == null || hi == null) return log ? [1, 10] : [0, 1];
-      return log ? uPlot.rangeLog(lo, hi, 10, true) : uPlot.rangeNum(lo, hi, 0.1, true);
+      if (log) return uPlot.rangeLog(lo, hi, 10, true);
+      // Counts start at 0: negatives (e.g. after background removal) only show
+      // when the axis is dragged.
+      return hi > 0 ? uPlot.rangeNum(Math.max(0, lo), hi, 0.1, true) : uPlot.rangeNum(lo, hi, 0.1, true);
     };
     const text = cssVar("--muted");
     const grid = cssVar("--border");
@@ -224,7 +238,7 @@ export function SpectrumPlot({
         draw: [
           (u) => {
             const l = live.current;
-            labelBoxes.current = drawOverlays(u, l.markers, l.showWindows ? l.windows : [], l.selectedId, l.xUnits);
+            labelBoxes.current = drawOverlays(u, l.markers, visibleWindows(l), l.selectedId, l.xUnits);
           },
         ],
       },
@@ -240,20 +254,30 @@ export function SpectrumPlot({
     /** The pointer's x in plot pixels (css, from the plot area's left edge). */
     const plotX = (e: MouseEvent) => e.clientX - plot.over.getBoundingClientRect().left;
     const snapTo = (v: number) => xFirst + Math.round((v - xFirst) / step) * step;
-    const shown = () => (live.current.showWindows ? live.current.windows.filter((w) => !w.draft) : []);
+    const shown = () => visibleWindows(live.current).filter((w) => !w.draft && !w.kind);
     const selected = () => shown().find((w) => w.id === live.current.selectedId);
-    /** Where the pointer is on the selected window: an edge or inside. */
-    const partAt = (px: number): "lo" | "hi" | "in" | null => {
+    /** The windows whose edges and inside can be dragged: the selected one and the tool's bands. */
+    const editable = () => {
       const w = selected();
-      if (!w) return null;
-      const a = plot.valToPos(w.lo, "x");
-      const b = plot.valToPos(w.hi, "x");
-      const da = Math.abs(px - a);
-      const db = Math.abs(px - b);
-      if (Math.min(da, db) <= EDGE_PX) return da <= db ? "lo" : "hi";
-      // A window spanning the whole spectrum can't move: its inside zooms.
-      if (w.lo <= xFirst + step / 2 && w.hi >= xLast - step / 2) return null;
-      return px > a && px < b ? "in" : null;
+      const bands = live.current.windows.filter((b) => b.kind);
+      return w ? [w, ...bands] : bands;
+    };
+    /** Where the pointer is on an editable window: an edge (the nearest) or inside. */
+    const partAt = (px: number): { w: PlotWindow; part: "lo" | "hi" | "in" } | null => {
+      let best: { w: PlotWindow; part: "lo" | "hi"; d: number } | null = null;
+      for (const w of editable()) {
+        const da = Math.abs(px - plot.valToPos(w.lo, "x"));
+        const db = Math.abs(px - plot.valToPos(w.hi, "x"));
+        const d = Math.min(da, db);
+        if (d <= EDGE_PX && (!best || d < best.d)) best = { w, part: da <= db ? "lo" : "hi", d };
+      }
+      if (best) return { w: best.w, part: best.part };
+      for (const w of editable()) {
+        // A window spanning the whole spectrum can't move: its inside zooms.
+        if (w.lo <= xFirst + step / 2 && w.hi >= xLast - step / 2) continue;
+        if (px > plot.valToPos(w.lo, "x") && px < plot.valToPos(w.hi, "x")) return { w, part: "in" };
+      }
+      return null;
     };
     /** The narrowest window under the pointer. */
     const windowAt = (px: number) => {
@@ -276,8 +300,8 @@ export function SpectrumPlot({
     };
     const onMove = (e: MouseEvent) => {
       if (!down) {
-        // Pointer over the selected window: edges resize, inside moves.
-        const part = e.shiftKey ? null : partAt(plotX(e));
+        // Pointer over an editable window: edges resize, inside moves.
+        const part = e.shiftKey ? null : partAt(plotX(e))?.part;
         plot.over.style.cursor = part === "in" ? "grab" : part ? "ew-resize" : "";
         return;
       }
@@ -312,6 +336,8 @@ export function SpectrumPlot({
       part: "lo" | "hi" | "in";
       lo: number;
       hi: number;
+      min?: number; // limits of the window
+      max?: number;
       at: number; // energy where the press was
       x0: number; // screen x of the press
       moved: boolean;
@@ -319,13 +345,14 @@ export function SpectrumPlot({
     let edit: Edit | null = null;
     const rangeOf = (edit: Edit, e: MouseEvent): EnergyRange => {
       const v = plot.posToVal(plotX(e), "x");
+      const [first, last] = [Math.max(xFirst, edit.min ?? xFirst), Math.min(xLast, edit.max ?? xLast)];
       // An edge drag moves that edge only; moving snaps both.
-      if (edit.part === "lo") return { lo: Math.min(Math.max(snapTo(v), xFirst), edit.hi - step), hi: edit.hi };
-      if (edit.part === "hi") return { lo: edit.lo, hi: Math.max(Math.min(snapTo(v), xLast), edit.lo + step) };
+      if (edit.part === "lo") return { lo: Math.min(Math.max(snapTo(v), first), edit.hi - step), hi: edit.hi };
+      if (edit.part === "hi") return { lo: edit.lo, hi: Math.max(Math.min(snapTo(v), last), edit.lo + step) };
       const lo0 = snapTo(edit.lo);
       const hi0 = Math.max(snapTo(edit.hi), lo0 + step);
       const shift = Math.round((v - edit.at) / step) * step;
-      const d = Math.min(Math.max(shift, xFirst - lo0), xLast - hi0);
+      const d = Math.min(Math.max(shift, first - lo0), last - hi0);
       return { lo: lo0 + d, hi: hi0 + d };
     };
     const onEditMove = (e: MouseEvent) => {
@@ -345,14 +372,16 @@ export function SpectrumPlot({
       else clickWindow(plotX(e));
     };
     const onEditDown = (e: MouseEvent) => {
-      const w = selected();
-      if (!w || !live.current.onEditWindow || e.button !== 0 || e.shiftKey || !plot.over.contains(e.target as Node)) return;
+      if (!live.current.onEditWindow || e.button !== 0 || e.shiftKey || !plot.over.contains(e.target as Node)) return;
       const px = plotX(e);
-      const part = partAt(px);
-      if (!part) return;
+      const hit = partAt(px);
+      if (!hit) return;
+      const { w, part } = hit;
       e.stopPropagation(); // not a zoom drag
       e.preventDefault();
-      edit = { id: w.id, part, lo: w.lo, hi: w.hi, at: plot.posToVal(px, "x"), x0: e.clientX, moved: false };
+      edit = {
+        id: w.id, part, lo: w.lo, hi: w.hi, min: w.min, max: w.max, at: plot.posToVal(px, "x"), x0: e.clientX, moved: false,
+      };
       plot.over.style.cursor = part === "in" ? "grabbing" : "ew-resize";
       document.addEventListener("mousemove", onEditMove);
       document.addEventListener("mouseup", onEditUp);
@@ -487,6 +516,7 @@ export function SpectrumPlot({
   useEffect(() => {
     plotRef.current?.redraw(false);
   }, [markers, windows, selectedId, showWindows]);
+  const hasBands = windows.some((w) => w.kind);
 
   // Esc deselects the window.
   useEffect(() => {
@@ -612,6 +642,7 @@ export function SpectrumPlot({
               {onWindow && " · Shift-drag for a new energy window"}
               {" · drag an axis to zoom it, Shift-drag to pan"}
               {onWindow && showWindows && selectedId && " · drag a window's edges or inside to edit · right-click a window for more · Esc"}
+              {hasBands && " · drag the Background and Signal bands' edges or inside to move them"}
               {onMarkerClick && markers.length > 0 && " · click a line label to map it"}
             </span>
           )}
@@ -630,6 +661,35 @@ interface LabelBox {
 }
 
 const EDGE_PX = 4;
+
+const hatches = new Map<string, CanvasPattern>();
+
+/** Diagonal hatching in ``color`` (the Background band's fill). */
+function hatch(color: string, dpr: number): CanvasPattern {
+  const key = `${color}|${dpr}`;
+  let pattern = hatches.get(key);
+  if (!pattern) {
+    const size = Math.round(8 * dpr);
+    const tile = document.createElement("canvas");
+    tile.width = tile.height = size;
+    const g = tile.getContext("2d")!;
+    g.strokeStyle = color;
+    g.globalAlpha = 0.55;
+    g.lineWidth = Math.max(1, dpr);
+    // Three segments so the lines continue across tile borders.
+    g.beginPath();
+    g.moveTo(0, size);
+    g.lineTo(size, 0);
+    g.moveTo(-size / 2, size / 2);
+    g.lineTo(size / 2, -size / 2);
+    g.moveTo(size / 2, size * 1.5);
+    g.lineTo(size * 1.5, size / 2);
+    g.stroke();
+    pattern = g.createPattern(tile, "repeat")!;
+    hatches.set(key, pattern);
+  }
+  return pattern;
+}
 
 /** Energy window bands, X-ray line markers (labels staggered to avoid
  * overlap) and the selected window's annotation. Returns the marker label
@@ -657,11 +717,16 @@ function drawOverlays(
     const a = u.valToPos(Math.min(w.lo, w.hi), "x", true);
     const b = u.valToPos(Math.max(w.lo, w.hi), "x", true);
     ctx.fillStyle = w.color;
-    ctx.globalAlpha = sel ? 0.3 : 0.14;
+    ctx.globalAlpha = sel ? 0.3 : w.kind === "background" ? 0.08 : 0.14;
     ctx.fillRect(a, top, b - a, height);
-    ctx.globalAlpha = sel ? 1 : 0.85;
+    if (w.kind === "background") {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = hatch(w.color, dpr);
+      ctx.fillRect(a, top, b - a, height);
+    }
+    ctx.globalAlpha = sel || w.kind ? 1 : 0.85;
     ctx.fillStyle = w.color;
-    const lw = Math.max(1, Math.round((sel ? 2.5 : 1.25) * dpr));
+    const lw = Math.max(1, Math.round((sel || w.kind ? 2.5 : 1.25) * dpr));
     if (w.draft) {
       ctx.strokeStyle = w.color;
       ctx.lineWidth = lw;
@@ -675,6 +740,13 @@ function drawOverlays(
       ctx.setLineDash([]);
     } else for (const e of [a, b]) ctx.fillRect(Math.round(e - lw / 2), top, lw, height);
     ctx.globalAlpha = 1;
+    if (w.kind) {
+      // Labelled at the top, inside the band's left edge.
+      ctx.font = `600 ${11 * dpr}px -apple-system, sans-serif`;
+      ctx.textBaseline = "top";
+      ctx.fillStyle = w.color;
+      ctx.fillText(w.label, Math.max(a, left) + 5 * dpr, top + 4 * dpr);
+    }
   }
 
   const visible = markers.filter((m) => m.energy >= xmin && m.energy <= xmax);

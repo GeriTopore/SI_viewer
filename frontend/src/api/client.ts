@@ -34,23 +34,29 @@ export interface EdsInfo {
 
 export type EelsRole = "low_loss" | "core_loss";
 
-/** EELS spectrum images (incl. line scans): low or core loss, and the
- * partner they are linked with (possibly in another file). */
+/** Where a role came from: the file's metadata, the user, or a default (core loss). */
+export type EelsRoleSource = "metadata" | "user" | "default";
+
+/** EELS spectrum images (incl. line scans): low or core loss (and where that
+ * came from), and the others in their link group (possibly in other files):
+ * the low loss first, then core losses by energy offset. */
 export interface EelsInfo {
   role: EelsRole;
-  partner_id: string | null;
+  role_source: EelsRoleSource;
+  linked: string[];
   beam_energy: number | null;
   convergence_angle: number | null;
   collection_angle: number | null;
 }
 
-/** A dataset of the opposite role that a low/core loss can be linked with. */
+/** A dataset a spectrum image could be linked with (same scan, any role). */
 export interface EelsPartner {
   id: string;
   title: string;
   file_id: string;
-  /** The dataset it is linked with now, if any. */
-  linked_to: string | null;
+  role: EelsRole;
+  /** Its link group, if any. */
+  group: string | null;
 }
 
 export interface DatasetSummary {
@@ -75,7 +81,8 @@ export interface DatasetSummary {
   eels: EelsInfo | null;
   /** "computed": an element map made from a spectrum image (window +
    * background); "fitted"/"composition": from fitting every pixel. */
-  origin: "file" | "computed" | "fitted" | "composition" | "aligned-average" | "window";
+  origin:
+    | "file" | "computed" | "fitted" | "composition" | "aligned-average" | "window" | "background" | "background-r";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -97,6 +104,39 @@ export interface DatasetSummary {
   alignment: AppliedAlignment | null;
   /** A dataset made from another, e.g. a stack's aligned average. */
   derived_from: string | null;
+  /** EELS spectrum images made by background removal: the settings used
+   * (re-run with PUT /background); else null. */
+  background: BackgroundInfo | null;
+}
+
+export type BackgroundModel = "power_law" | "exponential" | "polynomial" | "offset";
+
+/** Options of an EELS background removal; windows are [lo, hi] in energy units. */
+export interface BackgroundOptions {
+  model: BackgroundModel;
+  /** Polynomial only (1…6). */
+  order: number;
+  /** Closed-form estimate (else a least-squares fit at every pixel). */
+  fast: boolean;
+  /** Fit range, before the edge. */
+  background: [number, number];
+  /** Range kept; it starts where the background window ends or later. */
+  signal: [number, number];
+}
+
+/** The settings a background-removed spectrum image was made with. */
+export interface BackgroundInfo extends BackgroundOptions {
+  source_id: string;
+  units: string;
+}
+
+/** Fitted backgrounds of some spectra: per spectrum the values on channels
+ * start … start + n - 1 (to the end of the signal window), and its power-law
+ * exponent (null for other models). */
+export interface BackgroundPreview {
+  start: number;
+  background: number[][];
+  r: (number | null)[];
 }
 
 /** A drift correction stored with a stack (Apply in the Result step). */
@@ -363,7 +403,7 @@ export interface JobSummary {
   progress: number;
   message: string;
   error: string | null;
-  result: { file: FileSummary; skipped?: string[] } | null;
+  result: { file: FileSummary; skipped?: string[]; dataset_id?: string } | null;
 }
 
 /** Composition maps made alongside per-pixel fitted maps. */
@@ -430,11 +470,17 @@ export const api = {
   setMapOptions: (id: string, options: Partial<MapOptions>) =>
     request<DatasetAndFile>(`/api/datasets/${id}/map-options`, { method: "PUT", body: JSON.stringify(options) }),
   eelsPartners: (id: string) => request<EelsPartner[]>(`/api/datasets/${id}/eels-partners`),
-  /** Link a low/core loss with its partner (null: unlink); every changed file comes back. */
+  /** Put a spectrum image in a partner's link group (null: leave its group); every changed file comes back. */
   setEelsPartner: (id: string, partnerId: string | null) =>
     request<{ files: FileSummary[] }>(`/api/datasets/${id}/eels-partner`, {
       method: "PUT",
       body: JSON.stringify({ partner_id: partnerId }),
+    }),
+  /** Say by hand that a spectrum image is a low or core loss; every changed file comes back. */
+  setEelsRole: (id: string, role: EelsRole) =>
+    request<{ files: FileSummary[] }>(`/api/datasets/${id}/eels-role`, {
+      method: "PUT",
+      body: JSON.stringify({ role }),
     }),
   /** Keep an energy window of a spectrum image as a map (label null: named after the window). */
   addWindowMap: (siId: string, lo: number, hi: number, label: string | null) =>
@@ -456,6 +502,19 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(filters),
     }),
+  /** Fitted background of each given spectrum (on the dataset's full energy axis). */
+  backgroundPreview: (id: string, options: BackgroundOptions, spectra: number[][], signal?: AbortSignal) =>
+    request<BackgroundPreview>(`/api/datasets/${id}/background/preview`, {
+      method: "POST",
+      body: JSON.stringify({ options, spectra }),
+      signal,
+    }),
+  /** Job: a new spectrum image of the signal window with the background removed. */
+  removeBackground: (id: string, options: BackgroundOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/background`, { method: "POST", body: JSON.stringify({ options }) }),
+  /** Job: redo a background-removed spectrum image in place with new options. */
+  rerunBackground: (id: string, options: BackgroundOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/background`, { method: "PUT", body: JSON.stringify({ options }) }),
   startFitMaps: (id: string, options: FitOptions, quant: QuantSpec) =>
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),

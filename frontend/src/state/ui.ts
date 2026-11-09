@@ -7,7 +7,18 @@ export type RightTab = "info" | "quantify" | "process";
 export type GridMode = "merged" | "grid";
 /** Kinds of view with their own mode: a spectrum image (with maps), plain images. */
 export type GridContext = "si" | "images";
-export type BottomTab = "spectrum" | "low-loss" | "core-loss" | "profile" | "alignment";
+/** Tabs of the pane under the image; a linked EELS spectrum image has one per
+ * member of its group, ``eels:<dataset id>`` (ids last for one session only:
+ * a stored one that is not shown falls back, see BottomPane). */
+export type BottomTab = "spectrum" | "profile" | "alignment" | `eels:${string}`;
+const isBottomTab = (t: string | undefined): t is BottomTab =>
+  t === "spectrum" || t === "profile" || t === "alignment" || (!!t && t.startsWith("eels:") && t.length > 5);
+export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
+/** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */
+export type BottomSplit = [BottomTab, BottomTab];
+export type SplitDir = "cols" | "rows";
+/** Where a dragged tab lands in the pane. */
+export type SplitSide = "left" | "right" | "top" | "bottom";
 
 // Pane sizes: default and limits (side panes in px, the viewer's bottom pane
 // as a fraction of the viewer's height).
@@ -15,6 +26,10 @@ export const PANE_SIZES = {
   left: { initial: 280, min: 180, max: 640 },
   right: { initial: 330, min: 260, max: 720 },
   bottom: { initial: 0.42, min: 0.15, max: 0.85 },
+  // The split bottom pane's first half (left, or top for rows), as a fraction
+  // of its width / height.
+  split: { initial: 0.5, min: 0.2, max: 0.8 },
+  splitRow: { initial: 0.5, min: 0.2, max: 0.8 },
   // The alignment's row of compared cross-correlations, as a fraction of the step.
   compare: { initial: 0.38, min: 0.12, max: 0.8 },
 };
@@ -48,6 +63,13 @@ function loadGridMode(context: GridContext): GridMode | null {
   return v === "merged" || v === "grid" ? v : null;
 }
 
+function loadSplit(): BottomSplit | null {
+  const [a, b] = load<string>("si-viewer.bottomSplit", "none").split("|");
+  return isBottomTab(a) && isBottomTab(b) && a !== b ? [a, b] : null;
+}
+
+const saveSplit = (split: BottomSplit | null) => save("si-viewer.bottomSplit", split ? split.join("|") : "none");
+
 interface UiState {
   /** Set on <html data-theme> by index.html before first paint. */
   theme: Theme;
@@ -70,8 +92,32 @@ interface UiState {
   setBottomFraction: (f: number) => void;
   compareFraction: number;
   setCompareFraction: (f: number) => void;
+  /** The pane under the image: the focused tab (the only one when not
+   * split, else the half last used; T and the line-scan image follow it). */
   bottomTab: BottomTab;
+  /** Focus ``tab``. Split: a shown tab is just focused, any other replaces
+   * the half holding the focused tab. */
   setBottomTab: (tab: BottomTab) => void;
+  /** Focus ``tab`` without touching the split (a view showing it single). */
+  focusBottomTab: (tab: BottomTab) => void;
+  /** Two tabs (first, second) side by side (left, right) or stacked (top,
+   * bottom), per ``splitDir``; null: one tab. Kept while a view lacks one. */
+  bottomSplit: BottomSplit | null;
+  /** Orientation of the split; remembered while unsplit. */
+  splitDir: SplitDir;
+  /** Split into ``first`` and ``second`` (in ``dir``, default the current
+   * ``splitDir``); ``focus`` (default first) is focused. */
+  splitBottom: (first: BottomTab, second: BottomTab, focus?: BottomTab, dir?: SplitDir) => void;
+  /** Back to one tab, ``keep``. */
+  unsplitBottom: (keep: BottomTab) => void;
+  /** Put ``tab`` on a side of the split (orienting it, swapping when it is in
+   * the other slot) and focus it. */
+  placeBottomTab: (tab: BottomTab, side: SplitSide) => void;
+  /** Size of the split's first half (width for columns, height for rows), as a fraction. */
+  splitFraction: number;
+  setSplitFraction: (f: number) => void;
+  splitRowFraction: number;
+  setSplitRowFraction: (f: number) => void;
   /** FFT of the viewer's image, above the tabs. */
   fftOpen: boolean;
   setFftOpen: (open: boolean) => void;
@@ -89,7 +135,7 @@ interface UiState {
   setBrowserOpen: (open: boolean) => void;
 }
 
-export const useUi = create<UiState>((set) => ({
+export const useUi = create<UiState>((set, get) => ({
   theme: document.documentElement.dataset.theme === "dark" ? "dark" : "light",
   setTheme: (theme) => {
     document.documentElement.dataset.theme = theme;
@@ -123,10 +169,60 @@ export const useUi = create<UiState>((set) => ({
     save("si-viewer.compareFraction", compareFraction.toFixed(3));
     set({ compareFraction });
   },
-  bottomTab: load<BottomTab>("si-viewer.bottomTab", "spectrum"),
-  setBottomTab: (bottomTab) => {
+  bottomTab: ((t) => (isBottomTab(t) ? t : "spectrum"))(load<string>("si-viewer.bottomTab", "spectrum")),
+  setBottomTab: (tab) => {
+    const { bottomSplit: split, bottomTab } = get();
+    const i = split && !split.includes(tab) ? split.indexOf(bottomTab) : -1;
+    if (split && i >= 0) {
+      const bottomSplit = split.map((t, j) => (j === i ? tab : t)) as BottomSplit;
+      saveSplit(bottomSplit);
+      set({ bottomSplit });
+    }
+    save("si-viewer.bottomTab", tab);
+    set({ bottomTab: tab });
+  },
+  focusBottomTab: (bottomTab) => {
     save("si-viewer.bottomTab", bottomTab);
     set({ bottomTab });
+  },
+  bottomSplit: loadSplit(),
+  splitDir: load<string>("si-viewer.splitDir", "cols") === "rows" ? "rows" : "cols",
+  splitBottom: (first, second, focus = first, dir = get().splitDir) => {
+    if (first === second) return;
+    saveSplit([first, second]);
+    save("si-viewer.splitDir", dir);
+    save("si-viewer.bottomTab", focus);
+    set({ bottomSplit: [first, second], splitDir: dir, bottomTab: focus });
+  },
+  unsplitBottom: (keep) => {
+    saveSplit(null);
+    save("si-viewer.bottomTab", keep);
+    set({ bottomSplit: null, bottomTab: keep });
+  },
+  placeBottomTab: (tab, side) => {
+    const split = get().bottomSplit;
+    if (!split) return;
+    const splitDir: SplitDir = side === "left" || side === "right" ? "cols" : "rows";
+    const [i, j] = side === "left" || side === "top" ? [0, 1] : [1, 0];
+    const bottomSplit: BottomSplit = [...split];
+    bottomSplit[i] = tab;
+    if (split[j] === tab) bottomSplit[j] = split[i];
+    saveSplit(bottomSplit);
+    save("si-viewer.splitDir", splitDir);
+    save("si-viewer.bottomTab", tab);
+    set({ bottomSplit, splitDir, bottomTab: tab });
+  },
+  splitFraction: loadNumber("si-viewer.splitFraction", PANE_SIZES.split),
+  setSplitFraction: (f) => {
+    const splitFraction = clamp(f, PANE_SIZES.split);
+    save("si-viewer.splitFraction", splitFraction.toFixed(3));
+    set({ splitFraction });
+  },
+  splitRowFraction: loadNumber("si-viewer.splitRowFraction", PANE_SIZES.splitRow),
+  setSplitRowFraction: (f) => {
+    const splitRowFraction = clamp(f, PANE_SIZES.splitRow);
+    save("si-viewer.splitRowFraction", splitRowFraction.toFixed(3));
+    set({ splitRowFraction });
   },
   fftOpen: load<string>("si-viewer.fftOpen", "true") === "true",
   fftMeasure: load<string>("si-viewer.fftMeasure", "true") === "true",

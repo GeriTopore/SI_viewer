@@ -74,7 +74,7 @@ export const useSi = create<SiStore>((set) => {
     cursorSize: 1,
     reduce: "mean",
     showWindows: true,
-    showMain: true,
+    showMain: false,
     patch: (si, patch) => update(si, () => patch),
     addRoi: (si, shape) => {
       const id = `roi${nextId++}`;

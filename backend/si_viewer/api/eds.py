@@ -117,16 +117,16 @@ def _with_file(request: Request, ds, **extra) -> dict:
     return {"dataset": ds.summary(), "file": session.file_of(ds).summary(session), **extra}
 
 
-def _with_partner(request: Request, ds, partner, **extra) -> dict:
-    """``_with_file`` plus the EELS partner that was processed along with ``ds``
-    (or was unlinked from it): its summary as ``partner`` and its file as
-    ``partner_file`` (null when it has none or is in ``ds``'s file)."""
+def _with_linked(request: Request, ds, linked, **extra) -> dict:
+    """``_with_file`` plus the EELS spectrum images that were processed along
+    with ``ds`` (or were unlinked from it): their summaries as ``partners`` and
+    their files, apart from ``ds``'s own, as ``partner_files``."""
     session = request.app.state.session
-    out = _with_file(request, ds, partner=None, partner_file=None, **extra)
-    if partner is not None and partner.id in session.datasets:
-        out["partner"] = partner.summary()
-        if partner.file_id != ds.file_id:
-            out["partner_file"] = session.file_of(partner).summary(session)
+    out = _with_file(request, ds, **extra)
+    others = [d for d in linked if d.id in session.datasets]
+    out["partners"] = [d.summary() for d in others]
+    files = dict.fromkeys(d.file_id for d in others if d.file_id != ds.file_id)
+    out["partner_files"] = [session.files[f].summary(session) for f in files]
     return out
 
 
@@ -157,12 +157,12 @@ def put_technique(dataset_id: str, body: TechniqueBody, request: Request) -> dic
     This sets its signal type; leaving EDS removes the computed element maps.
     Returns the dataset and its file."""
     ds = _dataset(request, dataset_id)
-    partner = request.app.state.session.partner_of(ds)  # unlinked if the technique changes
+    linked = request.app.state.session.linked_of(ds)  # unlinked if the technique changes
     try:
         request.app.state.session.set_technique(ds, body.technique)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return _with_partner(request, ds, partner)
+    return _with_linked(request, ds, linked)
 
 
 @router.put("/api/datasets/{dataset_id}/map-options")
@@ -197,9 +197,10 @@ class RebinBody(BaseModel):
 def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
     """Rebin a spectrum image's loaded data in place (HyperSpy rebin), with
     the images on its scan (same x/y factors); its maps are recomputed.
-    A linked EELS partner is rebinned by the same navigation factors (with the
-    images on its scan). Returns the spectrum image and its file, and the
-    partner and its file (``partner``, ``partner_file``; null without one)."""
+    The EELS spectrum images linked to it are rebinned by the same factors,
+    energy included (with the images on their scans). Returns the spectrum image and
+    its file, and the linked ones and their files (``partners``,
+    ``partner_files``; empty without any)."""
     ds = _dataset(request, dataset_id)
     try:
         request.app.state.session.rebin(ds, body.factors)
@@ -207,7 +208,7 @@ def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
         raise HTTPException(400, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
-    return _with_partner(request, ds, request.app.state.session.partner_of(ds))
+    return _with_linked(request, ds, request.app.state.session.linked_of(ds))
 
 
 class FitBody(BaseModel):

@@ -1,11 +1,11 @@
 import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { api, exportUrl, mapsZipUrl, thumbnailUrl, type DatasetSummary, type EelsPartner, type FileSummary } from "../api/client";
-import { allDatasets, canDelete, elementOf, isColourMap, layoutFile, layoutPairs, setMapColour, useDatasets } from "../state/datasets";
+import { allDatasets, canDelete, elementOf, isColourMap, layoutFile, layoutGroups, setMapColour, useDatasets } from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
 import { isColour, swatchBackground } from "../viewer/colormaps";
-import { datasetTooltip, isWindowMap, kindLabel, shapeLabel } from "../format";
+import { datasetTooltip, isBackgroundRemoved, isWindowMap, kindLabel, shapeLabel } from "../format";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
@@ -15,7 +15,8 @@ import { downloadUrl, useExportFormats } from "../download";
 
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
-const badgeClass = (d: DatasetSummary) => `badge badge-${isWindowMap(d) ? "window" : d.is_element_map ? "map" : d.kind}`;
+const badgeClass = (d: DatasetSummary) =>
+  `badge badge-${isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : d.is_element_map ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
   d.origin === "fitted" || d.origin === "composition" || isWindowMap(d)
@@ -31,7 +32,7 @@ export function DatasetList() {
   const [menu, setMenu] = useState<{ x: number; y: number; d: DatasetSummary } | null>(null);
   const [rebinTarget, setRebinTarget] = useState<DatasetSummary | null>(null);
   const exportFormats = useExportFormats();
-  // Low/core loss pairs: candidates for the right-clicked EELS spectrum image.
+  // Link groups: candidates for the right-clicked EELS spectrum image.
   const [partners, setPartners] = useState<EelsPartner[] | null>(null);
   const menuId = menu?.d.eels ? menu.d.id : null;
   useEffect(() => {
@@ -44,7 +45,7 @@ export function DatasetList() {
       .catch((e) => {
         if (stale) return;
         setPartners([]);
-        useLayers.getState().notify(`Could not list partners: ${(e as Error).message}`);
+        useLayers.getState().notify(`Could not list link candidates:${(e as Error).message}`);
       });
     return () => {
       stale = true;
@@ -89,7 +90,7 @@ export function DatasetList() {
     return <p className="muted empty-list">No files open. Use Open… (⌘/Ctrl+O).</p>;
   }
 
-  const { colourOf, items } = layoutPairs(files);
+  const { colourOf, items } = layoutGroups(files);
   const titles = new Map(allDatasets(files).map((x) => [x.id, x.title]));
   const parentTitle = (d: DatasetSummary) => (d.parent_id ? titles.get(d.parent_id) : undefined);
   const renderDataset = (d: DatasetSummary) =>
@@ -150,9 +151,9 @@ export function DatasetList() {
               it.type === "dataset" ? (
                 renderDataset(it.d)
               ) : (
-                // Two linked datasets of this file, side by side in a box.
-                <li key={`${it.ds[0].id}+${it.ds[1].id}`} className="pair-box pair-rows" style={pairStyle(it.colour)}>
-                  <span className="pair-label">EELS pair</span>
+                // Linked datasets of this file, side by side in a box.
+                <li key={it.ds.map((d) => d.id).join("+")} className="pair-box pair-rows" style={pairStyle(it.colour)}>
+                  <span className="pair-label">Linked EELS</span>
                   <ul className={listClass}>{it.ds.map(renderDataset)}</ul>
                 </li>
               ),
@@ -170,8 +171,8 @@ export function DatasetList() {
           it.type === "file" ? (
             renderFile(it.file)
           ) : (
-            <li key={`${it.files[0].id}+${it.files[1].id}`} className="pair-box" style={pairStyle(it.colour)}>
-              <span className="pair-label">EELS pair</span>
+            <li key={it.files.map((f) => f.id).join("+")} className="pair-box" style={pairStyle(it.colour)}>
+              <span className="pair-label">Linked EELS</span>
               <ul className="file-list">{it.files.map(renderFile)}</ul>
             </li>
           ),
@@ -202,35 +203,27 @@ export function DatasetList() {
   );
 }
 
-const linkedTo = (d: DatasetSummary, files: FileSummary[]) => {
-  const id = d.eels?.partner_id;
-  const partner = id ? allDatasets(files).find((x) => x.id === id) : undefined;
-  const file = partner && files.find((f) => f.id === partner.file_id);
-  return partner && file ? { partner, file } : null;
-};
-
 const ROLE_NAME = { low_loss: "low loss", core_loss: "core loss" } as const;
 
-/** Right-click entries for an EELS spectrum image: link it with a dataset of
- * the other kind (the candidates come from the backend), or unlink it. */
+/** Right-click entries for an EELS spectrum image: link it with another one
+ * of the same scan (the candidates come from the backend) or unlink it (its
+ * role is set in the Info tab). */
 function eelsItems(d: DatasetSummary, partners: EelsPartner[] | null, files: FileSummary[]): MenuItem[] {
   if (!d.eels) return [];
-  const want = ROLE_NAME[d.eels.role === "low_loss" ? "core_loss" : "low_loss"];
   const notify = useLayers.getState().notify;
   const fileName = (id: string) => files.find((f) => f.id === id)?.name ?? "";
-  const nameOf = (id: string) => allDatasets(files).find((x) => x.id === id)?.title ?? "another dataset";
-  const items: MenuItem[] = [{ label: `Link ${want}…`, disabled: true }];
+  const items: MenuItem[] = [{ label: "Link with…", disabled: true }];
   if (!partners) items.push({ label: "Looking…", disabled: true, indent: true });
-  else if (!partners.length) items.push({ label: `No compatible ${want} datasets open`, disabled: true, indent: true });
+  else if (!partners.length) items.push({ label: "No compatible EELS datasets open", disabled: true, indent: true });
   else {
     for (const p of partners) {
-      const current = p.id === d.eels.partner_id;
-      const other = p.linked_to && !current ? ` (linked to ${nameOf(p.linked_to)})` : "";
+      const current = d.eels.linked.includes(p.id);
+      const elsewhere = p.group && !current ? ", linked elsewhere" : "";
       items.push({
-        label: `${p.title} (${fileName(p.file_id)})${current ? " ✓" : other}`,
+        label: `${p.title} (${fileName(p.file_id)}, ${ROLE_NAME[p.role]}${elsewhere})${current ? " ✓" : ""}`,
         indent: true,
         disabled: current,
-        title: other ? "Linking replaces its current link" : undefined,
+        title: elsewhere ? "Linking moves this dataset to its group" : undefined,
         onSelect: () =>
           useDatasets
             .getState()
@@ -239,10 +232,9 @@ function eelsItems(d: DatasetSummary, partners: EelsPartner[] | null, files: Fil
       });
     }
   }
-  if (d.eels.partner_id) {
-    const role = ROLE_NAME[d.eels.role === "low_loss" ? "core_loss" : "low_loss"];
+  if (d.eels.linked.length) {
     items.push({
-      label: `Unlink ${role}`,
+      label: "Unlink",
       onSelect: () =>
         useDatasets
           .getState()
@@ -253,11 +245,16 @@ function eelsItems(d: DatasetSummary, partners: EelsPartner[] | null, files: Fil
   return items;
 }
 
-/** Chain mark on a low/core loss that is linked with a partner. */
+/** Chain mark on a spectrum image that is linked with others. */
 function LinkGlyph({ d, files, colour }: { d: DatasetSummary; files: FileSummary[]; colour?: number }) {
-  if (!d.eels?.partner_id) return null;
-  const link = linkedTo(d, files);
-  const text = link ? `Linked to ${link.partner.title} (${link.file.name})` : "Linked to a low/core loss";
+  if (!d.eels?.linked.length) return null;
+  const all = allDatasets(files);
+  const named = d.eels.linked.map((id) => {
+    const o = all.find((x) => x.id === id);
+    const file = o && files.find((f) => f.id === o.file_id);
+    return o ? `${o.title}${file ? ` (${file.name})` : ""}` : "another dataset";
+  });
+  const text = `Linked to ${named.join(", ")}`;
   return (
     <span className="link-glyph" title={text} aria-label={text} style={colour === undefined ? undefined : { color: `var(--pair-${colour})` }}>
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">

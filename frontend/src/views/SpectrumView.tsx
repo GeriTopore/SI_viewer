@@ -6,6 +6,7 @@ import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { isAbort, spectralAxis } from "./geometry";
 import { useLineMarkers } from "./si/xray";
 import { useFitSeries } from "./useFitSeries";
+import { useBackgroundPreview } from "./si/useBackgroundPreview";
 
 export const SPECTRUM_COLOR = "#4c8dff";
 
@@ -45,6 +46,7 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
     () => (data ? [{ label: ds.title, data, color: SPECTRUM_COLOR }, ...fitSeries] : []),
     [data, ds.title, fitSeries],
   );
+  const bg = useBackgroundPreview(ds, axis.x, series);
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, [axis.x[0], axis.x[axis.x.length - 1]]);
   return (
@@ -52,7 +54,9 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
       <SpectrumPlot
         name={ds.title}
         x={axis.x}
-        series={series}
+        series={bg.series}
+        windows={bg.bands}
+        onEditWindow={bg.onEditBand}
         xLabel={axis.label}
         xUnits={axis.units}
         loading={data ? null : "Loading spectrum…"}

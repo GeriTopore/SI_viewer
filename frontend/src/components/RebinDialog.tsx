@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DatasetSummary } from "../api/client";
-import { allDatasets, planeSize, useDatasets } from "../state/datasets";
+import { allDatasets, groupOf, planeSize, useDatasets } from "../state/datasets";
 import { formatValue, isLineScan } from "../format";
 
 /** Only spectrum images are rebinned, together with everything on their scan
@@ -32,6 +32,9 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
       planeSize(x)[0] === sw &&
       planeSize(x)[1] === sh,
   );
+  // Linked EELS spectrum images get the same factors (energy too).
+  const byId = new Map(allDatasets(files).map((x) => [x.id, x]));
+  const group = groupOf(d, byId).filter((x) => x.id !== d.id);
   const [linked, setLinked] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,12 +119,13 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
             Same factor for x and y
           </label>
         )}
-        <p className="muted small rebin-also">
-          {onScan.length > 0 && <>{onScan.map((x) => x.title).join(", ")} on the same scan {onScan.length === 1 ? "gets" : "get"} the same x and y binning. </>}
-          Element maps are recomputed; per-pixel fit results are removed.
-        </p>
+        {group.length + onScan.length > 0 && (
+          <p className="muted small rebin-also">
+            Also binned: {[...group.map((x) => `${x.title} (linked)`), ...onScan.map((x) => x.title)].join(", ")}
+          </p>
+        )}
         <div className="rebin-warning" role="note">
-          This will overwrite the currently loaded data (the original file remains untouched).
+          Overwrites the loaded data; the file is unchanged.
         </div>
         {error && <p className="field-error">{error}</p>}
         <div className="rebin-actions">

@@ -41,7 +41,6 @@ export function ExamplesMenu() {
       </button>
       {open && (
         <div className="examples-popover" role="menu">
-          <p className="muted small examples-intro">Example data, all available offline.</p>
           {error && <p className="field-error">{error}</p>}
           {!examples && !error && <p className="muted small">Loading…</p>}
           {examples?.map((ex) => (

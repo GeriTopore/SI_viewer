@@ -668,7 +668,7 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
      of shifts and drift in px and Å; 2-page PDF: settings, drift, average
      + FFT; matrices measured/corrected.
 
-### 4.11 EELS spectrum images (M10, planned)
+### 4.11 EELS spectrum images (M10, in progress)
 
 **Example data** (`examples/`):
 
@@ -676,10 +676,11 @@ DetailedWalkThrough), drawn by the app's own viewers instead of matplotlib:
 |---|---|---|---|
 | `STEM SI_EELS Spectrum Image_summed.dm4` | 120 × 120 | 3456 ch, 362–673 eV (0.09 eV) | Core loss only. GIF Continuum K3 HR, 300 kV, α 2.68 / β 55.41 mrad. A "Summed" image of a parent SI's frames (drift-aligned in GMS). `SI.Acquisition` has the date, start/end time and the survey image's ID and rectangle. |
 | `CuZn_EELS_mapping_tutorial.hspy` | 40 × 50 | 162 ch, 700–1988 eV (8 eV) | Core loss only (Cu, Zn L edges), 200 kV. |
-| `LSMO_linescan.hspy` + `LSMO_linescan_low_loss.hspy` | line scan, 40 points (3.2 nm) | 586 ch, 428.5–721 eV / 1024 ch, −50–461.5 eV | A core-loss / low-loss pair. Titles end in "(high-loss)" / "(low-loss)" (from the original .dm3 names). No date or time. |
+| `LSMO_linescan.hspy` + `LSMO_linescan_low_loss.hspy` | line scan, 40 points (3.2 nm) | 586 ch, 428.5–721 eV / 1024 ch, −50–461.5 eV | A core-loss / low-loss pair. Titles end in "(high-loss)" / "(low-loss)" (from the original .dm3 names). No date or time, no role marker. |
+| `STEM SI_EELS HL SI_summed.dm4` + `STEM SI_EELS LL SI_summed.dm4` | 96 × 415 | 3456 ch each (550 MB each) | A dual-EELS pair, 300 kV. The low loss's zero-loss peak is at −3.15 eV. The tags `EELS.Acquisition.Is dual acquire low-loss` (1 / 0) and `Dual acquire sibling.Unique Image ID` (the other file's `Processing…Parent.Unique Image ID`) tie them together. |
 
-All four have `signal_type = "EELS"` in their metadata, so HyperSpy loads them
-as `EELSSpectrum`.
+All of them have `signal_type = "EELS"` in their metadata, so HyperSpy loads
+them as `EELSSpectrum`.
 
 **Where we are.**
 - `.dm3`, `.dm4` and `.hspy` already open.
@@ -720,84 +721,131 @@ The technique decides what is offered:
 - **EELS only:** the EELS tools (M10d).
 - **Both:** navigator, ROIs, spectra, profiles, filters, rebinning, export.
 
-**M10c: low loss and core loss.**
-- **Role:** an EELS SI is *low loss* when its energy range contains 0 eV and
-  its sum spectrum peaks near 0 (the zero-loss peak), else *core loss*. The
-  dataset list tags them LL / HL.
-- **Automatic linking:** when a file opens, its EELS SIs are compared with
-  the EELS SIs already open. They need:
-  - one LL and one HL;
-  - the same navigation shape and scale (within 1 %);
-  - the same beam energy, where both give one;
-  - plus one strong sign: the same DM `SI.Acquisition` date and start time,
-    or the same survey image ID, or titles or file names that differ only
-    by low-loss / high-loss / core-loss / LL / HL (as the LSMO pair).
-- **Manual linking:** when only the shapes match, nothing is linked
-  automatically. Right-click the core loss → *Link low loss…* lists the
-  compatible low-loss SIs; *Unlink* undoes it. Opening both files together
-  (several files in the Open dialog) or one after the other both work.
+**M10c: low loss and core loss.** No role guessing: a role comes from the
+file's metadata when it has a marker, else the user says.
+- **Role:** every EELS SI is *low loss* or *core loss*, with a `role_source`:
+  - `metadata`: DM's `EELS.Acquisition.Is dual acquire low-loss` tag (1: low
+    loss, 0: core loss);
+  - `user`: the LL / HL switch on the *Loss* row of the Info tab, beside
+    where the role came from;
+  - `default`: no marker, so core loss.
+
+  The dataset list tags them LL / HL. Switching the signal type to EELS reads
+  the metadata role again; leaving EELS clears it. Only tags are read, never
+  spectra. A low loss is what unlocks the low-loss tools (M10d).
+- **Link groups:** linked SIs form a group of two or more. A group has at
+  most one low loss, and any number of core losses (a dual acquisition plus
+  more core-loss ranges). Roles don't decide whether SIs can be linked, only
+  the scan. They need:
+  - the same navigation shape and scale (within 1 %, same units);
+  - the same beam energy, where both give one.
+- **Linking is the user's call:** nothing is linked automatically. Opening a
+  file only reads each EELS SI's role (no names, DM tags or IDs are matched),
+  however well two SIs seem to fit. Right-click → *Link with…* lists every
+  compatible SI (its role, and whether it's in another group); picking one
+  moves this SI into that SI's group (or makes a group of the two).
+  *Unlink* leaves the group (a group of one dissolves). A group that would
+  get a second low loss is refused. Switching a member to LL is refused too
+  when the group has one.
 - **Viewer:**
-  - The core loss is the primary dataset, and its navigator drives both SIs.
-  - The pane under the image gets a *Low loss* and a *Core loss* tab, each
-    with its own energy axis, at the same cursor and ROIs. They show one at
-    a time (the low loss on a log scale by default); M11b adds side by side.
-  - The low loss can still be viewed alone.
-- **Processing:** rebinning and spatial filters apply to both SIs of a pair,
-  so their pixels keep matching.
-- **Backend:** `Session.eels_links` maps the core loss to its low loss. The
-  summary gets `eels: {role, partner_id, beam_energy, convergence_angle,
-  collection_angle}`, with the angles from the metadata and editable in the
-  Info tab, since thickness and deconvolution use them.
+  - The pane under the image gets one tab per group member, including the
+    shown one: *Low loss*, and *Core loss* (or its energy range, e.g.
+    "430–1640 eV", when there are several core losses). Each has its own
+    energy axis, at the same cursor and ROIs. The tabs keep their ids when
+    another member is shown, so the split stays. They show one at a time
+    (the low loss on a log scale by default) or two side by side (the split
+    pane). A line scan's image follows the focused tab.
+  - Unlinked SIs keep the single *Spectrum* tab. Any member can be viewed alone.
+- **Processing:** rebinning and spatial filters apply to every member of a
+  group, so their pixels keep matching. Rebinning uses the same factors for
+  all, energy included; a factor too large for any member rebins none.
+- **Backend:** `Session.eels_groups` maps a group id to its members, and
+  `Dataset.eels_group` says which group a dataset is in. The summary gets
+  `eels: {role, role_source, linked, beam_energy, convergence_angle,
+  collection_angle}`: `linked` has the other members' ids (low loss first,
+  then core losses by energy offset), and the angles come from the metadata
+  and are editable in the Info tab, since thickness and deconvolution use
+  them. API: `GET …/eels-partners` (link candidates: `{id, title, file_id,
+  role, group}`), `PUT …/eels-partner` `{partner_id}` (join its group; null:
+  leave), `PUT …/eels-role` `{role}`. Each returns `files`. Rebin, filters and
+  signal-type changes return the other members as `partners` and
+  `partner_files`.
 
 **M10d: EELS analysis** (an EELS section in the Process tab). Each step runs
 as a job with progress, and its results are new datasets under the SI, like
 the fitted maps.
-- **Zero-loss alignment:** `align_zero_loss_peak` on the low loss with
-  `also_align=[core loss]`, which corrects the energy drift from pixel to
-  pixel and puts the ZLP at 0 eV. It can be removed again, as a stack's
+All of these use the low loss of the SI's link group (the one marked or
+read as low loss, M10c); they're disabled, with the reason, when the group
+has none.
+- **Zero-loss alignment:** `align_zero_loss_peak` on the group's low loss with
+  `also_align=[its core losses]`, which corrects the energy drift from pixel
+  to pixel and puts the ZLP at 0 eV. It can be removed again, as a stack's
   alignment can.
-- **Thickness:** `estimate_thickness` on the low loss gives a t/λ map (an
-  image dataset).
+- **Thickness:** `estimate_thickness` on the group's low loss gives a t/λ map
+  (an image dataset).
   - The ZLP threshold is estimated
     (`estimate_elastic_scattering_threshold`), editable, and drawn on the
     low-loss spectrum.
   - Absolute thickness in nm needs a mean free path or a density (exSpy's
     estimate from the beam energy and the angles).
 - **Plural-scattering deconvolution:**
-  - Fourier-ratio: the core loss with its low loss.
+  - Fourier-ratio: a core loss with the group's low loss.
   - Fourier-log: the low loss alone.
-  - Richardson–Lucy: the core loss with the low loss as the PSF, with a
-    number of iterations.
+  - Richardson–Lucy: a core loss with the group's low loss as the PSF, with
+    a number of iterations.
 
   The result is a new SI, "(deconvolved)", whose spectrum can be overlaid
   on the original's.
 
+**M10e: background removal** (EELS only; spectrum images, line scans and
+single spectra). A *Background removal* section in the Process tab.
+- **Two windows on the spectrum:** a *Background* window (the fit range,
+  before the edge) and a *Signal* window (the range kept). Both are drawn as
+  labelled bands, moved and resized by dragging like energy windows, and
+  typed in the section. The background window must end at or before the
+  signal window starts.
+- **Model:** power law (default), exponential, polynomial (with its order)
+  or offset; *Fast* (the closed-form estimate, instant) or *Full*
+  (least-squares fit at every pixel).
+- **Preview:** each spectrum on the plot (sum, cursor, regions) gets its
+  fitted background as a dashed curve over both windows; a *Subtracted*
+  toggle shows the remainders over the signal window instead.
+- **Apply** runs as a job and saves a new SI under the source: just the
+  signal window, background subtracted, titled by its signal window
+  ("635–680 eV, bg removed"; it can be renamed). Several removals (one per edge) give several SIs.
+  - For the power law its exponent *r* is saved as a map under the new SI,
+    to show where the fit fails.
+  - Selecting the new SI shows its settings; changing them and *Re-run*
+    replaces it in place.
+  - Rebinning the source recomputes its background-removed SIs.
+
 **M10e: later.**
-- Background subtraction (power law, with its window drawn on the spectrum).
 - Edge maps from the periodic table using exSpy's EELS edges (the EELS
   version of M3).
 - `EELSModel` fitting with the low loss for quantification.
 - Spike removal.
 
 **Verification on the examples.**
-- **Detection:** all four EELS files are classed EELS; the Velox `.emd` SI
+- **Detection:** all the EELS files are classed EELS; the Velox `.emd` SI
   is classed EDS.
-- **LSMO pair:** it links automatically. Its thickness map and Fourier-ratio
-  result equal exSpy's own calls on the same signals.
+- **Dual-EELS .dm4 pair:** the roles come out low loss / core loss from the
+  metadata, without reading a spectrum. Opening them links nothing; *Link
+  with…* does.
+- **LSMO pair:** opening links nothing; link it by hand. Both are core loss
+  until the low loss is marked by hand. Its thickness map and Fourier-ratio result
+  equal exSpy's own calls on the same signals.
 - **LSMO line scan:** it is viewable, with spectra at single points and
   over ranges of rows.
-- **CuZn and the .dm4:** core loss with no partner; *Link low loss…* offers
-  nothing; the EELS tools that need a low loss are disabled, with the
-  reason given.
+- **CuZn and the older .dm4:** core loss (by default) with nothing linked;
+  *Link with…* offers nothing; the EELS tools that need a low loss are
+  disabled, with the reason given.
 
 **Open questions.**
 - EDS tests: the only `.emd` in `examples/` is a HAADF stack. Which EDS SI
   `.emd` should the tests use?
 - A `.dm5` sample.
-- A GMS dual-EELS pair (low- and core-loss `.dm4`) to test linking from the
-  DM metadata. The LSMO pair only has names and shapes to go by.
 
-### 4.12 Grid and merged views, split bottom pane (M11, planned)
+### 4.12 Grid and merged views, split bottom pane (M11, done)
 
 For every kind of data: the images in the viewer can be shown **merged**
 (one composite, as overlays work now) or as a **grid** (one panel each).
@@ -856,16 +904,21 @@ The pane under the image can be split to show two of its tabs side by side.
 
 **M11b: split bottom pane.**
 - Any two tabs of the pane under the image (Spectrum, Line profile, and
-  later Low loss / Core loss) can be shown side by side, with a draggable
-  divider.
+  later Low loss / Core loss) can be shown side by side or stacked, with a
+  draggable divider.
 - Two ways to split:
-  - a *Split* button in the tab bar, which puts the next tab beside the
-    current one;
-  - dragging a tab onto the left or right half of the pane, with the half
-    highlighted while dragging, as editors do.
+  - a *Split* button in the tab bar, which puts the next tab beside (or
+    below, in the last used orientation) the current one;
+  - dragging a tab onto the pane, with the target half highlighted while
+    dragging, as editors do: the left or right third makes two columns with
+    the tab on that side; on the middle third, the upper or lower half makes
+    two rows.
 - Dragging a tab back onto the tab bar, or *Unsplit*, returns to one tab.
-- The split and its divider position are remembered.
+- The split, its orientation and each orientation's divider position are
+  remembered.
 - Each half keeps its own controls (axis zoom, Linear/Log, legend).
+- The *focused* half (the one last clicked) is the one the T key cycles and
+  the line-scan image follows (low/core-loss tab).
 
 **Order:** after M10c. Linked low/core-loss pairs then gain the split pane.
 
@@ -896,8 +949,8 @@ The pane under the image can be split to show two of its tabs side by side.
 | M7 | Export, keyboard shortcuts, polish | Done |
 | M8 | pywebview desktop window and installers (deferred until the features are complete) | |
 | M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Result + Apply (M9c, done), extras (M9d) | In progress |
-| M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d) | In progress (M10a, M10b done) |
-| M11 | Grid / Merged views for images and maps (M11a), split pane under the image (M11b) | Planned |
+| M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d), background removal and edge maps (M10e) | In progress (M10a–c done) |
+| M11 | Grid / Merged views for images and maps (M11a, done), split pane under the image (M11b, done) | Done |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

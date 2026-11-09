@@ -3,18 +3,19 @@ import { fetchFrame, type Frame } from "../api/arrays";
 import { api, dataVersion, type DatasetSummary } from "../api/client";
 import { ContrastControls } from "../components/ContrastControls";
 import { LineScanImage, type ScanAxis } from "../components/LineScanImage";
-import { Splitter } from "../components/Splitter";
+import { BottomPane } from "../components/BottomPane";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
 import { useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import { CURSOR_COLOR, getSiState, useSi, useSiState } from "../state/si";
-import { PANE_SIZES, useUi } from "../state/ui";
+import { eelsTab, useUi } from "../state/ui";
 import { isAbort, spectralAxis } from "./geometry";
 import { CURSOR_CHANNEL, useSiSpectra } from "./si/useSiSpectra";
+import { useBackgroundPreview } from "./si/useBackgroundPreview";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
-import { LOSS_TAB, LinkedSpectrum, ReduceToggle, lossTabs, useLossLog, usePartner } from "./si/LinkedSpectrum";
+import { ReduceToggle, memberLabel, memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
 import { useImageDisplay } from "./useImageDisplay";
 
 const scaled = (data: Float32Array, k: number) => (k === 1 ? data : data.map((v) => v * k));
@@ -106,15 +107,15 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   });
 
   // ---------- the image ----------
-  // A linked pair shows the image of the dataset whose spectrum tab is open;
-  // both frames are kept, so switching tabs back does not fetch again.
-  const partner = usePartner(ds);
-  const linked = !!(ds.eels && partner?.eels);
+  // A linked group shows the image of the member whose spectrum tab is open;
+  // the frames are kept, so switching tabs back does not fetch again.
+  const group = useGroup(ds);
+  const linked = !!ds.eels && group.length > 1;
   const bottomTab = useUi((s) => s.bottomTab);
-  const onPartner = linked && bottomTab === LOSS_TAB[partner!.eels!.role].id;
-  const partnerId = linked ? partner!.id : null;
-  const partnerReady = !!partner && !partner.lazy;
-  const partnerVersion = partner ? dataVersion(partner) : "";
+  const other = group.find((m) => m.id !== ds.id && eelsTab(m.id) === bottomTab);
+  const otherId = other?.id ?? null;
+  const otherReady = !!other && !other.lazy;
+  const otherVersion = other ? dataVersion(other) : "";
 
   const [ownShown, setOwnShown] = useState<{ version: string; frame: Frame } | null>(null);
   const [frameError, setFrameError] = useState<string | null>(null);
@@ -128,22 +129,23 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
     return () => ac.abort();
   }, [ds.id, ready, version]);
 
-  const [partnerFrame, setPartnerFrame] = useState<{ id: string; version: string; frame: Frame } | null>(null);
-  const [partnerError, setPartnerError] = useState<string | null>(null);
-  const partnerCached = partnerFrame?.id === partnerId && partnerFrame?.version === partnerVersion;
+  const [otherFrames, setOtherFrames] = useState<Record<string, { version: string; frame: Frame }>>({});
+  const [otherError, setOtherError] = useState<string | null>(null);
+  const otherFrame = otherId ? otherFrames[otherId] : undefined;
+  const otherCached = otherFrame?.version === otherVersion;
   useEffect(() => {
-    if (!onPartner || !partnerId || !partnerReady || partnerCached) return;
+    if (!otherId || !otherReady || otherCached) return;
     const ac = new AbortController();
-    setPartnerError(null);
-    fetchFrame(partnerId, {}, ac.signal)
-      .then((frame) => setPartnerFrame({ id: partnerId, version: partnerVersion, frame }))
-      .catch((e) => !isAbort(e) && setPartnerError((e as Error).message));
+    setOtherError(null);
+    fetchFrame(otherId, {}, ac.signal)
+      .then((frame) => setOtherFrames((f) => ({ ...f, [otherId]: { version: otherVersion, frame } })))
+      .catch((e) => !isAbort(e) && setOtherError((e as Error).message));
     return () => ac.abort();
-  }, [onPartner, partnerId, partnerReady, partnerVersion, partnerCached]);
+  }, [otherId, otherReady, otherVersion, otherCached]);
 
-  const imgDs = onPartner ? partner! : ds;
-  const shown = onPartner ? (partnerCached ? partnerFrame : null) : ownShown;
-  const imgReady = onPartner ? partnerReady : ready;
+  const imgDs = other ?? ds;
+  const shown = other ? (otherCached ? otherFrame! : null) : ownShown;
+  const imgReady = other ? otherReady : ready;
 
   // Linear/Log is kept per dataset; the low-loss image starts in Log (the zero-loss peak dominates).
   const storedLog = useDisplay((s) => s.imageLog[imgDs.id]);
@@ -173,6 +175,9 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
     if (st.showCursor && st.cursor && c) out.push({ label: "Cursor", data: c.data, color: CURSOR_COLOR });
     return out;
   }, [st.showWhole, st.showCursor, st.cursor, ranges, whole.data, spectra, reduceMode, n]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Background removal (Process tab): its fits and bands on this plot.
+  const bg = useBackgroundPreview(ds, axis.x, series);
 
   const position = (i: number) => `${i}${rows.units ? ` · ${formatValue(rows.offset + i * rows.scale)} ${rows.units}` : ""}`;
   const legend = (
@@ -221,14 +226,16 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
     </div>
   );
 
-  const ownLog = useLossLog(ds.eels?.role, !!(ds.eels && partner?.eels));
+  const ownLog = useLossLog(ds.eels?.role, linked);
   const spectrumPlot = (
     <SpectrumPlot
       name={`${ds.title}_spectra`}
       zoomKey={`${ds.id}:spectra`}
       {...ownLog}
       x={axis.x}
-      series={series}
+      series={bg.series}
+      windows={bg.bands}
+      onEditWindow={bg.onEditBand}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : "Loading line scan into memory…"}
@@ -238,24 +245,11 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
     />
   );
 
-  // A linked low/core loss pair has a tab for each; T cycles them.
-  const tabs = lossTabs(
-    ds,
-    partner,
-    spectrumPlot,
-    partner && <LinkedSpectrum partner={partner} st={st} lineScan legend={legend} />,
-  );
-  const setBottomTab = useUi((s) => s.setBottomTab);
-  const activeTab = tabs.find((t) => t.id === bottomTab) ?? tabs[0];
-  useShortcuts(
-    { t: () => setBottomTab(tabs[(tabs.indexOf(activeTab) + 1) % tabs.length].id) },
-    tabs.length > 1,
-  );
+  // A linked group has a tab for each member (T cycles them).
+  const tabs = memberTabs(ds, group, spectrumPlot, st, true, legend);
 
   // Image above, spectrum below, with the same draggable split as the other views.
   const viewerRef = useRef<HTMLDivElement>(null);
-  const bottomFraction = useUi((s) => s.bottomFraction);
-  const setBottomFraction = useUi((s) => s.setBottomFraction);
 
   return (
     <div className="view si-view">
@@ -277,7 +271,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
                   Log
                 </button>
               </div>
-              {linked && <span className="muted">{imgDs.eels?.role === "low_loss" ? "Low loss" : "Core loss"}</span>}
+              {linked && <span className="muted">{memberLabel(imgDs, group)}</span>}
             </div>
             <LineScanImage
               frame={drawn}
@@ -291,7 +285,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
                 .filter((r) => r.roi.visible)
                 .map((r) => ({ id: r.roi.id, lo: r.lo, hi: r.hi, color: r.roi.color, selected: st.selected === r.roi.id }))}
               loading={drawn ? null : imgReady ? "Loading line scan…" : "Loading line scan into memory…"}
-              error={(onPartner ? partnerError : frameError) ?? loadError}
+              error={(other ? otherError : frameError) ?? loadError}
               onCursor={setCursor}
               onRangeAdd={addRange}
               onRangeChange={changeRange}
@@ -300,32 +294,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
               onRangesClear={clearRanges}
             />
           </div>
-          <Splitter
-            direction="row"
-            className="viewer-resizer"
-            label="Resize the image and the spectrum below it"
-            onDrag={(y) => {
-              const r = viewerRef.current!.getBoundingClientRect();
-              setBottomFraction((r.bottom - y) / r.height);
-            }}
-            onReset={() => setBottomFraction(PANE_SIZES.bottom.initial)}
-          />
-          <div className="viewer-bottom" style={{ flexBasis: `${bottomFraction * 100}%` }}>
-            <div className="viewer-tabs" role="tablist">
-              {tabs.map((t) => (
-                <button
-                  key={t.id}
-                  role="tab"
-                  aria-selected={t.id === activeTab?.id}
-                  className={t.id === activeTab?.id ? "active" : undefined}
-                  onClick={() => setBottomTab(t.id)}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <div className="viewer-tab-body">{activeTab?.content}</div>
-          </div>
+          <BottomPane tabs={tabs} viewerRef={viewerRef} resizeLabel="Resize the image and the spectrum below it" />
         </div>
       </section>
     </div>

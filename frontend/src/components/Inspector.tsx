@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { api, exportUrl, mapsZipUrl, type DatasetSummary, type Technique } from "../api/client";
+import { api, exportUrl, mapsZipUrl, type DatasetSummary, type EelsRole, type Technique } from "../api/client";
 import { downloadUrl, useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
 import { useLayers } from "../state/layers";
-import { TECHNIQUE_SOURCE_NOTE, bytesLabel, filterLabel, hasTechnique, isLineScan, kindLabel, shapeLabel } from "../format";
+import { bytesLabel, filterLabel, hasTechnique, isLineScan, kindLabel, shapeLabel } from "../format";
 
 export function Inspector() {
   const d = useFocusedDataset();
@@ -23,6 +23,14 @@ export function Inspector() {
             <dt>Signal</dt>
             <dd>
               <TechniqueControl d={d} />
+            </dd>
+          </>
+        )}
+        {d.eels && (
+          <>
+            <dt>Loss</dt>
+            <dd>
+              <LossControl d={d} />
             </dd>
           </>
         )}
@@ -58,7 +66,6 @@ export function Inspector() {
 function TechniqueControl({ d }: { d: DatasetSummary }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLSpanElement>(null);
-  const note = d.technique_source ? TECHNIQUE_SOURCE_NOTE[d.technique_source] : undefined;
 
   useEffect(() => setOpen(false), [d.id]);
 
@@ -80,7 +87,6 @@ function TechniqueControl({ d }: { d: DatasetSummary }) {
   return (
     <span className="technique-control" ref={ref}>
       <span>{d.technique ?? "Unknown"}</span>
-      {note && d.technique && <span className="muted small">{note}</span>}
       <button
         className="link-button"
         aria-expanded={open}
@@ -94,11 +100,48 @@ function TechniqueControl({ d }: { d: DatasetSummary }) {
   );
 }
 
+const LOSS_OPTIONS: [EelsRole, string, string][] = [
+  ["low_loss", "LL", "Low loss"],
+  ["core_loss", "HL", "Core (high) loss"],
+];
+
+/** Low or core loss of an EELS spectrum image, with where that came from;
+ * a linked group takes one low loss at most (the backend refuses a second). */
+function LossControl({ d }: { d: DatasetSummary }) {
+  const [busy, setBusy] = useState(false);
+  const role = d.eels!.role;
+  const set = async (r: EelsRole) => {
+    if (r === role) return;
+    setBusy(true);
+    try {
+      await useDatasets.getState().setEelsRole(d, r);
+    } catch (e) {
+      useLayers.getState().notify(`Could not change ${d.title}: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span className="technique-control">
+      <span className="segmented" role="group" aria-label="Low or core loss">
+        {LOSS_OPTIONS.map(([r, label, title]) => (
+          <button
+            key={r}
+            className={role === r ? "active" : undefined}
+            aria-pressed={role === r}
+            disabled={busy}
+            onClick={() => set(r)}
+            title={title}
+          >
+            {label}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
+}
+
 const TECHNIQUE_OPTIONS: [Technique | null, string][] = [["EDS", "EDS"], ["EELS", "EELS"], [null, "Unknown"]];
-const TOOLS_OF: Record<string, string> = {
-  EDS: "X-ray lines, element maps and Quantify",
-  EELS: "the EELS tools",
-};
 
 /** Choose another signal type; nothing is sent until "Change". */
 function TechniquePopover({
@@ -138,8 +181,8 @@ function TechniquePopover({
     setBusy(true);
     try {
       replaceFile((await api.setTechnique(d.id, choice)).file);
-      // A changed signal type can unlink a low/core loss pair (the partner's file too).
-      if (d.eels?.partner_id) await useDatasets.getState().syncFiles();
+      // A changed signal type can unlink a spectrum image from its group (the others' files too).
+      if (d.eels?.linked.length) await useDatasets.getState().syncFiles();
       onClose();
     } catch (e) {
       useLayers.getState().notify(`Could not set the signal type: ${(e as Error).message}`);
@@ -163,10 +206,6 @@ function TechniquePopover({
           </label>
         ))}
       </div>
-      <p className="muted small">
-        The tools offered change with the type
-        {choice && ` (${choice}: ${TOOLS_OF[choice]})`}.
-      </p>
       {maps > 0 && (
         <p className="field-error">
           Its {maps} computed and fitted {maps === 1 ? "map" : "maps"} will be deleted.
@@ -192,11 +231,6 @@ function SaveButtons({ d }: { d: DatasetSummary }) {
   return (
     <section className="inspector-save">
       <h3>Save</h3>
-      <p className="muted small">
-        {d.kind === "spectrum_image"
-          ? "Saved as loaded (rebinned, if it was); its processing settings are recorded in the metadata."
-          : "Saved as shown, with any filters applied."}
-      </p>
       <div className="inspector-save-buttons">
         {formats.map((f) => (
           <button key={f.format} onClick={() => downloadUrl(exportUrl(d.id, f.format))} title={`Save as ${f.label}`}>

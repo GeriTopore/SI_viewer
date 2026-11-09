@@ -1,20 +1,12 @@
-"""Low-loss / core-loss pairs of EELS spectrum images (M10c): which role a
-spectrum image has, whether two can be linked, and the signs that they belong
-together. The links themselves live in ``Session.eels_links``."""
+"""Linked EELS spectrum images (M10c): which role (low loss / core loss) a
+spectrum image has and whether two can be linked. Only the user links them;
+the link groups live in ``Session.eels_groups``."""
 
 from __future__ import annotations
 
 import math
-import re
-from pathlib import Path
-
-import numpy as np
 
 ROLES = ("low_loss", "core_loss")
-
-# The zero-loss peak counts when the sum spectrum peaks within this many eV
-# (or three channels) of 0.
-ZLP_TOLERANCE_EV = 3.0
 
 # Navigation scales that differ by less than this (relative) are the same.
 SCALE_TOLERANCE = 0.01
@@ -37,22 +29,44 @@ def _energy_axis_ev(signal) -> tuple[float, float, int]:
     return float(axis.offset) * factor, float(axis.scale) * factor, int(axis.size)
 
 
-def role_of(ds) -> str | None:
-    """"low_loss" when the energy range contains 0 eV and the sum spectrum
-    peaks near it (the zero-loss peak), "core_loss" for any other EELS spectrum
-    image, None for everything else. The sum spectrum is only read when 0 eV
-    is in range."""
-    from .frames import get_spectrum
+def _dm_tag(signal, tail: str) -> list:
+    """The value of ``tail`` (a path below ``ImageList.<key>``) for every image
+    of a DM file's tags that has it (nothing for other files)."""
+    om = signal.original_metadata
+    try:
+        images = om.get_item("ImageList")
+        keys = list(images.keys()) if hasattr(images, "keys") else []
+    except Exception:
+        return []
+    values = []
+    for key in keys:
+        try:
+            value = om.get_item(f"ImageList.{key}.{tail}", None)
+        except Exception:
+            continue
+        if value is not None:
+            values.append(value)
+    return values
 
+
+def energy_offset(signal) -> float:
+    """The first energy channel in eV."""
+    return _energy_axis_ev(signal)[0]
+
+
+def role_of(ds) -> tuple[str | None, str | None]:
+    """(role, source) of an EELS spectrum image: "low_loss" / "core_loss" from
+    the file's metadata ("metadata": DM's ``Is dual acquire low-loss`` tag), or
+    "core_loss" by default ("default") when there is no marker. (None, None)
+    for everything but an EELS spectrum image. Only tags are read."""
     if not is_eels_si(ds):
-        return None
-    offset, scale, size = _energy_axis_ev(ds.signal)
-    if scale > 0 and offset <= 0 <= offset + scale * (size - 1):
-        spectrum = get_spectrum(ds)
-        peak_ev = offset + scale * int(np.argmax(spectrum))
-        if abs(peak_ev) <= max(ZLP_TOLERANCE_EV, 3 * scale):
-            return "low_loss"
-    return "core_loss"
+        return None, None
+    for value in _dm_tag(ds.signal, "ImageTags.EELS.Acquisition.Is dual acquire low-loss"):
+        try:
+            return ("low_loss" if int(value) else "core_loss"), "metadata"
+        except (TypeError, ValueError):
+            continue
+    return "core_loss", "default"
 
 
 def _number(signal, path: str) -> float | None:
@@ -64,14 +78,17 @@ def _number(signal, path: str) -> float | None:
     return value if math.isfinite(value) else None
 
 
-def eels_info(ds, partner_id: str | None) -> dict | None:
-    """The ``eels`` part of a dataset's summary (None unless an EELS spectrum image)."""
+def eels_info(ds) -> dict | None:
+    """The ``eels`` part of a dataset's summary (None unless an EELS spectrum
+    image): its role and where it came from, and the ids of the others in its
+    link group (low loss first, then core losses by energy offset)."""
     if not is_eels_si(ds):
         return None
     s = ds.signal
     return {
         "role": ds.eels_role,
-        "partner_id": partner_id,
+        "role_source": ds.eels_role_source,
+        "linked": list(ds.eels_linked),
         "beam_energy": _number(s, "Acquisition_instrument.TEM.beam_energy"),
         "convergence_angle": _number(s, "Acquisition_instrument.TEM.convergence_angle"),
         "collection_angle": _number(s, "Acquisition_instrument.TEM.Detector.EELS.collection_angle"),
@@ -86,11 +103,10 @@ def _defined(value) -> str:
 
 
 def compatible(a, b) -> bool:
-    """One low loss and one core loss, same navigation shape, navigation
-    scales within 1 % (same units), and the same beam energy where both give one."""
+    """Whether two EELS spectrum images can be linked, whatever their roles:
+    same navigation shape, navigation scales within 1 % (same units), and the
+    same beam energy where both give one."""
     if not (is_eels_si(a) and is_eels_si(b)) or a is b:
-        return False
-    if {a.eels_role, b.eels_role} != set(ROLES):
         return False
     am, bm = a.signal.axes_manager, b.signal.axes_manager
     if tuple(am.navigation_shape) != tuple(bm.navigation_shape):
@@ -105,63 +121,3 @@ def compatible(a, b) -> bool:
     if ea is not None and eb is not None and not math.isclose(ea, eb, rel_tol=1e-3):
         return False
     return True
-
-
-# ---------- signs that two spectrum images belong together ----------
-
-
-def _dm_values(signal) -> tuple[set, set]:
-    """(set of (date, start time), set of survey image IDs) in a DM file's
-    ``ImageList`` tags (empty sets for other files)."""
-    acquisitions, surveys = set(), set()
-    om = signal.original_metadata
-    try:
-        images = om.get_item("ImageList")
-        keys = list(images.keys()) if hasattr(images, "keys") else []
-    except Exception:
-        return acquisitions, surveys
-    for key in keys:
-        base = f"ImageList.{key}.ImageTags.SI.Acquisition"
-        try:
-            date = om.get_item(f"{base}.Date", None)
-            start = om.get_item(f"{base}.Start time", None)
-            survey = om.get_item(f"{base}.Survey Image.Unique Image ID", None)
-        except Exception:
-            continue
-        if isinstance(date, str) and isinstance(start, str) and date.strip() and start.strip():
-            acquisitions.add((date.strip(), start.strip()))
-        if survey is not None and str(survey).strip() not in ("", "0"):
-            surveys.add(str(survey).strip())
-    return acquisitions, surveys
-
-
-_LOSS_TOKENS = re.compile(
-    r"(?:low|high|core)[\s_\-]*loss"
-    r"|(?<![a-z0-9])(?:ll|hl|cl)(?![a-z0-9])"
-)
-
-
-def normalised_name(name: str) -> str:
-    """``name`` lowercased, without low-/high-/core-loss (and standalone LL,
-    HL, CL) tokens and without anything but letters and digits."""
-    name = _LOSS_TOKENS.sub("", name.lower())
-    return re.sub(r"[^a-z0-9]", "", name)
-
-
-def link_sign(a, path_a: Path, b, path_b: Path) -> str | None:
-    """Why ``a`` and ``b`` are probably one experiment: "acquisition" (same DM
-    acquisition date and start time), "survey" (same survey image ID), "name"
-    (titles or file names equal but for low-/high-loss tokens); None if there
-    is no such sign."""
-    acq_a, survey_a = _dm_values(a.signal)
-    acq_b, survey_b = _dm_values(b.signal)
-    if acq_a & acq_b:
-        return "acquisition"
-    if survey_a & survey_b:
-        return "survey"
-    pairs = ((a.title, b.title), (Path(path_a).stem, Path(path_b).stem))
-    for name_a, name_b in pairs:
-        n = normalised_name(name_a)
-        if n and n == normalised_name(name_b):
-            return "name"
-    return None

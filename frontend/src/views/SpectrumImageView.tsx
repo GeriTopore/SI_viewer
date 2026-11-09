@@ -19,13 +19,14 @@ import { imageGeometry, isAbort } from "./geometry";
 import { useNavigatorTools } from "./si/useNavigatorTools";
 import { CURSOR_CHANNEL, LINE_CHANNEL, useSiSpectra, type LineBand } from "./si/useSiSpectra";
 import { useViewProfiles } from "../state/profiles";
-import { useUi } from "../state/ui";
+import { eelsTab, useUi, type BottomTab } from "../state/ui";
 import { useShortcuts } from "../keyboard";
 import { bandPolygon, pixelLength, pointAt } from "../viewer/profile";
 import { fwhmAt, useLineMarkers } from "./si/xray";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
-import { LinkedSpectrum, lossTabs, useLossLog, usePartner } from "./si/LinkedSpectrum";
+import { memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
 import { useFitSeries } from "./useFitSeries";
+import { useBackgroundPreview } from "./si/useBackgroundPreview";
 
 /** Navigator source meaning "no base image": only the overlaid maps are shown. */
 const NONE = "none";
@@ -92,15 +93,15 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     h: () => setTool("pan"),
   });
   // Cursor and region tools bring the spectrum tab back (the line tool shows profiles).
-  // A linked low/core loss pair has a tab for each instead of "Spectrum".
-  const partner = usePartner(ds);
-  const linked = !!(ds.eels && partner?.eels);
+  // A linked EELS group has a tab for each member instead of "Spectrum".
+  const group = useGroup(ds);
+  const linked = !!ds.eels && group.length > 1;
   const setBottomTab = useUi((s) => s.setBottomTab);
   useEffect(() => {
     if (tool === "line" || tool === "pan") return;
     const tab = useUi.getState().bottomTab;
-    const mine = linked ? ["low-loss", "core-loss"] : ["spectrum"];
-    if (!mine.includes(tab)) setBottomTab(linked ? (ds.eels!.role === "low_loss" ? "low-loss" : "core-loss") : "spectrum");
+    const mine: BottomTab[] = linked ? group.map((m) => eelsTab(m.id)) : ["spectrum"];
+    if (!mine.includes(tab)) setBottomTab(linked ? eelsTab(ds.id) : "spectrum");
   }, [tool, setBottomTab, linked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------- navigator ----------
@@ -270,6 +271,9 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     if (draft) out.push({ id: DRAFT, ...draft, color: useDisplay.getState().nextWindowColour(), label: "", draft: true });
     return out;
   }, [files, images, sourceId, isVirtual, main, axis.x, displays, windowColours, layerProps, edit, draft, navView, ds.id, virtualLabel, showMain]);
+  // Background removal (Process tab): its fits and bands on this plot.
+  const bg = useBackgroundPreview(ds, axis.x, series);
+  const allWindows = useMemo(() => [...plotWindows, ...bg.bands], [plotWindows, bg.bands]);
   const windowMapIds = plotWindows.filter((w) => w.id !== MAIN && w.id !== DRAFT).map((w) => w.id);
   const selectedWindow = plotWindows.some((w) => w.id === st.selectedWindow) ? st.selectedWindow : null;
   /** Selects a window; a window map also deselects the region (Delete acts on one at a time). */
@@ -325,6 +329,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // Dragging the selected window's edge or inside: the main window follows
   // live; a window map's band follows the pointer and its map is remade on release.
   const editWindow = async (id: string, range: EnergyRange, final: boolean) => {
+    if (bg.onEditBand(id, range, final)) return;
     if (id === MAIN) return setMain(range);
     setEdit({ id, ...range });
     if (!final) return;
@@ -390,13 +395,13 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       zoomKey={`${ds.id}:spectra`}
       {...ownLog}
       x={axis.x}
-      series={series}
+      series={bg.series}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : loadingMsg}
       error={whole.error ?? loadError}
       markers={markers}
-      windows={plotWindows}
+      windows={allWindows}
       mainToggle={isVirtual}
       selectedId={selectedWindow}
       onSelectWindow={selectWindow}
@@ -489,12 +494,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           renderOverlay={(t) => (
             <RoiOverlay t={t} state={st} cursorSize={cursorSize} draft={tools.draft} hover={tools.hover} />
           )}
-          bottomTabs={lossTabs(
-            ds,
-            partner,
-            spectrumPlot,
-            partner && <LinkedSpectrum partner={partner} st={st} lineScan={false} legend={legend} />,
-          )}
+          bottomTabs={memberTabs(ds, group, spectrumPlot, st, false, legend)}
         />
       </section>
       {menu && (

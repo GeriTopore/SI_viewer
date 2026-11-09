@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type DatasetSummary, type FileSummary } from "../api/client";
+import { api, type DatasetSummary, type EelsRole, type FileSummary } from "../api/client";
 import { DEFAULT_COLORMAP, useDisplay } from "./display";
 import { useProfiles } from "./profiles";
 import { useLayers } from "./layers";
@@ -31,11 +31,13 @@ interface DatasetsState {
   updateDataset: (summary: DatasetSummary) => void;
   /** Replace a file's datasets (maps added, removed or recomputed). */
   replaceFile: (file: FileSummary) => void;
-  /** Refetch every file and apply the ones that changed (a linked EELS
-   * partner changes with its pair, possibly in another file). */
+  /** Refetch every file and apply the ones that changed (linked EELS spectrum
+   * images change together, possibly in other files). */
   syncFiles: () => Promise<void>;
-  /** Link an EELS low/core loss with a partner (null: unlink). Throws on failure. */
+  /** Put an EELS spectrum image in a partner's link group (null: leave its group). Throws on failure. */
   linkEels: (d: DatasetSummary, partnerId: string | null) => Promise<void>;
+  /** Say by hand that an EELS spectrum image is a low or core loss. Throws on failure. */
+  setEelsRole: (d: DatasetSummary, role: EelsRole) => Promise<void>;
   /** Delete an element or window map (the backend also unticks an element). */
   deleteDataset: (d: DatasetSummary) => Promise<void>;
   /** Rebin the loaded data in place (one factor per axis). */
@@ -58,44 +60,56 @@ interface DatasetsState {
 export const allDatasets = (files: FileSummary[]): DatasetSummary[] =>
   files.flatMap((f) => f.datasets);
 
-// --- Display order of linked EELS pairs (the store keeps the opening order) ---
+// --- Display order of linked EELS groups (the store keeps the opening order) ---
 
-/** Number of pair colours (--pair-0 … in styles.css). */
+/** Number of group colours (--pair-0 … in styles.css). */
 export const PAIR_COLOURS = 6;
 
-/** A rendered stretch of one file's datasets: a single dataset, or two linked
- * ones placed side by side (low loss first) and boxed. */
+/** A rendered stretch of one file's datasets: a single dataset, or the
+ * members of a link group that live in this file placed side by side (low
+ * loss first) and boxed. */
 export type DatasetItem =
   | { type: "dataset"; d: DatasetSummary }
-  | { type: "pair"; colour: number; ds: [DatasetSummary, DatasetSummary] };
+  | { type: "group"; colour: number; ds: DatasetSummary[] };
 
-/** A rendered stretch of the file list: one file, or two files holding a
- * linked pair, placed one after the other and boxed. */
+/** A rendered stretch of the file list: one file, or the files holding a link
+ * group, placed one after the other and boxed. */
 export type FileItem =
   | { type: "file"; file: FileSummary }
-  | { type: "pair"; colour: number; files: [FileSummary, FileSummary] };
+  | { type: "group"; colour: number; files: FileSummary[] };
 
-export interface PairLayout {
-  /** Pair colour index for every dataset that has a partner. */
+export interface GroupLayout {
+  /** Group colour index for every dataset that is linked. */
   colourOf: Map<string, number>;
   items: FileItem[];
 }
 
 const isLow = (d: DatasetSummary) => d.eels?.role === "low_loss";
 
-/** Order the files so that linked files are adjacent, and give every linked
- * pair a colour (by the order in which the pairs are found in the store, so a
- * colour stays while the pair stays linked). */
-export function layoutPairs(files: FileSummary[]): PairLayout {
+/** First energy channel of a spectrum image (the order of its core losses). */
+const energyOffset = (d: DatasetSummary) => d.axes.find((a) => !a.navigate)?.offset ?? 0;
+
+/** The link group ``d`` is in (itself included), among the datasets in
+ * ``byId``: low loss first, then core losses by energy offset. Just ``d`` when
+ * it is not linked. */
+export function groupOf(d: DatasetSummary, byId: Map<string, DatasetSummary>): DatasetSummary[] {
+  const members = [d, ...(d.eels?.linked ?? []).flatMap((id) => byId.get(id) ?? [])];
+  return members.sort((a, b) => Number(!isLow(a)) - Number(!isLow(b)) || energyOffset(a) - energyOffset(b));
+}
+
+/** Order the files so that files with a link group are adjacent, and give every
+ * group a colour (by the order in which the groups are found in the store, so
+ * a colour stays while the group stays). */
+export function layoutGroups(files: FileSummary[]): GroupLayout {
   const all = allDatasets(files);
   const byId = new Map(all.map((d) => [d.id, d]));
   const colourOf = new Map<string, number>();
   let n = 0;
   for (const d of all) {
-    const pid = d.eels?.partner_id;
-    if (!pid || colourOf.has(d.id) || !byId.has(pid)) continue;
-    colourOf.set(d.id, n % PAIR_COLOURS);
-    colourOf.set(pid, n % PAIR_COLOURS);
+    if (colourOf.has(d.id)) continue;
+    const members = groupOf(d, byId);
+    if (members.length < 2) continue;
+    for (const m of members) colourOf.set(m.id, n % PAIR_COLOURS);
     n += 1;
   }
   const fileOf = new Map<string, FileSummary>();
@@ -108,11 +122,12 @@ export function layoutPairs(files: FileSummary[]): PairLayout {
     placed.add(f.id);
     let item: FileItem = { type: "file", file: f };
     search: for (const d of f.datasets) {
-      const pid = d.eels?.partner_id;
-      const other = pid ? fileOf.get(pid) : undefined;
-      if (!pid || !other || other.id === f.id || placed.has(other.id)) continue;
-      placed.add(other.id);
-      item = { type: "pair", colour: colourOf.get(d.id)!, files: isLow(d) ? [f, other] : [other, f] };
+      // The group's files in its order (low loss first), this one in its place.
+      const members = groupOf(d, byId);
+      const group = [...new Set(members.flatMap((m) => fileOf.get(m.id) ?? []))];
+      if (!group.some((g) => g.id !== f.id && !placed.has(g.id))) continue;
+      for (const g of group) placed.add(g.id);
+      item = { type: "group", colour: colourOf.get(d.id)!, files: group };
       break search;
     }
     items.push(item);
@@ -120,34 +135,28 @@ export function layoutPairs(files: FileSummary[]): PairLayout {
   return { colourOf, items };
 }
 
-/** One file's datasets, with partners that live in this same file side by side
- * (low loss first, at the place of whichever comes first). */
+/** One file's datasets, with the members of a link group that live in this
+ * same file side by side (low loss first, at the place of whichever comes first). */
 export function layoutFile(f: FileSummary, colourOf: Map<string, number>): DatasetItem[] {
-  const ids = new Set(f.datasets.map((d) => d.id));
+  const byId = new Map(f.datasets.map((d) => [d.id, d]));
   const out: DatasetItem[] = [];
   const done = new Set<string>();
   for (const d of f.datasets) {
     if (done.has(d.id)) continue;
-    const pid = d.eels?.partner_id;
-    const partner = pid && pid !== d.id && ids.has(pid) ? f.datasets.find((x) => x.id === pid) : undefined;
-    done.add(d.id);
-    if (!partner || done.has(partner.id)) {
-      out.push({ type: "dataset", d });
-      continue;
-    }
-    done.add(partner.id);
-    out.push({
-      type: "pair",
-      colour: colourOf.get(d.id) ?? 0,
-      ds: isLow(d) || !isLow(partner) ? [d, partner] : [partner, d],
-    });
+    const members = groupOf(d, byId);
+    for (const m of members) done.add(m.id);
+    out.push(
+      members.length < 2
+        ? { type: "dataset", d }
+        : { type: "group", colour: colourOf.get(d.id) ?? 0, ds: members },
+    );
   }
   return out;
 }
 
 /** The datasets in the order the list shows them. */
 export function displayDatasets(files: FileSummary[]): DatasetSummary[] {
-  const { colourOf, items } = layoutPairs(files);
+  const { colourOf, items } = layoutGroups(files);
   return items
     .flatMap((it) => (it.type === "file" ? [it.file] : it.files))
     .flatMap((f) => layoutFile(f, colourOf))
@@ -186,9 +195,9 @@ function combineError(current: DatasetSummary[], d: DatasetSummary): string | nu
 }
 
 /** A newly opened file with an EELS dataset linked to one in another file
- * (the partner's summary changed too). */
+ * (the others' summaries changed too). */
 const linkedElsewhere = (f: FileSummary) =>
-  f.datasets.some((d) => d.eels?.partner_id && !f.datasets.some((x) => x.id === d.eels!.partner_id));
+  f.datasets.some((d) => d.eels?.linked.some((id) => !f.datasets.some((x) => x.id === id)));
 
 const notify = (msg: string) => useLayers.getState().notify(msg);
 
@@ -198,8 +207,21 @@ const KIND_ORDER: Record<string, number> = { spectrum_image: 0, spectrum: 1, sta
 const rank = (d: DatasetSummary) =>
   isWindowMap(d) ? 4.5 : d.is_element_map ? 4 : (KIND_ORDER[d.kind] ?? 5);
 
+const madeByBackground = (d: DatasetSummary) => d.origin === "background" || d.origin === "background-r";
+
+/** A file's datasets in list order; what background removal made (the new
+ * spectrum image, then its r map) sits right under its source. */
 function sortFile(f: FileSummary): FileSummary {
-  return { ...f, datasets: [...f.datasets].sort((a, b) => rank(a) - rank(b)) };
+  const sorted = [...f.datasets].sort((a, b) => rank(a) - rank(b));
+  if (!sorted.some(madeByBackground)) return { ...f, datasets: sorted };
+  const ids = new Set(sorted.map((d) => d.id));
+  const out: DatasetSummary[] = [];
+  const add = (d: DatasetSummary) => {
+    out.push(d);
+    sorted.filter((x) => madeByBackground(x) && x.parent_id === d.id).forEach(add);
+  };
+  sorted.filter((d) => !madeByBackground(d) || !ids.has(d.parent_id ?? "")).forEach(add);
+  return { ...f, datasets: out };
 }
 
 /** Pre-assign a colour to every element map (one colour per element) and window map. */
@@ -249,6 +271,11 @@ export const useDatasets = create<DatasetsState>((set, get) => {
 
     linkEels: async (d, partnerId) => {
       const { files } = await api.setEelsPartner(d.id, partnerId);
+      files.forEach((f) => get().replaceFile(f));
+    },
+
+    setEelsRole: async (d, role) => {
+      const { files } = await api.setEelsRole(d.id, role);
       files.forEach((f) => get().replaceFile(f));
     },
 
@@ -347,8 +374,8 @@ export const useDatasets = create<DatasetsState>((set, get) => {
     rebin: async (d, factors) => {
       const r = await api.rebin(d.id, factors);
       get().replaceFile(r.file);
-      // A linked partner is rebinned with it.
-      if (d.eels?.partner_id || r.dataset.eels?.partner_id) await get().syncFiles();
+      // The datasets linked to it are rebinned with it.
+      if (d.eels?.linked.length || r.dataset.eels?.linked.length) await get().syncFiles();
     },
 
     updateDataset: (summary) =>
@@ -417,8 +444,9 @@ export const useDatasets = create<DatasetsState>((set, get) => {
   };
 });
 
-/** Only element maps and window maps can be deleted. */
-export const canDelete = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);
+/** Datasets made in the app that can be deleted: maps and background-removed SIs (with their r maps). */
+export const canDelete = (d: DatasetSummary) =>
+  d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);

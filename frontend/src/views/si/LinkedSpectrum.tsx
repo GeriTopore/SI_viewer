@@ -1,38 +1,47 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, dataVersion, type DatasetSummary, type EelsRole } from "../../api/client";
 import { SpectrumPlot, type SpectrumSeries } from "../../components/SpectrumPlot";
-import { allDatasets, useDatasets } from "../../state/datasets";
+import { allDatasets, groupOf, useDatasets } from "../../state/datasets";
 import { useDisplay } from "../../state/display";
 import { CURSOR_COLOR, useSi, type Reduce, type SiState } from "../../state/si";
-import type { BottomTab } from "../../state/ui";
+import { eelsTab, type BottomTab } from "../../state/ui";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "../SpectrumView";
 import { CURSOR_CHANNEL, useSiSpectra } from "./useSiSpectra";
 
-/** Tabs of a linked low/core loss pair. */
-export const LOSS_TAB: Record<EelsRole, { id: BottomTab; label: string }> = {
-  low_loss: { id: "low-loss", label: "Low loss" },
-  core_loss: { id: "core-loss", label: "Core loss" },
-};
-
-/** The EELS spectrum image ``ds`` is linked with, if it is open. */
-export function usePartner(ds: DatasetSummary): DatasetSummary | undefined {
-  const id = ds.eels?.partner_id;
-  return useDatasets((s) => (id ? allDatasets(s.files).find((d) => d.id === id) : undefined));
+/** The link group ``ds`` is in, itself included (low loss first, then core
+ * losses by energy offset); just ``ds`` when it is not linked. */
+export function useGroup(ds: DatasetSummary): DatasetSummary[] {
+  const files = useDatasets((s) => s.files);
+  return useMemo(() => groupOf(ds, new Map(allDatasets(files).map((d) => [d.id, d]))), [ds, files]);
 }
 
-/** The pane's tabs: "Spectrum" alone, or, for a linked pair, the shown
- * dataset's own spectrum and its partner's (the shown one first). */
-export function lossTabs(
-  ds: DatasetSummary, partner: DatasetSummary | undefined, own: ReactNode, linked: ReactNode,
+/** A group member's tab: "Low loss", "Core loss" (the only one), or the
+ * energy range of one of several core losses, e.g. "430–1640 eV". */
+export function memberLabel(m: DatasetSummary, group: DatasetSummary[]): string {
+  if (m.eels?.role === "low_loss") return "Low loss";
+  if (group.filter((d) => d.eels?.role !== "low_loss").length < 2) return "Core loss";
+  const axis = m.axes.find((a) => !a.navigate);
+  if (!axis) return m.title;
+  const lo = axis.offset;
+  const hi = axis.offset + axis.scale * (axis.size - 1);
+  return `${Math.round(lo)}–${Math.round(hi)}${axis.units ? ` ${axis.units}` : ""}`;
+}
+
+/** The pane's tabs: "Spectrum" alone, or, for a linked group, one per member
+ * (the shown dataset's own spectrum, the others' as ``LinkedSpectrum``). The
+ * ids stay the same when another member is shown. */
+export function memberTabs(
+  ds: DatasetSummary, group: DatasetSummary[], own: ReactNode, st: SiState, lineScan: boolean, legend: ReactNode,
 ): { id: BottomTab; label: string; content: ReactNode }[] {
-  if (!ds.eels || !partner?.eels) return [{ id: "spectrum", label: "Spectrum", content: own }];
-  return [
-    { ...LOSS_TAB[ds.eels.role], content: own },
-    { ...LOSS_TAB[partner.eels.role], content: linked },
-  ];
+  if (!ds.eels || group.length < 2) return [{ id: "spectrum", label: "Spectrum", content: own }];
+  return group.map((m) => ({
+    id: eelsTab(m.id),
+    label: memberLabel(m, group),
+    content: m.id === ds.id ? own : <LinkedSpectrum member={m} st={st} lineScan={lineScan} legend={legend} />,
+  }));
 }
 
-/** Linear/Log of a low-loss plot in a linked pair (log by default: the
+/** Linear/Log of a low-loss plot in a linked group (log by default: the
  * zero-loss peak dominates); empty for any other plot, which uses the shared one. */
 export function useLossLog(role: EelsRole | undefined, linked: boolean): { log?: boolean; onLog?: (log: boolean) => void } {
   const log = useDisplay((s) => s.lowLossLog);
@@ -62,8 +71,8 @@ export function ReduceToggle({ unit = "pixel" }: { unit?: string }) {
 }
 
 interface Props {
-  /** The linked partner of the spectrum image in the viewer. */
-  partner: DatasetSummary;
+  /** A spectrum image linked to the one in the viewer. */
+  member: DatasetSummary;
   /** Cursor and regions of the spectrum image in the viewer (navigation
    * coordinates are the same in both). */
   st: SiState;
@@ -71,27 +80,27 @@ interface Props {
   legend: ReactNode;
 }
 
-/** The partner's spectra at the viewer's cursor and regions, plus its sum
+/** A linked member's spectra at the viewer's cursor and regions, plus its sum
  * spectrum, drawn like the shown dataset's own. */
-export function LinkedSpectrum({ partner, st, lineScan, legend }: Props) {
+export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
   const updateDataset = useDatasets((s) => s.updateDataset);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const ready = !partner.lazy;
+  const ready = !member.lazy;
   useEffect(() => {
-    if (!partner.lazy) return;
+    if (!member.lazy) return;
     api
-      .loadDataset(partner.id)
+      .loadDataset(member.id)
       .then(updateDataset)
       .catch((e) => setLoadError((e as Error).message));
-  }, [partner.id, partner.lazy, updateDataset]);
+  }, [member.id, member.lazy, updateDataset]);
 
   const reduce = useSi((s) => s.reduce);
   const cursorSize = useSi((s) => s.cursorSize);
-  const axis = useEnergyAxis(partner);
-  const whole = useSpectrum(partner, ready);
-  const spectra = useSiSpectra(partner.id, dataVersion(partner), st, lineScan ? 1 : cursorSize, ready);
-  const total = partner.navigation_shape.reduce((a, b) => a * b, 1);
-  const lossLog = useLossLog(partner.eels?.role, true);
+  const axis = useEnergyAxis(member);
+  const whole = useSpectrum(member, ready);
+  const spectra = useSiSpectra(member.id, dataVersion(member), st, lineScan ? 1 : cursorSize, ready);
+  const total = member.navigation_shape.reduce((a, b) => a * b, 1);
+  const lossLog = useLossLog(member.eels?.role, true);
 
   const series = useMemo<SpectrumSeries[]>(() => {
     const k = (count: number) => (reduce === "mean" ? 1 / Math.max(1, count) : 1);
@@ -117,11 +126,11 @@ export function LinkedSpectrum({ partner, st, lineScan, legend }: Props) {
     return out;
   }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, total, lineScan]);
 
-  const role = partner.eels?.role === "low_loss" ? "low loss" : "core loss";
+  const role = member.eels?.role === "low_loss" ? "low loss" : "core loss";
   return (
     <SpectrumPlot
-      name={`${partner.title}_spectra`}
-      zoomKey={`${partner.id}:spectra`}
+      name={`${member.title}_spectra`}
+      zoomKey={`${member.id}:spectra`}
       x={axis.x}
       series={series}
       xLabel={axis.label}

@@ -102,7 +102,9 @@ class Dataset:
     kind: DatasetKind
     is_element_map: bool = False
     # "file" (loaded), "computed" (an element map made from a spectrum image),
-    # "fitted" / "composition" (per-pixel fits) or "window" (an energy-window map).
+    # "fitted" / "composition" (per-pixel fits), "window" (an energy-window map),
+    # "background" (EELS spectra with the background removed) or "background-r"
+    # (the power-law exponent map of one).
     origin: str = "file"
     # Element symbol of an element map (Velox maps: their title).
     element: str | None = None
@@ -110,6 +112,9 @@ class Dataset:
     parent_id: str | None = None
     # Window maps: the energy window {lo, hi, units} they sum (lo <= hi).
     window: dict | None = None
+    # Background-removed EELS spectra ("background"): the options they were made
+    # with (see processing/background.py), kept to re-run them.
+    background: dict | None = None
     # Bumped whenever the data is recomputed, so clients refresh caches.
     revision: int = 0
     # Spectrum images: how their computed element maps are made.
@@ -127,10 +132,14 @@ class Dataset:
     # Spectra: where the technique (EDS or EELS) came from, see
     # processing/technique.py; None when unknown.
     technique_source: str | None = None
-    # EELS spectrum images: "low_loss" or "core_loss" (see processing/eels.py),
-    # and the linked partner's id (a mirror of Session.eels_links).
+    # EELS spectrum images: "low_loss" or "core_loss" and where that came from
+    # ("metadata", "user" or "default", see processing/eels.py); the link group
+    # (see Session.eels_groups) and, mirroring it, the others' ids (low loss
+    # first, then core losses by energy offset).
     eels_role: str | None = None
-    eels_partner_id: str | None = None
+    eels_role_source: str | None = None
+    eels_group: str | None = None
+    eels_linked: list[str] = field(default_factory=list)
     aligned_signal: object | None = field(default=None, repr=False)
     original_signal: object | None = field(default=None, repr=False)
     # A dataset made from another (e.g. a stack's aligned average).
@@ -209,11 +218,16 @@ class Dataset:
             "eds": eds,
             "technique": technique,
             "technique_source": self.technique_source if is_spectrum else None,
-            "eels": eels_info(self, self.eels_partner_id),
+            "eels": eels_info(self),
             "origin": self.origin,
             "element": self.element,
             "parent_id": self.parent_id,
             "window": None if self.window is None else dict(self.window),
+            "background": None if self.background is None else {
+                "source_id": self.parent_id,
+                **{k: list(v) if isinstance(v, (list, tuple)) else v for k, v in self.background.items()},
+                "units": _defined(am.signal_axes[0].units),
+            },
             "revision": self.revision,
             "rebinned": list(self.rebinned),
             "filters": self.filter_spec.model_dump(),
@@ -272,8 +286,9 @@ class Session:
     def __init__(self) -> None:
         self.files: dict[str, FileEntry] = {}
         self.datasets: dict[str, Dataset] = {}
-        # Linked EELS spectrum images: core-loss id -> low-loss id.
-        self.eels_links: dict[str, str] = {}
+        # Link groups of EELS spectrum images (two or more, at most one low
+        # loss): group id -> member dataset ids.
+        self.eels_groups: dict[str, list[str]] = {}
         self._lock = threading.RLock()
 
     def open_file(self, path: str | Path) -> FileEntry:
@@ -340,97 +355,151 @@ class Session:
                 entry.dataset_ids.append(ds.id)
         for si in eds_sis:
             self._compute_initial_maps(si)
-        self._link_new_eels(datasets)
+        self._set_new_roles(datasets)
         return entry
 
-    # ---------- low-loss / core-loss pairs ----------
+    # ---------- linked EELS spectrum images (low loss / core losses) ----------
 
-    def partner_of(self, ds: Dataset) -> Dataset | None:
-        """The EELS spectrum image linked to ``ds`` (its low or core loss)."""
+    def linked_of(self, ds: Dataset) -> list[Dataset]:
+        """The EELS spectrum images linked to ``ds`` (low loss first, then core
+        losses by energy offset); empty when it is not in a group."""
         with self._lock:
-            return self.datasets.get(ds.eels_partner_id) if ds.eels_partner_id else None
+            return [self.datasets[i] for i in ds.eels_linked if i in self.datasets]
 
     def _set_role(self, ds: Dataset) -> None:
+        """Read the role from the metadata (default: core loss). A dataset made
+        from another (e.g. background removed) has no markers of its own."""
         from .processing.eels import role_of
 
-        ds.eels_role = role_of(ds)
+        ds.eels_role, ds.eels_role_source = role_of(ds)
+        if ds.eels_role is not None and ds.origin != "file":
+            ds.eels_role, ds.eels_role_source = "core_loss", "default"
 
-    def _unlink(self, ds: Dataset) -> Dataset | None:
-        """Drop ``ds``'s link; returns the partner it had."""
+    def _refresh_group(self, group_id: str) -> None:
+        """Order a group's members (low loss first, then by energy offset) and
+        tell each one who the others are."""
+        from .processing.eels import energy_offset
+
+        members = [self.datasets[i] for i in self.eels_groups[group_id]]
+        members.sort(key=lambda d: (d.eels_role != "low_loss", energy_offset(d.signal), d.id))
+        self.eels_groups[group_id] = [d.id for d in members]
+        for d in members:
+            d.eels_group = group_id
+            d.eels_linked = [o.id for o in members if o is not d]
+
+    def _leave(self, ds: Dataset) -> list[Dataset]:
+        """Take ``ds`` out of its group (a group of one dissolves). Returns the
+        datasets that were linked to it."""
         with self._lock:
-            partner = self.partner_of(ds)
-            for core_id in [k for k, v in self.eels_links.items() if ds.id in (k, v)]:
-                del self.eels_links[core_id]
-            ds.eels_partner_id = None
-            if partner is not None:
-                partner.eels_partner_id = None
-            return partner
+            others = self.linked_of(ds)
+            gid, ds.eels_group, ds.eels_linked = ds.eels_group, None, []
+            if gid is None:
+                return others
+            remaining = [i for i in self.eels_groups.get(gid, []) if i != ds.id and i in self.datasets]
+            if len(remaining) < 2:
+                self.eels_groups.pop(gid, None)
+                for i in remaining:
+                    self.datasets[i].eels_group, self.datasets[i].eels_linked = None, []
+            else:
+                self.eels_groups[gid] = remaining
+                self._refresh_group(gid)
+            return others
 
-    def _link(self, a: Dataset, b: Dataset) -> None:
-        core, low = (a, b) if a.eels_role == "core_loss" else (b, a)
+    @staticmethod
+    def _check_group(members: list[Dataset]) -> None:
+        """Raise ValueError unless ``members`` can be one group: all pairwise
+        compatible and at most one low loss."""
+        from itertools import combinations
+
+        from .processing.eels import compatible
+
+        low = [d for d in members if d.eels_role == "low_loss"]
+        if len(low) > 1:
+            raise ValueError(f"{low[0].title} and {low[1].title} are both low loss: a group has at most one")
+        for a, b in combinations(members, 2):
+            if not compatible(a, b):
+                raise ValueError(
+                    f"{a.title} and {b.title} can't be linked: they need the same scan size and "
+                    "calibration (and beam energy)"
+                )
+
+    def _join(self, datasets: list[Dataset]) -> list[Dataset]:
+        """Make ``datasets`` and everything linked to them one group. Raises
+        ValueError (changing nothing) if that can't be a group. Returns the
+        datasets in it."""
         with self._lock:
-            self.eels_links[core.id] = low.id
-            core.eels_partner_id, low.eels_partner_id = low.id, core.id
+            members: list[Dataset] = []
+            for d in datasets:
+                for m in [d, *self.linked_of(d)]:
+                    if m not in members:
+                        members.append(m)
+            self._check_group(members)
+            for gid in {m.eels_group for m in members if m.eels_group}:
+                self.eels_groups.pop(gid, None)
+            gid = _new_id()
+            self.eels_groups[gid] = [m.id for m in members]
+            self._refresh_group(gid)
+            return members
 
-    def _link_new_eels(self, new: list[Dataset]) -> None:
-        """Link the EELS spectrum images of a file just opened to ones open
-        already (or to each other): a compatible low-loss / core-loss pair with
-        a strong sign (same DM acquisition or survey image, or names equal but
-        for the loss tokens), when each is the other's only candidate."""
-        from .processing.eels import compatible, is_eels_si, link_sign
+    def _set_new_roles(self, new: list[Dataset]) -> None:
+        """Give the EELS spectrum images of a file just opened their roles.
+        Nothing is linked: only the user links spectrum images."""
+        from .processing.eels import is_eels_si
 
-        mine = [d for d in new if is_eels_si(d)]
-        for d in mine:
-            self._set_role(d)
+        for d in new:
+            if is_eels_si(d):
+                self._set_role(d)
 
-        def candidates(ds: Dataset) -> list[Dataset]:
-            with self._lock:
-                others = [
-                    o for o in self.datasets.values()
-                    if o is not ds and o.eels_partner_id is None and compatible(ds, o)
-                ]
-                return [
-                    o for o in others
-                    if link_sign(ds, self.files[ds.file_id].path, o, self.files[o.file_id].path)
-                ]
-
-        for ds in mine:
-            if ds.eels_partner_id is not None:
-                continue
-            found = candidates(ds)
-            if len(found) == 1 and [c.id for c in candidates(found[0])] == [ds.id]:
-                self._link(ds, found[0])
-
-    def eels_partners(self, ds: Dataset) -> list[Dataset]:
-        """The spectrum images ``ds`` could be linked to (whether they are
-        linked elsewhere or not)."""
+    def link_candidates(self, ds: Dataset) -> list[Dataset]:
+        """The spectrum images ``ds`` could be linked to (whether they are in
+        a group or not)."""
         from .processing.eels import compatible
 
         with self._lock:
             return [o for o in self.datasets.values() if compatible(ds, o)]
 
     def set_eels_partner(self, ds: Dataset, partner: Dataset | None) -> list[Dataset]:
-        """Link ``ds`` to ``partner`` (replacing the links either had) or, with
-        None, unlink it. Raises ValueError if they are not compatible. Returns
-        the datasets whose links changed."""
+        """Put ``ds`` in ``partner``'s group (or a new group of the two),
+        leaving the one it was in; with None, just leave its group. Raises
+        ValueError (changing nothing) if they are not compatible or the group
+        would get a second low loss. Returns the datasets whose links changed."""
         from .processing.eels import compatible
 
-        if partner is None:
-            changed = [ds]
-            old = self._unlink(ds)
-            return changed + ([old] if old is not None else [])
-        if not compatible(ds, partner):
-            raise ValueError(
-                f"{ds.title} and {partner.title} can't be linked: they need to be one low loss and one "
-                "core loss EELS spectrum image with the same scan"
-            )
-        changed = [ds, partner]
-        for d in (ds, partner):
-            old = self._unlink(d)
-            if old is not None and old not in changed:
-                changed.append(old)
-        self._link(ds, partner)
-        return changed
+        with self._lock:
+            if partner is None:
+                return [ds, *self._leave(ds)]
+            if ds.eels_group is not None and ds.eels_group == partner.eels_group:
+                return [ds]
+            if not compatible(ds, partner):
+                raise ValueError(
+                    f"{ds.title} and {partner.title} can't be linked: they need the same scan size and "
+                    "calibration (and beam energy)"
+                )
+            target = [partner, *self.linked_of(partner)]
+            self._check_group([*target, ds])
+            changed = [ds, *self._leave(ds), *target]
+            self._join([ds, partner])
+            return list({d.id: d for d in changed}.values())
+
+    def set_eels_role(self, ds: Dataset, role: str) -> list[Dataset]:
+        """Say by hand that ``ds`` is a low loss or a core loss. Raises
+        ValueError if its group already has another low loss. Returns the
+        datasets whose summaries changed (its group)."""
+        from .processing.eels import ROLES, is_eels_si
+
+        if not is_eels_si(ds):
+            raise ValueError(f"{ds.title} is not an EELS spectrum image")
+        if role not in ROLES:
+            raise ValueError(f"Unknown role: {role}")
+        with self._lock:
+            others = self.linked_of(ds)
+            low = next((o for o in others if o.eels_role == "low_loss"), None)
+            if role == "low_loss" and low is not None:
+                raise ValueError(f"{low.title} is already the low loss of this group")
+            ds.eels_role, ds.eels_role_source = role, "user"
+            if ds.eels_group is not None:
+                self._refresh_group(ds.eels_group)
+            return [ds, *others]
 
     def _compute_initial_maps(self, si: Dataset) -> None:
         """Raw maps for the elements recorded with a spectrum image."""
@@ -447,7 +516,7 @@ class Session:
             for ds_id in entry.dataset_ids:
                 ds = self.datasets.get(ds_id)
                 if ds is not None:
-                    self._unlink(ds)
+                    self._leave(ds)
                 self.datasets.pop(ds_id, None)
 
     def get_dataset(self, dataset_id: str) -> Dataset:
@@ -468,11 +537,17 @@ class Session:
 
     def _remove(self, dataset: Dataset) -> None:
         with self._lock:
-            self._unlink(dataset)
+            self._leave(dataset)
             self.datasets.pop(dataset.id, None)
             ids = self.files[dataset.file_id].dataset_ids
             if dataset.id in ids:
                 ids.remove(dataset.id)
+
+    def _remove_tree(self, dataset: Dataset) -> None:
+        """Remove ``dataset`` and everything made from it (its maps, and so on)."""
+        for child in [d for d in self.siblings(dataset) if d.parent_id == dataset.id]:
+            self._remove_tree(child)
+        self._remove(dataset)
 
     def _make_map(self, si: Dataset, element: str):
         """``element``'s map from ``si`` (None if it has no usable line)."""
@@ -585,6 +660,117 @@ class Session:
             else:
                 m.replace_signal(signal)
 
+    # ---------- background removal (EELS) ----------
+
+    def background_sis(self, src: Dataset) -> list[Dataset]:
+        """The background-removed spectra made from ``src``."""
+        with self._lock:
+            return [d for d in self.siblings(src) if d.origin == "background" and d.parent_id == src.id]
+
+    def _background_r_maps(self, bg: Dataset) -> list[Dataset]:
+        with self._lock:
+            return [d for d in self.siblings(bg) if d.origin == "background-r" and d.parent_id == bg.id]
+
+    @staticmethod
+    def can_remove_background(ds: Dataset) -> bool:
+        from .processing.technique import technique_of
+
+        return ds.kind in (DatasetKind.SPECTRUM, DatasetKind.SPECTRUM_IMAGE) and technique_of(ds.signal) == "EELS"
+
+    def compute_background(self, src: Dataset, options, report=lambda f: None):
+        """(signal, r) of ``src``'s spectra cut to the signal window with the
+        background subtracted (see ``processing.background.remove_background``).
+        Nothing is added to the session. Raises ValueError for windows that
+        don't fit the spectra."""
+        from .processing.background import remove_background
+
+        if not self.can_remove_background(src):
+            raise ValueError("Background removal is for EELS spectra")
+        src.materialise()
+        return remove_background(src.signal, options, report)
+
+    def _set_background_r(self, bg: Dataset, r: np.ndarray | None) -> None:
+        """Give a background-removed 2D spectrum image the power-law exponent
+        map ``r`` (None: none), keeping the map's dataset when it has one."""
+        from .processing.element_maps import scan_image
+
+        maps = self._background_r_maps(bg)
+        if r is None or bg.kind is not DatasetKind.SPECTRUM_IMAGE or bg.is_line_scan:
+            for m in maps:
+                self._remove(m)
+            return
+        signal = scan_image(bg.signal, r, "r (power-law exponent)")
+        if maps:
+            maps[0].replace_signal(signal)
+            return
+        ds = Dataset(
+            id=_new_id(), file_id=bg.file_id, signal=signal, kind=DatasetKind.IMAGE,
+            origin="background-r", parent_id=bg.id,
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            self.files[bg.file_id].dataset_ids.append(ds.id)
+
+    def add_background(self, src: Dataset, options, result) -> Dataset:
+        """Add ``result`` (from ``compute_background``) as a spectra dataset
+        under ``src``, titled by its signal window. It follows ``src``'s
+        rebinning and is deleted with it, but is a spectrum image (or spectrum)
+        like any other. A power-law exponent map comes with it."""
+        from .processing.background import EnergyAxis, automatic_title
+
+        signal, r = result
+        signal.metadata.General.title = automatic_title(options, EnergyAxis.of(signal))
+        ds = Dataset(
+            id=_new_id(), file_id=src.file_id, signal=signal, kind=classify(signal),
+            origin="background", parent_id=src.id, background=options.model_dump(),
+            technique_source="metadata",
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            self.files[src.file_id].dataset_ids.append(ds.id)
+        self._set_role(ds)
+        self._set_background_r(ds, r)
+        return ds
+
+    def replace_background(self, bg: Dataset, options, result) -> Dataset:
+        """Replace a background-removed dataset's data with ``result`` made with
+        new ``options``: same dataset, new revision. A title that was the
+        automatic name of the old signal window follows the new one."""
+        from .processing.background import BackgroundOptions, EnergyAxis, automatic_title
+        from .processing.regions import window_label
+
+        if bg.origin != "background" or bg.background is None:
+            raise ValueError(f"{bg.title} is not a background-removed spectrum")
+        signal, r = result
+        axis = EnergyAxis.of(signal)
+        old = BackgroundOptions(**bg.background)
+        automatic = {automatic_title(old, axis), f"{window_label(*old.signal, axis.units)}, bg removed"}
+        signal.metadata.General.title = automatic_title(options, axis) if bg.title in automatic else bg.title
+        bg.replace_signal(signal)
+        bg.background = options.model_dump()
+        bg.rebinned = []
+        self._set_background_r(bg, r)
+        self._remake_window_maps(bg)
+        return bg
+
+    def rerun_background(self, bg: Dataset, options=None, report=lambda f: None) -> Dataset:
+        """Remake a background-removed dataset from its source, with ``options``
+        or (None) the ones it has."""
+        from .processing.background import BackgroundOptions
+
+        src = self.get_dataset(bg.parent_id)
+        options = options or BackgroundOptions(**bg.background)
+        return self.replace_background(bg, options, self.compute_background(src, options, report))
+
+    def _remake_backgrounds(self, src: Dataset) -> None:
+        """Recompute ``src``'s background-removed spectra after its data changed
+        (one whose windows no longer fit is removed)."""
+        for bg in self.background_sis(src):
+            try:
+                self.rerun_background(bg)
+            except ValueError:
+                self._remove_tree(bg)
+
     def set_elements(self, ds: Dataset, elements: list[str]) -> list[str]:
         """Set an EDS dataset's elements. For a spectrum image, newly added
         elements get a computed map and removed ones lose theirs (maps loaded
@@ -619,18 +805,22 @@ class Session:
         was = technique_of(ds.signal)
         if was != technique:
             apply_technique(ds.signal, technique)  # in place: ds.signal stays the same object
-            self._unlink(ds)
-            ds.eels_role = None
+            self._leave(ds)
+            ds.eels_role = ds.eels_role_source = None
             if was == "EDS":
                 for d in [*self.computed_maps(ds), *self._fit_maps(ds)]:
                     self._remove(d)
+            if was == "EELS":
+                for d in self.background_sis(ds):
+                    self._remove_tree(d)  # background removal is for EELS only
             if technique == "EELS":
-                self._set_role(ds)  # reads the sum spectrum, so before the caches are cleared
+                self._set_role(ds)
             self._view_changed(ds)
         ds.technique_source = "user"
 
     def delete_dataset(self, dataset: Dataset) -> None:
-        """Delete an element map or a window map.
+        """Delete an element map, a window map or a background-removed spectrum
+        image (with everything made from it).
 
         Deleting an element map also unticks its element in the map's spectrum image and in the
         file's other (non-image) EDS spectra, which removes that element's
@@ -640,6 +830,9 @@ class Session:
 
         if dataset.origin == "window":
             self._remove(dataset)  # a window map has no element to untick
+            return
+        if dataset.origin in ("background", "background-r"):
+            self._remove_tree(dataset)
             return
         if not dataset.is_element_map:
             raise ValueError(f"{dataset.title} is not an element map and can't be deleted")
@@ -673,7 +866,7 @@ class Session:
                 self.datasets[ds.id] = ds
                 self.files[si.file_id].dataset_ids.append(ds.id)
 
-    def rebin(self, si: Dataset, factors: list[int], with_partner: bool = True) -> list[Dataset]:
+    def rebin(self, si: Dataset, factors: list[int], with_linked: bool = True) -> list[Dataset]:
         """Rebin a spectrum image and everything recorded on its scan, in place.
 
         Only spectrum images can be rebinned, and always as a whole: the
@@ -684,10 +877,12 @@ class Session:
         rebinned data replaces the loaded data (the file on disk is not
         changed). ``factors`` follow the summary's axis order (array order: y,
         x, energy). Sizes that don't divide are cropped (HyperSpy's rebin).
-        A linked EELS partner (low loss / core loss) is rebinned by the same
-        navigation factors, with the images on its scan (its energy axis is
-        left alone). Returns the datasets rebinned, the spectrum image first,
-        then its scan's images, then the partner and its images.
+        The EELS spectrum images linked to it (its group's low loss and core
+        losses) are rebinned by the same factors, energy included, with the
+        images on their scans; the factors are checked against every one of
+        them before anything is rebinned. Returns the datasets
+        rebinned, the spectrum image first, then its scan's images, then the
+        linked ones and their images.
         """
         if si.kind is not DatasetKind.SPECTRUM_IMAGE:
             raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images can (with their whole scan)")
@@ -708,11 +903,20 @@ class Session:
         scale = [factors[next(i for i, a in enumerate(axes) if a is ax)] for ax in natural]
         fx, fy = scale[0], scale[1]
         scan = tuple(am.navigation_shape)
-        partner = self.partner_of(si) if with_partner else None
-        if partner is not None and (partner.kind is not DatasetKind.SPECTRUM_IMAGE or partner.is_line_scan):
-            partner = None
-        if partner is not None and tuple(partner.signal.axes_manager.navigation_shape) != scan:
-            partner = None  # no longer the same scan: nothing to keep in step
+        linked = [
+            d for d in (self.linked_of(si) if with_linked else [])
+            if d.kind is DatasetKind.SPECTRUM_IMAGE and not d.is_line_scan
+            and tuple(d.signal.axes_manager.navigation_shape) == scan  # else no longer the same scan
+        ]
+        for d in linked:
+            d_axes = list(d.signal.axes_manager._axes)
+            if len(d_axes) != len(factors):
+                raise ValueError(f"{d.title} (linked) has {len(d_axes)} axes, so it can't get the same binning")
+            for f, ax in zip(factors, d_axes):
+                if f > ax.size:
+                    raise ValueError(
+                        f"Factor for {ax.name or 'axis'} must be at most {ax.size} for {d.title} (linked)"
+                    )
         on_scan = [
             d for d in self.siblings_in_file(si.file_id)
             if d.origin == "file" and d.kind in (DatasetKind.IMAGE, DatasetKind.STACK)
@@ -736,12 +940,13 @@ class Session:
             else:
                 m.replace_signal(new_map)
         self._remake_window_maps(si)
+        self._remake_backgrounds(si)
+        if si.origin == "background":
+            for r in self._background_r_maps(si):
+                self._remove(r)  # made at the old size: re-run from the source to update
         rebinned = [si, *on_scan]
-        if partner is not None:
-            # Same factors along the scan's axes (array order: rows, columns), none along energy.
-            nav = [f if ax.navigate else 1 for f, ax in zip(factors, axes)]
-            if any(f > 1 for f in nav):
-                rebinned += self.rebin(partner, nav, with_partner=False)
+        for d in linked:
+            rebinned += self.rebin(d, factors, with_linked=False)
         return rebinned
 
     def set_map_options(self, si: Dataset, options: dict) -> None:
@@ -755,20 +960,20 @@ class Session:
             if signal is not None:
                 m.replace_signal(signal)
 
-    def set_filters(self, dataset: Dataset, filters: dict, with_partner: bool = True) -> list[str]:
+    def set_filters(self, dataset: Dataset, filters: dict, with_linked: bool = True) -> list[str]:
         """Set a dataset's filters (applied whenever its data is read; the
         loaded data is unchanged).
 
         A spectrum image's filters are the processing of all its data: its
         spectra, fits and every map made from it. Computed maps are remade;
         per-pixel fit results, made from the old processing, are removed.
-        Those maps can't be filtered on their own. A linked EELS partner gets
-        the same spatial filter (its spectral smoothing is its own), so the
-        pixels of the pair keep matching. Returns notes for the user.
+        Those maps can't be filtered on their own. The EELS spectrum images
+        linked to it get the same spatial filter (their spectral smoothing is
+        their own), so their pixels keep matching. Returns notes for the user.
         """
         from .processing.filters import Filters, check_applicable
 
-        if dataset.parent_id is not None and dataset.parent_id in self.datasets:
+        if dataset.origin != "background" and dataset.parent_id is not None and dataset.parent_id in self.datasets:
             parent = self.datasets[dataset.parent_id]
             raise ValueError(
                 f"{dataset.title} follows the processing of {parent.title}: filter the spectrum image instead"
@@ -795,12 +1000,11 @@ class Session:
                 self._remove(d)
             if fits:
                 notes.append("Fitted maps were removed: fit every pixel again to fit the processed data")
-        partner = self.partner_of(dataset) if with_partner else None
-        if partner is not None:
-            theirs = partner.filter_spec
+        for other in self.linked_of(dataset) if with_linked else []:
+            theirs = other.filter_spec
             if (theirs.spatial, theirs.sigma, theirs.size) != (new.spatial, new.sigma, new.size):
                 same_spatial = {**theirs.model_dump(), "spatial": new.spatial, "sigma": new.sigma, "size": new.size}
-                notes += self.set_filters(partner, same_spatial, with_partner=False)
+                notes += self.set_filters(other, same_spatial, with_linked=False)
         return notes
 
     # ---------- drift correction of stacks ----------

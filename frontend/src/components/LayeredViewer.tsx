@@ -16,8 +16,8 @@ import { LineOverlay } from "./LineOverlay";
 import { ProfilePanel } from "./ProfilePanel";
 import { useProfiles, useViewProfiles } from "../state/profiles";
 import { useLineTool } from "../views/useLineTool";
-import { PANE_SIZES, useUi, type BottomTab, type GridContext, type GridMode } from "../state/ui";
-import { Splitter } from "./Splitter";
+import { useUi, type BottomTab, type GridContext, type GridMode } from "../state/ui";
+import { BottomPane } from "./BottomPane";
 import { ViewerGrid, type GridPanel } from "./ViewerGrid";
 import { useShortcuts } from "../keyboard";
 
@@ -206,24 +206,34 @@ export function LayeredViewer({
 
   // Pane under the image: the given tabs, plus line profiles (with the line
   // tool, or once there are lines). Its height is a fraction of the viewer.
-  const bottomTab = useUi((s) => s.bottomTab);
   const setBottomTab = useUi((s) => s.setBottomTab);
-  const bottomFraction = useUi((s) => s.bottomFraction);
-  const setBottomFraction = useUi((s) => s.setBottomFraction);
   const showProfiles = hasLines || drawingLines || bottomTabs.length > 0;
-  const tabs = [
-    ...bottomTabs.map((t) => ({ id: t.id, label: t.label })),
-    ...(showProfiles ? [{ id: "profile" as const, label: "Line profile" }] : []),
-  ];
   const spectrumTab = bottomTabs.find((t) => t.id !== "alignment");
-  const activeTab = tabs.find((t) => t.id === bottomTab)?.id ?? tabs[0]?.id;
+  const tabs = [
+    ...bottomTabs,
+    ...(showProfiles
+      ? [
+          {
+            id: "profile" as const,
+            label: "Line profile",
+            content: (
+              <ProfilePanel
+                view={viewKey}
+                layers={layers}
+                calX={geometry.calX}
+                calY={geometry.calY}
+                title={base?.label ?? images[0]?.title ?? "image"}
+                pickable={profilePick}
+                onShowSpectrum={spectrumTab ? () => setBottomTab(spectrumTab.id) : undefined}
+              />
+            ),
+          },
+        ]
+      : []),
+  ];
   const viewerRef = useRef<HTMLDivElement>(null);
-  // Image and stack views: their own tool keys. Any view: T switches tabs.
+  // Image and stack views: their own tool keys.
   useShortcuts({ l: () => setImageTool("line"), h: () => setImageTool("pan") }, lineTool === undefined);
-  useShortcuts(
-    { t: () => setBottomTab(tabs[(tabs.findIndex((x) => x.id === activeTab) + 1) % tabs.length].id) },
-    tabs.length > 1,
-  );
 
   const [dragOver, setDragOver] = useState(false);
   const accepts = (e: DragEvent) => overlays && e.dataTransfer.types.includes(DATASET_MIME);
@@ -393,51 +403,8 @@ export function LayeredViewer({
         {footer}
         {dragOver && <div className="drop-hint">Drop to overlay</div>}
       </div>
-      {activeTab && (
-        <>
-          <Splitter
-            direction="row"
-            className="viewer-resizer"
-            label="Resize the image and the pane below it"
-            onDrag={(y) => {
-              const r = viewerRef.current!.getBoundingClientRect();
-              setBottomFraction((r.bottom - y) / r.height);
-            }}
-            onReset={() => setBottomFraction(PANE_SIZES.bottom.initial)}
-          />
-          <div className="viewer-bottom" style={{ flexBasis: `${bottomFraction * 100}%` }}>
-            <div className="viewer-tabs" role="tablist">
-              {tabs.map((t) => (
-                <button
-                  key={t.id}
-                  role="tab"
-                  aria-selected={t.id === activeTab}
-                  className={t.id === activeTab ? "active" : undefined}
-                  onClick={() => setBottomTab(t.id)}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-            <div className="viewer-tab-body">
-              {activeTab === "profile" ? (
-                <ProfilePanel
-                  view={viewKey}
-                  layers={layers}
-                  calX={geometry.calX}
-                  calY={geometry.calY}
-                  title={base?.label ?? images[0]?.title ?? "image"}
-                  pickable={profilePick}
-                  onShowSpectrum={
-                    spectrumTab ? () => setBottomTab(spectrumTab.id) : undefined
-                  }
-                />
-              ) : (
-                bottomTabs.find((t) => t.id === activeTab)?.content
-              )}
-            </div>
-          </div>
-        </>
+      {tabs.length > 0 && (
+        <BottomPane tabs={tabs} viewerRef={viewerRef} resizeLabel="Resize the image and the pane below it" />
       )}
     </div>
   );

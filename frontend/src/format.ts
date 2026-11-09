@@ -18,8 +18,12 @@ export const hasTechnique = (d: DatasetSummary) =>
 /** A map of an energy window kept from a spectrum image. */
 export const isWindowMap = (d: DatasetSummary) => d.origin === "window";
 
+/** A spectrum image made by background removal. */
+export const isBackgroundRemoved = (d: DatasetSummary) => d.origin === "background";
+
 export function kindLabel(d: DatasetSummary): string {
   if (isWindowMap(d)) return "Window";
+  if (isBackgroundRemoved(d)) return "BG sub";
   if (d.origin === "composition") return "at%";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.
@@ -38,12 +42,6 @@ export function kindName(d: DatasetSummary): string {
   return t ? t + name : name[0].toUpperCase() + name.slice(1);
 }
 
-export const TECHNIQUE_SOURCE_NOTE: Record<string, string> = {
-  dm_tag: "from the DM tags",
-  energy_axis: "guessed from the energy axis",
-  user: "set by hand",
-};
-
 /** Hover text describing a dataset (what an element map contains). */
 export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string {
   const filters = filterLabel(d.filters);
@@ -60,6 +58,15 @@ export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string 
     const range = w ? `${formatValue(w.lo)}–${formatValue(w.hi)} ${w.units}` : d.title;
     return `${base}\nEnergy window ${range}${parentTitle ? ` of ${parentTitle}` : ""}`;
   }
+  if (isBackgroundRemoved(d)) {
+    const b = d.background;
+    const what = b
+      ? `${b.model.replace("_", " ")}${b.model === "polynomial" ? ` (order ${b.order})` : ""}, fitted on ` +
+        `${formatValue(b.background[0])}–${formatValue(b.background[1])} ${b.units}`
+      : "background removed";
+    return `${base}\nBackground removed${parentTitle ? ` from ${parentTitle}` : ""}: ${what}`;
+  }
+  if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "fitted") return `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;
   if (d.origin === "composition") return `${base}\nComposition (at%) per pixel: Cliff-Lorimer on the fitted maps`;

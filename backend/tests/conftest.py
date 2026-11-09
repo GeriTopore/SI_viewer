@@ -59,6 +59,18 @@ def eels_dm4() -> Path:
 
 
 @pytest.fixture(scope="session")
+def eels_dm4_ll() -> Path:
+    """Dual-EELS low loss, 96 × 415 × 3456 (550 MB): its ZLP is at -3.15 eV."""
+    return _example("STEM SI_EELS LL SI_summed.dm4")
+
+
+@pytest.fixture(scope="session")
+def eels_dm4_hl() -> Path:
+    """Dual-EELS core loss acquired with ``eels_dm4_ll``, 96 × 415 × 3456 (550 MB)."""
+    return _example("STEM SI_EELS HL SI_summed.dm4")
+
+
+@pytest.fixture(scope="session")
 def eels_cuzn() -> Path:
     """EELS spectrum image, 40 × 50 × 162."""
     return _example("CuZn_EELS_mapping_tutorial.hspy")

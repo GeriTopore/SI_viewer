@@ -188,13 +188,14 @@ export function layoutPane(files: FileSummary[]): { colourOf: Map<string, number
 /** The files of a pane item, in order. */
 export const paneFiles = (it: PaneItem): FileSummary[] => (it.type === "file" ? [it.file] : it.files);
 
-/** One file's datasets, with the members of a link group that live in this
- * same file side by side (low loss first, at the place of whichever comes first). */
-export function layoutFile(f: FileSummary, colourOf: Map<string, number>): DatasetItem[] {
-  const byId = new Map(f.datasets.map((d) => [d.id, d]));
+/** Datasets of one level of a file's tree, with the members of a link group
+ * that are on this level side by side (low loss first, at the place of
+ * whichever comes first). */
+export function layoutFile(ds: DatasetSummary[], colourOf: Map<string, number>): DatasetItem[] {
+  const byId = new Map(ds.map((d) => [d.id, d]));
   const out: DatasetItem[] = [];
   const done = new Set<string>();
-  for (const d of f.datasets) {
+  for (const d of ds) {
     if (done.has(d.id)) continue;
     const members = groupOf(d, byId);
     for (const m of members) done.add(m.id);
@@ -207,44 +208,82 @@ export function layoutFile(f: FileSummary, colourOf: Map<string, number>): Datas
   return out;
 }
 
-/** A file's rows: plain datasets, link groups, and type groups (two or more
- * unlinked datasets with the same badge, at the place of the first). */
+/** Rows of one level: plain datasets, link groups, and type groups (two or
+ * more unlinked datasets with the same badge, at the place of the first). */
 export type RowItem = DatasetItem | { type: "types"; key: string; label: string; ds: DatasetSummary[] };
 
-export function layoutRows(f: FileSummary, colourOf: Map<string, number>): RowItem[] {
-  const items = layoutFile(f, colourOf);
-  const byLabel = new Map<string, DatasetSummary[]>();
-  for (const it of items) {
-    if (it.type !== "dataset") continue;
-    const label = kindLabel(it.d);
-    byLabel.set(label, [...(byLabel.get(label) ?? []), it.d]);
-  }
-  const out: RowItem[] = [];
-  const placed = new Set<string>();
-  for (const it of items) {
-    if (it.type !== "dataset") {
-      out.push(it);
-      continue;
-    }
-    const label = kindLabel(it.d);
-    const ds = byLabel.get(label)!;
-    if (ds.length < 2) out.push(it);
-    else if (!placed.has(label)) {
-      placed.add(label);
-      out.push({ type: "types", key: typeGroupKey(f.path, label), label, ds });
-    }
-  }
-  return out;
+/** A file's datasets as a tree: everything made from a dataset (``parent_id``,
+ * or ``derived_from``) under it, to any depth. ``rows`` is the top level;
+ * ``children`` has the rows under each dataset that has any. */
+export interface FileTree {
+  rows: RowItem[];
+  children: Map<string, RowItem[]>;
 }
 
-/** The datasets in the order the list shows them. With ``collapsed``, the ones
- * hidden in folded type groups are left out. */
-export function displayDatasets(files: FileSummary[], collapsed?: Record<string, true>): DatasetSummary[] {
+/** The dataset ``d`` was made from, if it is in ``ids``. */
+const parentIn = (d: DatasetSummary, ids: Set<string>) => {
+  const p = d.parent_id ?? d.derived_from;
+  return p && p !== d.id && ids.has(p) ? p : null;
+};
+
+export function layoutTree(f: FileSummary, colourOf: Map<string, number>): FileTree {
+  const ids = new Set(f.datasets.map((d) => d.id));
+  const under = new Map<string | null, DatasetSummary[]>();
+  for (const d of f.datasets) {
+    const p = parentIn(d, ids);
+    under.set(p, [...(under.get(p) ?? []), d]);
+  }
+  const level = (ds: DatasetSummary[], parent: string | null): RowItem[] => {
+    const items = layoutFile(ds, colourOf);
+    const byLabel = new Map<string, DatasetSummary[]>();
+    for (const it of items) {
+      if (it.type !== "dataset") continue;
+      const label = kindLabel(it.d);
+      byLabel.set(label, [...(byLabel.get(label) ?? []), it.d]);
+    }
+    const out: RowItem[] = [];
+    const placed = new Set<string>();
+    for (const it of items) {
+      if (it.type !== "dataset") {
+        out.push(it);
+        continue;
+      }
+      const label = kindLabel(it.d);
+      const same = byLabel.get(label)!;
+      if (same.length < 2) out.push(it);
+      else if (!placed.has(label)) {
+        placed.add(label);
+        // The top level keeps the key its folding was saved under.
+        const key = typeGroupKey(f.path, parent === null ? label : `${parent}\n${label}`);
+        out.push({ type: "types", key, label, ds: same });
+      }
+    }
+    return out;
+  };
+  const children = new Map<string, RowItem[]>();
+  for (const [p, ds] of under) if (p !== null) children.set(p, level(ds, p));
+  return { rows: level(under.get(null) ?? [], null), children };
+}
+
+/** The datasets in the order the list shows them. With ``collapsed`` (folded
+ * type groups) and ``folded`` (datasets whose children are hidden), the ones
+ * hidden are left out. */
+export function displayDatasets(
+  files: FileSummary[], collapsed?: Record<string, true>, folded?: Record<string, true>,
+): DatasetSummary[] {
   const { colourOf, items } = layoutPane(files);
-  return items
-    .flatMap(paneFiles)
-    .flatMap((f) => layoutRows(f, colourOf))
-    .flatMap((it) => (it.type === "dataset" ? [it.d] : it.type === "types" && collapsed?.[it.key] ? [] : it.ds));
+  return items.flatMap(paneFiles).flatMap((f) => {
+    const { rows, children } = layoutTree(f, colourOf);
+    const node = (d: DatasetSummary): DatasetSummary[] => [
+      d,
+      ...(folded?.[d.id] ? [] : flat(children.get(d.id) ?? [])),
+    ];
+    const flat = (rs: RowItem[]): DatasetSummary[] =>
+      rs.flatMap((it) =>
+        it.type === "dataset" ? node(it.d) : it.type === "types" && collapsed?.[it.key] ? [] : it.ds.flatMap(node),
+      );
+    return flat(rows);
+  });
 }
 
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
@@ -540,11 +579,12 @@ export const useDatasets = create<DatasetsState>((set, get) => {
 
     // Arrow keys: step the focus; spectrum images, stacks and spectra also
     // become the view, while images are only inspected (click adds them).
-    // Datasets hidden in folded type groups are skipped.
+    // Datasets hidden in folded type groups or under folded datasets are skipped.
     selectRelative: (step) => {
       const files = get().files;
       const list = displayDatasets(files);
-      const visible = new Set(displayDatasets(files, useUi.getState().collapsedTypes).map((d) => d.id));
+      const { collapsedTypes, foldedNodes } = useUi.getState();
+      const visible = new Set(displayDatasets(files, collapsedTypes, foldedNodes).map((d) => d.id));
       if (!visible.size) return;
       const i = list.findIndex((d) => d.id === get().focusId);
       let j = i < 0 ? -1 : i;

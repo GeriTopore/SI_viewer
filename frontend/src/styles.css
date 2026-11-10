@@ -621,6 +621,115 @@ button.primary:disabled {
   margin-top: 10px;
 }
 
+/* The dataset tree (M14a): what was made from a dataset hangs under it, one
+   level in, with the same tree lines as a type group's members. */
+.tree-children-row > .dataset-list {
+  --tree-line: color-mix(in srgb, var(--muted) 45%, transparent);
+  margin: 0 0 0 10px;
+}
+
+.tree-children-row > .dataset-list > li {
+  position: relative;
+  padding-left: 10px;
+}
+
+.tree-children-row > .dataset-list > li::before,
+.tree-children-row > .dataset-list > li::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  background: var(--tree-line);
+  pointer-events: none;
+}
+
+.tree-children-row > .dataset-list > li::before {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.tree-children-row > .dataset-list > li:last-child::before {
+  bottom: 50%;
+}
+
+.tree-children-row > .dataset-list > li::after {
+  top: 50%;
+  width: 10px;
+  height: 1px;
+}
+
+/* A node's children hang from the node's own branch: no branch of their own;
+   the trunk carries on past them only when more siblings follow, and the
+   node ends it (└─) when they are the last. */
+:is(.type-group, .tree-children-row) > .dataset-list > li.tree-children-row::after {
+  display: none;
+}
+
+:is(.type-group, .tree-children-row) > .dataset-list > li.tree-children-row:last-child::before {
+  display: none;
+}
+
+:is(.type-group, .tree-children-row) > .dataset-list > li:has(+ li.tree-children-row:last-child)::before {
+  bottom: 50%;
+}
+
+/* A type group's children (and a nested node's) branch from mid-row, so
+   their own rows sit after it. */
+.tree-children-row > .dataset-list > li.type-group::after,
+.tree-children-row > .dataset-list > li.pair-box::after {
+  top: 11px;
+}
+
+.tree-children-row > .dataset-list > li.type-group:last-child::before,
+.tree-children-row > .dataset-list > li.pair-box:last-child::before {
+  bottom: auto;
+  height: 11px;
+}
+
+.node-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  margin: 0 3px 0 -2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  vertical-align: -1px;
+  cursor: pointer;
+}
+
+.node-toggle .process-chevron {
+  margin: 0 0 3px;
+}
+
+.node-toggle.folded .process-chevron {
+  margin: 0 0 0 -2px;
+  transform: rotate(-45deg);
+}
+
+.node-toggle:hover {
+  color: var(--text);
+}
+
+.dataset-grid > .tree-children-row {
+  grid-column: 1 / -1;
+  padding-left: 10px;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 45%, transparent);
+}
+
+/* Cards one level in are a little narrower, so the indent doesn't leave
+   room for a single, pane-wide card. */
+.tree-children-row .dataset-grid {
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+}
+
+.tree-children-row > .dataset-grid {
+  margin-top: 0;
+}
+
 /* Members of a type group: the group row names the type, so no badge. */
 .dataset.no-badge {
   grid-template-columns: minmax(10ch, 1fr) minmax(0, auto) 18px;

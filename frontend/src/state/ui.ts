@@ -104,6 +104,9 @@ interface UiState {
   /** Dataset type groups folded in the list, by `typeGroupKey` (file path + type). */
   collapsedTypes: Record<string, true>;
   toggleTypeGroup: (key: string) => void;
+  /** Datasets whose results are folded away in the list, by id (this session only). */
+  foldedNodes: Record<string, true>;
+  toggleNode: (id: string) => void;
   /** Tab shown in the right-hand column. */
   rightTab: RightTab;
   setRightTab: (tab: RightTab) => void;
@@ -199,6 +202,14 @@ export const useUi = create<UiState>((set, get) => ({
       else collapsedTypes[key] = true;
       save("si-viewer.collapsedTypes", JSON.stringify(collapsedTypes));
       return { collapsedTypes };
+    }),
+  foldedNodes: {},
+  toggleNode: (id) =>
+    set((s) => {
+      const foldedNodes = { ...s.foldedNodes };
+      if (foldedNodes[id]) delete foldedNodes[id];
+      else foldedNodes[id] = true;
+      return { foldedNodes };
     }),
   rightTab: load<RightTab>("si-viewer.rightTab", "info"),
   leftCollapsed: load<string>("si-viewer.leftCollapsed", "false") === "true",

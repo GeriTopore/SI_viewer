@@ -1187,9 +1187,9 @@ Gaussians in the fine structure; the per-pixel fit uses the loaded data
 (filters are not applied; the single fit uses the processed spectrum); a
 fit is not cleared when an in-situ frame changes.
 
-### 4.16 Dataset pane as a tree; one list of fitted maps (M14, planned)
+### 4.16 Dataset pane as a tree; one list of fitted maps (M14, in progress)
 
-**M14a — The dataset pane is a tree.** Everything made from a dataset is
+**M14a — The dataset pane is a tree** (built). Everything made from a dataset is
 listed under it, indented with tree lines, to any depth: a background-removed
 spectrum image under its source, and the window maps, exponent map, fitted
 maps and deconvolved spectra made from *it* under it, not beside the source's
@@ -1207,6 +1207,16 @@ background-removed subset can't be told from the source's.
   takes its subtree (as `_remove_tree` does); ↑/↓ walk the visible rows.
 - **Experiments** stay the top level (experiment → files by role → datasets
   → results).
+- **Built:** `layoutTree` in `state/datasets.ts` (per file: the children of
+  each dataset by `parent_id`, else `derived_from`, within the file; each
+  level gets link boxes and type groups); `DatasetList.tsx` renders a
+  dataset's results right after it, one level in, with tree lines (large
+  icons: a full-width row of narrower cards). A chevron before the title
+  folds a dataset's results (`foldedNodes` in the ui store, this session
+  only); a type group nested in a dataset saves its folding under the
+  parent's id. ↑/↓ skip rows hidden by either. Every result the backend
+  makes already has its parent (window maps on a background-removed SI
+  point at it).
 
 **M14b — One list of fitted maps, with an at% switch.** A per-pixel fit (EELS
 model, and EDS) gives one map per element, not a *Map* list plus an *at%*
@@ -1251,7 +1261,7 @@ applies to all the maps of that fit at once.
 | M11 | Grid / Merged views for images and maps (M11a, done), split pane under the image (M11b, done) | Done |
 | M12 | In-situ EELS series from `.dm4` + `.raw`: reader (M12a), frame browsing (M12b), time-series job (M12c), Time tab (M12d), sum frames with drift correction (M12e) | In progress (M12a, M12b done) |
 | M13 | EELS element maps by fitting edges with cross-sections: edges in the periodic table (M13a), fit one spectrum (M13b), per-pixel maps (M13c) | In progress |
-| M14 | Dataset pane as a tree of datasets and their results (M14a); one list of fitted maps with a Counts / at% switch (M14b) | Planned |
+| M14 | Dataset pane as a tree of datasets and their results (M14a); one list of fitted maps with a Counts / at% switch (M14b) | In progress (M14a built) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

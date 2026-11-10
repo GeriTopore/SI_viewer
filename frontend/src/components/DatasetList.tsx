@@ -1,6 +1,11 @@
-import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import {
+  Fragment, useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode,
+} from "react";
 import { api, thumbnailUrl, type DatasetSummary, type EelsPartner, type FileSummary } from "../api/client";
-import { allDatasets, canDelete, elementOf, isColourMap, layoutPane, layoutRows, setMapColour, useDatasets, type PaneItem, type RowItem } from "../state/datasets";
+import {
+  allDatasets, canDelete, elementOf, isColourMap, layoutPane, layoutTree, setMapColour, useDatasets,
+  type FileTree, type PaneItem, type RowItem,
+} from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
@@ -14,6 +19,14 @@ import { openAlignment } from "./AlignSection";
 import { RenameInput } from "./RenameInput";
 import { ExportDialog } from "./ExportDialog";
 import { useExportFormats } from "../download";
+
+/** How many datasets are under ``id`` in ``tree``, at any depth. */
+function countUnder(id: string, tree: FileTree): number {
+  const rows = tree.children.get(id) ?? [];
+  return rows
+    .flatMap((it) => (it.type === "dataset" ? [it.d] : it.ds))
+    .reduce((n, d) => n + 1 + countUnder(d.id, tree), 0);
+}
 
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
@@ -33,6 +46,8 @@ export function DatasetList() {
   const listMode = useUi((s) => s.listMode);
   const collapsedTypes = useUi((s) => s.collapsedTypes);
   const toggleTypeGroup = useUi((s) => s.toggleTypeGroup);
+  const foldedNodes = useUi((s) => s.foldedNodes);
+  const toggleNode = useUi((s) => s.toggleNode);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // Right-click menu (Rebin…, Delete) and the rebin dialog it opens.
   const [menu, setMenu] = useState<{ x: number; y: number; d: DatasetSummary } | null>(null);
@@ -117,11 +132,46 @@ export function DatasetList() {
       </span>
     );
   const parentTitle = (d: DatasetSummary) => (d.parent_id ? titles.get(d.parent_id) : undefined);
+  // A dataset with results (anything made from it) folds them away.
+  const nodeToggle = (d: DatasetSummary, tree: FileTree) => {
+    const n = countUnder(d.id, tree);
+    if (!n) return null;
+    const folded = !!foldedNodes[d.id];
+    return (
+      <button
+        className={`node-toggle${folded ? " folded" : ""}`}
+        aria-expanded={!folded}
+        aria-label={folded ? `Show ${n} results` : `Hide ${n} results`}
+        title={folded ? `${n} result${n > 1 ? "s" : ""}` : "Hide its results"}
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleNode(d.id);
+        }}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <span className="process-chevron" aria-hidden />
+      </button>
+    );
+  };
   // `inGroup`: a member of a type group, whose header already names the type
-  // (list view only; the cards keep their badge).
-  const renderDataset = (d: DatasetSummary, inGroup = false) =>
+  // (list view only; the cards keep their badge). The dataset's results
+  // follow it, one level in.
+  const renderDataset = (d: DatasetSummary, tree: FileTree, inGroup = false) => {
+    const kids = tree.children.get(d.id);
+    return (
+      <Fragment key={d.id}>
+        {renderRow(d, tree, inGroup)}
+        {kids && !foldedNodes[d.id] && (
+          <li className="tree-children-row">
+            <ul className={listClass}>{renderRows(kids, tree)}</ul>
+          </li>
+        )}
+      </Fragment>
+    );
+  };
+  const renderRow = (d: DatasetSummary, tree: FileTree, inGroup: boolean) =>
     listMode === "grid" ? (
-      <li key={d.id}>
+      <li className={tree.children.has(d.id) ? "tree-node" : undefined}>
         <div {...itemProps(d, "dataset-card")} title={datasetTooltip(d, parentTitle(d))}>
           <span className={`thumb thumb-${d.kind}`}>
             <img src={thumbnailUrl(d)} alt="" loading="lazy" draggable={false} />
@@ -130,6 +180,7 @@ export function DatasetList() {
             {canDelete(d) && <DeleteButton d={d} className="thumb-delete" onDelete={deleteDataset} />}
           </span>
           <span className="dataset-title">
+            {nodeToggle(d, tree)}
             {isColourMap(d) && <ColourDot d={d} />}
             <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} />
             {titleOf(d)}
@@ -138,10 +189,11 @@ export function DatasetList() {
         </div>
       </li>
     ) : (
-      <li key={d.id}>
+      <li className={tree.children.has(d.id) ? "tree-node" : undefined}>
         <div {...itemProps(d, inGroup ? "dataset no-badge" : "dataset")} title={datasetTooltip(d, parentTitle(d))}>
           {!inGroup && <span className={badgeClass(d)}>{kindLabel(d)}</span>}
           <span className="dataset-title">
+            {nodeToggle(d, tree)}
             {isColourMap(d) && <ColourDot d={d} />}
             <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} />
             {titleOf(d)}
@@ -153,7 +205,7 @@ export function DatasetList() {
     );
   const listClass = listMode === "grid" ? "dataset-grid" : "dataset-list";
   // Two or more datasets of one type: a foldable group.
-  const renderTypes = (g: Extract<RowItem, { type: "types" }>) => {
+  const renderTypes = (g: Extract<RowItem, { type: "types" }>, tree: FileTree) => {
     const isCollapsed = !!collapsedTypes[g.key];
     const active = isCollapsed && g.ds.some((d) => highlighted.has(d.id) || d.id === focusId);
     return (
@@ -173,10 +225,25 @@ export function DatasetList() {
           <span className={badgeClass(g.ds[0])}>{g.label}</span>
           <span className="dataset-shape">{g.ds.length}</span>
         </button>
-        {!isCollapsed && <ul className={listClass}>{g.ds.map((d) => renderDataset(d, true))}</ul>}
+        {!isCollapsed && <ul className={listClass}>{g.ds.map((d) => renderDataset(d, tree, true))}</ul>}
       </li>
     );
   };
+  // One level of a file's tree: datasets, type groups and link boxes.
+  const renderRows = (rows: RowItem[], tree: FileTree): ReactNode[] =>
+    rows.map((it) =>
+      it.type === "dataset" ? (
+        renderDataset(it.d, tree)
+      ) : it.type === "types" ? (
+        renderTypes(it, tree)
+      ) : (
+        // Linked datasets of this file, side by side in a box.
+        <li key={it.ds.map((d) => d.id).join("+")} className="pair-box pair-rows" style={pairStyle(it.colour)}>
+          <span className="pair-label">Linked EELS</span>
+          <ul className={listClass}>{it.ds.map((d) => renderDataset(d, tree))}</ul>
+        </li>
+      ),
+    );
   const renderFile = (file: FileSummary) => {
     const isCollapsed = collapsed[file.id];
     return (
@@ -197,23 +264,10 @@ export function DatasetList() {
             ×
           </button>
         </div>
-        {!isCollapsed && (
-          <ul className={listClass}>
-            {layoutRows(file, colourOf).map((it) =>
-              it.type === "dataset" ? (
-                renderDataset(it.d)
-              ) : it.type === "types" ? (
-                renderTypes(it)
-              ) : (
-                // Linked datasets of this file, side by side in a box.
-                <li key={it.ds.map((d) => d.id).join("+")} className="pair-box pair-rows" style={pairStyle(it.colour)}>
-                  <span className="pair-label">Linked EELS</span>
-                  <ul className={listClass}>{it.ds.map((d) => renderDataset(d))}</ul>
-                </li>
-              ),
-            )}
-          </ul>
-        )}
+        {!isCollapsed && (() => {
+          const tree = layoutTree(file, colourOf);
+          return <ul className={listClass}>{renderRows(tree.rows, tree)}</ul>;
+        })()}
       </li>
     );
   };

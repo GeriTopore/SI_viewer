@@ -85,6 +85,24 @@ export interface EelsInfo {
   collection_angle: number | null;
 }
 
+/** An ionisation edge of an element inside a spectrum's energy range. */
+export interface EelsSubshell {
+  /** e.g. "Mn_L3". */
+  name: string;
+  element: string;
+  edge: string;
+  /** eV. */
+  onset: number;
+  major: boolean;
+}
+
+/** EELS spectra and spectrum images: the elements chosen for a model fit and
+ * their edges inside the energy range (by onset). */
+export interface EdgesInfo {
+  elements: string[];
+  subshells: EelsSubshell[];
+}
+
 /** A dataset a spectrum image could be linked with (same scan, any role). */
 export interface EelsPartner {
   id: string;
@@ -115,6 +133,8 @@ export interface DatasetSummary {
   technique_source: TechniqueSource | null;
   /** EELS spectrum images only. */
   eels: EelsInfo | null;
+  /** EELS spectra and spectrum images only. */
+  edges: EdgesInfo | null;
   /** In-situ series (spectrum image or image stack); null otherwise. */
   insitu: InsituInfo | null;
   /** "computed": an element map made from a spectrum image (window +
@@ -483,6 +503,64 @@ export interface FitResult {
   skipped: string[];
 }
 
+/** Cross-sections of an EELS model: exSpy's GOS tables, or the hydrogenic model (K and L edges). */
+export type EelsGos = "dft" | "dirac" | "hydrogenic";
+
+export interface EelsFitOptions {
+  gos: EelsGos;
+  /** Fit the fine structure after each onset with a spline over ``fine_structure_width`` (eV). */
+  fine_structure: boolean;
+  fine_structure_width: number;
+  /** Element → onset (eV) of its edge, where the database's is off. */
+  onsets: Record<string, number>;
+  /** Fitted range (eV); null: to the end of the spectrum. */
+  lo: number | null;
+  hi: number | null;
+  /** Convolve the model with the group's low loss, when it has one. */
+  convolve: boolean;
+}
+
+export interface EelsFitRow {
+  element: string;
+  /** The edge carrying the element's intensity, e.g. "Mn_L3". */
+  edge: string;
+  onset: number;
+  intensity: number;
+  std: number | null;
+  atomic_percent: number | null;
+  fine_structure_width: number | null;
+}
+
+/** An EELS model fit of one spectrum: curves over the fitted range (as ``FitResult``) and a row per element. */
+export interface EelsFitResult {
+  x: number[];
+  data: number[];
+  model: number[];
+  background: number[];
+  elements: Record<string, number[]>;
+  rows: EelsFitRow[];
+  /** Exponent of the power-law background. */
+  background_r: number | null;
+  residual_ratio: number | null;
+  convolved: boolean;
+  low_loss_id: string | null;
+  gos: EelsGos;
+  pixels: number;
+  /** Elements with no edge in the fitted range. */
+  skipped: string[];
+}
+
+/** A dropped file or folder, as a browser describes it (it gives no path). */
+export interface DroppedItem {
+  name: string;
+  is_dir: boolean;
+  size?: number;
+  /** ms since the epoch. */
+  modified?: number;
+  /** Folders: some of the files directly inside. */
+  children: { name: string; size: number }[];
+}
+
 /** A dataset change that may also have changed its file's maps. */
 export interface DatasetAndFile {
   dataset: DatasetSummary;
@@ -705,6 +783,9 @@ export const api = {
   health: () => request<Health>("/api/health"),
   renderPlot,
   listFiles: () => request<FileSummary[]>("/api/files"),
+  /** Where dropped files and folders are on disk (null: not found). */
+  locate: (items: DroppedItem[], hints: string[]) =>
+    request<{ paths: (string | null)[] }>("/api/fs/locate", { method: "POST", body: JSON.stringify({ items, hints }) }),
   openFile: (path: string, experimentId?: string) =>
     request<FileSummary>("/api/files", {
       method: "POST",
@@ -724,6 +805,16 @@ export const api = {
     request<DatasetSummary>(`/api/datasets/${id}/axes`, { method: "PATCH", body: JSON.stringify(axes) }),
   setElements: (id: string, elements: string[]) =>
     request<DatasetAndFile>(`/api/datasets/${id}/elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
+  setEelsElements: (id: string, elements: string[]) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/eels-elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
+  eelsFit: (id: string, source: FitSource, options: EelsFitOptions) =>
+    request<EelsFitResult>(`/api/datasets/${id}/eels-fit`, { method: "POST", body: JSON.stringify({ source, options }) }),
+  /** Job: fit every pixel; its result's file has a fitted map per element (and at% maps). */
+  startEelsFitMaps: (id: string, options: EelsFitOptions, composition: boolean) =>
+    request<JobSummary>(`/api/datasets/${id}/eels-fit-maps`, {
+      method: "POST",
+      body: JSON.stringify({ options, composition }),
+    }),
   /** Switching away from EDS may remove computed maps, hence the file. */
   setTechnique: (id: string, technique: Technique | null) =>
     request<DatasetAndFile>(`/api/datasets/${id}/technique`, { method: "PUT", body: JSON.stringify({ technique }) }),

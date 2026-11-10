@@ -243,10 +243,22 @@ class Dataset:
         if units is not None:
             axis.units = units
 
+    def _keep_eels_elements(self, signal) -> None:
+        """Give ``signal`` (about to replace this dataset's) the elements chosen
+        for an EELS model fit, when it comes without any (another frame)."""
+        from .processing.eels_model import set_elements
+
+        elements = self.signal.metadata.get_item("Sample.elements", None)
+        if not elements or technique_of(self.signal) != "EELS" or technique_of(signal) != "EELS":
+            return
+        if not signal.metadata.get_item("Sample.elements", None):
+            set_elements(signal, list(elements))
+
     def replace_signal(self, signal) -> None:
         """Swap in recomputed data (new revision, caches cleared)."""
         if self.custom_title:
             signal.metadata.General.title = self.custom_title
+        self._keep_eels_elements(signal)
         self.signal = signal
         self.revision += 1
         self.thumbnails.clear()
@@ -258,6 +270,7 @@ class Dataset:
         so they refetch."""
         if self.custom_title:
             signal.metadata.General.title = self.custom_title
+        self._keep_eels_elements(signal)
         self.signal = signal
         self.data_rev += 1
         self.thumbnails = {}
@@ -266,6 +279,7 @@ class Dataset:
     def summary(self) -> dict:
         from .processing.element_maps import MapOptions
         from .processing.eels import eels_info
+        from .processing.eels_model import edges_info
         from .processing.technique import technique_of
         from .processing.xray import eds_info
 
@@ -281,6 +295,7 @@ class Dataset:
             "technique": technique,
             "technique_source": self.technique_source if is_spectrum else None,
             "eels": eels_info(self),
+            "edges": edges_info(s) if technique == "EELS" else None,
             "origin": self.origin,
             "element": self.element,
             "parent_id": self.parent_id,
@@ -1317,6 +1332,27 @@ class Session:
                 if not self.computed_maps(ds, element) and not self._add_computed_map(ds, element):
                     warnings.append(f"{element}: no X-ray line in the spectrum's energy range, so no map")
         return warnings
+
+    def set_eels_elements(self, ds: Dataset, elements: list[str]) -> None:
+        """Set the elements of an EELS spectrum or spectrum image: the ones
+        whose edges a model fit gets (see processing/eels_model.py)."""
+        from .processing.eels_model import set_elements
+
+        if ds.kind not in (DatasetKind.SPECTRUM, DatasetKind.SPECTRUM_IMAGE) or technique_of(ds.signal) != "EELS":
+            raise ValueError(f"{ds.title} is not an EELS spectrum")
+        for signal in dict.fromkeys(s for s in (ds.signal, ds.original_signal, ds.aligned_signal) if s is not None):
+            set_elements(signal, elements)
+
+    def eels_fit_low_loss(self, ds: Dataset) -> Dataset | None:
+        """The low loss an EELS model of ``ds`` is convolved with: its group's
+        (for spectra made from another spectrum image, that one's), on the
+        same scan; None without one, or for the low loss itself."""
+        ll = self.deconvolution_low_loss(ds)
+        if ll is None or ll is ds:
+            return None
+        ll.materialise()
+        same = tuple(ll.signal.axes_manager.navigation_shape) == tuple(ds.signal.axes_manager.navigation_shape)
+        return ll if same else None
 
     def set_technique(self, ds: Dataset, technique: str | None) -> None:
         """Say by hand whether a spectrum or spectrum image is EDS or EELS

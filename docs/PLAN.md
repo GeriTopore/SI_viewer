@@ -1130,6 +1130,96 @@ rectangles GMS drew on it: where the spectrum image was taken and the spatial
 drift reference (`io/dm_experiment.py`, from the survey's
 `DocumentObjectList`).
 
+### 4.15 EELS element maps by model fitting (M13, in progress)
+
+Element maps of an EELS spectrum image from a fit of its edges with computed
+cross-sections (exSpy's `EELSModel`), not from window integration. The
+workflow is the one of the HyperSpy tutorials
+(`~/Documents/Dev/Hyperspy_Workshop_2025/EELS`): `add_elements` → microscope
+parameters → `create_model(low_loss=…, GOS=…)` → `smart_fit` on a spectrum,
+check it → (optionally the onset, the fine structure) →
+`multifit(kind="smart")` → the edges' `intensity` as maps.
+
+**The model.** A power-law background plus one `EELSCLEdge` per subshell of
+each element inside the energy range; an element's subshells are tied to its
+first (L2 and L1 follow L3), so each element has one intensity. It needs the
+beam energy and the convergence and collection angles (Info tab). With a low
+loss in the link group, the model is convolved with it (plural scattering).
+The intensities are already divided by the cross-sections, so their ratios
+are atomic ratios.
+
+- **Cross-sections:** *DFT* (default; Segger, Guzzinati & Kohl), *Dirac* or
+  *Hydrogenic* (K and L only). The DFT and Dirac tables are files exSpy
+  downloads once from Zenodo into pooch's cache.
+- **Fine structure:** not fitted by default. *Fine structure (spline)* turns
+  on exSpy's spline over a typed width (30 eV) after each onset.
+- **Onset:** the database's, or typed per element (as the tutorial does for
+  O K at 524 eV).
+- **Fit range:** the whole spectrum, or typed limits.
+
+**M13a — Edges in the periodic table.** The *Elements* button on EELS
+spectra, spectrum images and line scans. Elements without an edge inside the
+energy range are disabled; hovering previews the onsets on the spectrum;
+ticked elements keep labelled markers ("Mn L₃"). Each dataset has its own
+elements (`Sample.elements`; summary `edges: {elements, subshells}`).
+`PUT …/eels-elements {elements}`.
+
+**M13b — Fit one spectrum.** Quantify tab, for EELS: the sum, the cursor or a
+region. *Fit* draws the model, the background and each element's edges on the
+spectrum (as the EDS fit) and lists each element's intensity, its error, at%
+and onset, with the residual (its size relative to the signal) and the
+background's exponent. Typing an onset refits. `POST …/eels-fit {source,
+options}`. Built (`processing/eels_model.py`, `api/eels_fit.py`,
+`components/EelsFitPanel.tsx`, `state/eelsFit.ts`); both paths are tested
+equal to exSpy's own calls.
+
+**M13c — Maps.** *Fit every pixel* runs `multifit(kind="smart")` as a job
+(about 10 ms a pixel without a low loss, 30 ms with one; progress, cancel),
+with the settings of the single fit. Result: a fitted map per element and
+at% maps, listed like the EDS fitted maps (`origin "fitted"` /
+`"composition"`; removed when the spectrum image is rebinned, filtered or
+re-aligned). 2D scans only. `POST …/eels-fit-maps {options}`.
+
+**Later.** A linear per-pixel solve (onsets and exponent from the summed fit;
+40 spectra in 0.05 s) and an LCPL background; LBA; profiles for line scans;
+elements shared by a link group and quantification across core-loss ranges;
+Gaussians in the fine structure; the per-pixel fit uses the loaded data
+(filters are not applied; the single fit uses the processed spectrum); a
+fit is not cleared when an in-situ frame changes.
+
+### 4.16 Dataset pane as a tree; one list of fitted maps (M14, planned)
+
+**M14a — The dataset pane is a tree.** Everything made from a dataset is
+listed under it, indented with tree lines, to any depth: a background-removed
+spectrum image under its source, and the window maps, exponent map, fitted
+maps and deconvolved spectra made from *it* under it, not beside the source's
+own. Today these are flat groups by type per file, so the maps of a
+background-removed subset can't be told from the source's.
+- **Applies to every result that becomes a dataset:** computed, window,
+  fitted and composition maps, background-removed and deconvolved spectra
+  (and their maps), thickness, ZLP shift, aligned averages.
+- **Parent:** `parent_id` (and `derived_from`), which the backend already
+  sets; the tree is built from it in the frontend. Check that every result
+  has one (window maps of a background-removed spectrum image point at it,
+  not at its source).
+- **Behaviour:** a node folds with its children; same-type siblings still
+  fold into a type group inside their parent; deleting or closing a node
+  takes its subtree (as `_remove_tree` does); ↑/↓ walk the visible rows.
+- **Experiments** stay the top level (experiment → files by role → datasets
+  → results).
+
+**M14b — One list of fitted maps, with an at% switch.** A per-pixel fit (EELS
+model, and EDS) gives one map per element, not a *Map* list plus an *at%*
+list. A *Counts | at%* switch (on the group's header, and in the viewer
+toolbar when such a map is shown) says which quantity the maps show; it
+applies to all the maps of that fit at once.
+- **Backend:** each fitted map keeps both arrays (intensity and at%) and
+  serves the one asked for; `origin "composition"` goes. The summary says
+  which quantities a map has and which is shown; switching bumps the
+  revision so contrast is redone.
+- **Display, profiles and export** use the quantity shown; the title and
+  units follow ("Cu (fit)" / "Cu at%").
+
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
@@ -1160,6 +1250,8 @@ drift reference (`io/dm_experiment.py`, from the survey's
 | M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d), background removal and edge maps (M10e) | In progress (M10a–c done; M10d: thickness, ZLP alignment and deconvolution built) |
 | M11 | Grid / Merged views for images and maps (M11a, done), split pane under the image (M11b, done) | Done |
 | M12 | In-situ EELS series from `.dm4` + `.raw`: reader (M12a), frame browsing (M12b), time-series job (M12c), Time tab (M12d), sum frames with drift correction (M12e) | In progress (M12a, M12b done) |
+| M13 | EELS element maps by fitting edges with cross-sections: edges in the periodic table (M13a), fit one spectrum (M13b), per-pixel maps (M13c) | In progress |
+| M14 | Dataset pane as a tree of datasets and their results (M14a); one list of fitted maps with a Counts / at% switch (M14b) | Planned |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

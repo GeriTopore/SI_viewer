@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type DatasetSummary } from "../../api/client";
+import { api, type DatasetSummary, type EdgesInfo } from "../../api/client";
 import type { Marker } from "../../components/SpectrumPlot";
 import { useDatasets } from "../../state/datasets";
 import { useDisplay } from "../../state/display";
@@ -11,12 +11,20 @@ export interface XrayLine {
   weight: number;
 }
 
+/** An EELS ionisation edge of an element (onset in eV). */
+export interface ElementEdge {
+  edge: string;
+  onset: number;
+  major: boolean;
+}
+
 export interface ElementInfo {
   symbol: string;
   Z: number;
   name: string;
   atomic_weight: number;
   lines: XrayLine[];
+  edges: ElementEdge[];
 }
 
 let tablePromise: Promise<ElementInfo[]> | null = null;
@@ -90,6 +98,45 @@ export function useLineMarkers(
   }, [table, colours, elements, preview, beamEnergy, xrayLines, range[0], range[1]]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
+const SUBSCRIPT = "₀₁₂₃₄₅₆₇₈₉";
+/** "L3" → "L₃". */
+export const edgeLabel = (edge: string) => edge.replace(/\d/g, (d) => SUBSCRIPT[Number(d)]);
+
+/** Edge-onset markers of an EELS dataset's elements (plus a dashed preview of
+ * ``preview``, the element hovered in the periodic table): major edges at
+ * full height and labelled, minor ones lower. */
+export function useEdgeMarkers(edges: EdgesInfo | null, preview: string | null, range: [number, number]) {
+  const table = useElementTable();
+  const colours = useDisplay((s) => s.elementColours);
+  return useMemo(() => {
+    if (!edges) return [];
+    const marker = (element: string, e: ElementEdge, dashed: boolean): Marker => ({
+      energy: e.onset,
+      weight: e.major ? 1 : 0.5,
+      color: colours[element] ?? DEFAULT_MARKER,
+      label: e.major ? `${element} ${edgeLabel(e.edge)}` : undefined,
+      dashed,
+      element,
+    });
+    const markers = edges.subshells.map((s) => marker(s.element, s, false));
+    if (preview && !edges.elements.includes(preview)) {
+      for (const e of table.find((t) => t.symbol === preview)?.edges ?? []) {
+        if (e.onset >= range[0] && e.onset <= range[1]) markers.push(marker(preview, e, true));
+      }
+    }
+    return markers;
+  }, [table, colours, edges, preview, range[0], range[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/** The markers of a spectrum plot: X-ray lines (EDS) or edge onsets (EELS)
+ * of the dataset's elements and of the element hovered in the periodic table. */
+export function useMarkers(ds: DatasetSummary, preview: string | null, x: Float64Array): Marker[] {
+  const range: [number, number] = [x[0], x[x.length - 1]];
+  const lines = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, range);
+  const edges = useEdgeMarkers(ds.edges, preview, range);
+  return ds.edges ? edges : lines;
+}
+
 /** Peak FWHM (keV) at ``energy`` from the detector's Mn Kα resolution (eV),
  * as in exSpy's ``get_FWHM_at_Energy``. */
 export function fwhmAt(energy: number, resolutionMnKa = 130): number {
@@ -100,6 +147,16 @@ export function fwhmAt(energy: number, resolutionMnKa = 130): number {
  * which includes the file: a spectrum image gains or loses computed maps). */
 export async function setElements(ds: DatasetSummary, elements: string[]) {
   const { updateDataset, replaceFile } = useDatasets.getState();
+  if (ds.edges) {
+    // EELS: the elements whose edges are marked and fitted.
+    for (const e of elements) useDisplay.getState().ensureElementColour(e);
+    try {
+      replaceFile((await api.setEelsElements(ds.id, elements)).file);
+    } catch (e) {
+      useLayers.getState().notify(`Could not set elements: ${(e as Error).message}`);
+    }
+    return;
+  }
   if (!ds.eds) return;
   for (const e of elements) useDisplay.getState().ensureElementColour(e);
   updateDataset({ ...ds, eds: { ...ds.eds, elements } });

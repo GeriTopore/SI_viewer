@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useDisplay } from "../state/display";
 import { swatchBackground } from "../viewer/colormaps";
-import { lineLabel, useElementTable, type ElementInfo } from "../views/si/xray";
+import { edgeLabel, lineLabel, useElementTable, type ElementInfo } from "../views/si/xray";
 
 // Standard 18-column layout; "" is a gap, "*"/"**" mark the f-block rows.
 const ROWS = [
@@ -26,10 +26,15 @@ interface Props {
   style?: CSSProperties;
   /** Shown under the table (e.g. map options for a spectrum image). */
   footer?: ReactNode;
+  /** EELS: the spectrum's energy range (eV). Elements are chosen by their
+   * edges inside it, not by their X-ray lines. */
+  edgeRange?: [number, number];
 }
 
 /** Popover periodic table for choosing elements; hover previews their lines. */
-export function PeriodicTable({ selected, onToggle, onClear, onHover, onClose, style, footer }: Props) {
+export function PeriodicTable({ selected, onToggle, onClear, onHover, onClose, style, footer, edgeRange }: Props) {
+  const edgesOf = (el: ElementInfo) =>
+    edgeRange ? el.edges.filter((e) => e.onset >= edgeRange[0] && e.onset <= edgeRange[1]) : [];
   const table = useElementTable();
   const colours = useDisplay((s) => s.elementColours);
   const ref = useRef<HTMLDivElement>(null);
@@ -66,7 +71,7 @@ export function PeriodicTable({ selected, onToggle, onClear, onHover, onClose, s
                 <button
                   key={sym}
                   className={`pt-cell${on ? " on" : ""}`}
-                  disabled={!el || !el.lines.length}
+                  disabled={!el || !(edgeRange ? edgesOf(el).length || on : el.lines.length)}
                   style={on ? { background: swatchBackground(colours[sym] ?? "#4c8dff") } : undefined}
                   onClick={() => onToggle(sym)}
                   onMouseEnter={() => {
@@ -91,15 +96,18 @@ export function PeriodicTable({ selected, onToggle, onClear, onHover, onClose, s
                 {info.Z} {info.symbol}
               </b>{" "}
               <span className="muted">{info.name}</span>{" "}
-              {info.lines
-                .filter((l) => l.weight >= 0.5)
-                .map((l) => `${lineLabel(l.line)} ${l.energy.toFixed(3)}`)
-                .join(" · ")}{" "}
-              keV
+              {edgeRange
+                ? `${edgesOf(info)
+                    .map((e) => `${edgeLabel(e.edge)} ${Math.round(e.onset)}`)
+                    .join(" · ")} eV`
+                : `${info.lines
+                    .filter((l) => l.weight >= 0.5)
+                    .map((l) => `${lineLabel(l.line)} ${l.energy.toFixed(3)}`)
+                    .join(" · ")} keV`}
             </>
           ) : (
             <span className="muted">
-              {selected.length ? `${selected.join(", ")}` : "Click elements to mark their X-ray lines"}
+              {selected.length ? `${selected.join(", ")}` : edgeRange ? "Click elements to mark their edges" : "Click elements to mark their X-ray lines"}
             </span>
           )}
         </span>

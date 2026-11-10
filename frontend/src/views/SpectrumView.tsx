@@ -4,7 +4,7 @@ import { dataVersion, type DatasetSummary } from "../api/client";
 import { ElementsPicker } from "../components/ElementsPicker";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { isAbort, spectralAxis } from "./geometry";
-import { useLineMarkers } from "./si/xray";
+import { useMarkers } from "./si/xray";
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
 
@@ -48,7 +48,7 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
   );
   const bg = useBackgroundPreview(ds, axis.x, series);
   const [preview, setPreview] = useState<string | null>(null);
-  const markers = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, [axis.x[0], axis.x[axis.x.length - 1]]);
+  const markers = useMarkers(ds, preview, axis.x);
   return (
     <div className="view">
       <SpectrumPlot

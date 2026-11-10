@@ -9,6 +9,9 @@ import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "../SpectrumView";
 import { CURSOR_CHANNEL, useSiSpectra } from "./useSiSpectra";
 import { useThresholdLine } from "./useThresholdLine";
 import { useDeconvPreview } from "./useDeconvPreview";
+import { useFitSeries } from "../useFitSeries";
+import { useMarkers } from "./xray";
+import { ElementsPicker } from "../../components/ElementsPicker";
 
 /** The link group ``ds`` is in, itself included (low loss first, then core
  * losses by energy offset); just ``ds`` when it is not linked. */
@@ -140,7 +143,12 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
     return { series: out, sel };
   }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, total, lineScan, cursorSize]);
   // Deconvolution (Process tab): the deconvolved spectra, dashed.
-  const series = useDeconvPreview(member, plain, sel, reduce === "mean");
+  const deconvolved = useDeconvPreview(member, plain, sel, reduce === "mean");
+  // The member's model fit (Quantify tab) and its elements' edges.
+  const fitSeries = useFitSeries(member, axis.x, reduce === "mean");
+  const series = useMemo(() => [...deconvolved, ...fitSeries], [deconvolved, fitSeries]);
+  const [preview, setPreview] = useState<string | null>(null);
+  const markers = useMarkers(member, preview, axis.x);
 
   const role = member.eels?.role === "low_loss" ? "low loss" : "core loss";
   return (
@@ -155,7 +163,13 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : `Loading ${role} into memory…`}
       error={whole.error ?? loadError}
-      toolbar={<ReduceToggle unit={lineScan ? "position" : "pixel"} />}
+      markers={markers}
+      toolbar={
+        <>
+          <ElementsPicker ds={member} onPreview={setPreview} />
+          <ReduceToggle unit={lineScan ? "position" : "pixel"} />
+        </>
+      }
       legend={legend}
       {...lossLog}
     />

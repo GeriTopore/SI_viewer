@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type Health } from "./api/client";
 import { DatasetList, DatasetListHeader } from "./components/DatasetList";
+import { DropZone } from "./components/DropZone";
 import { FileBrowser } from "./components/FileBrowser";
 import { CollapsedStrip } from "./components/PaneToggle";
 import { RightPanel } from "./components/RightPanel";
@@ -146,6 +147,7 @@ export function App() {
       </footer>
 
       {browserOpen && <FileBrowser />}
+      <DropZone />
       <Toast />
     </div>
   );

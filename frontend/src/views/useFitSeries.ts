@@ -2,17 +2,20 @@ import { useMemo } from "react";
 import type { DatasetSummary } from "../api/client";
 import type { SpectrumSeries } from "../components/SpectrumPlot";
 import { useDisplay } from "../state/display";
+import { useEelsFit } from "../state/eelsFit";
 import { datasetKey, useQuant } from "../state/quant";
 
 export const FIT_COLOR = "#f43f5e";
 const BACKGROUND_COLOR = "#9ca3af";
 
-/** The latest fit of ``ds`` as plot series (model, background and, if asked,
+/** The latest fit of ``ds`` (EDS, or the EELS model) as plot series (model, background and, if asked,
  * each element's contribution), aligned to the plot's channels ``x``.
  * With ``perPixel`` the fitted counts are divided by the pixels they sum, to
  * match spectra plotted as per-pixel means. */
 export function useFitSeries(ds: DatasetSummary, x: Float64Array, perPixel = false): SpectrumSeries[] {
-  const fit = useQuant((s) => s.fits[datasetKey(ds)]);
+  const edsFit = useQuant((s) => s.fits[datasetKey(ds)]);
+  const eelsFit = useEelsFit((s) => s.fits[datasetKey(ds)]);
+  const fit = ds.edges ? eelsFit : edsFit;
   const showFit = useQuant((s) => s.showFit);
   const showComponents = useQuant((s) => s.showComponents);
   const colours = useDisplay((s) => s.elementColours);

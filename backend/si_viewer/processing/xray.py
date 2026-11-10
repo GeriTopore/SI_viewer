@@ -7,8 +7,10 @@ from functools import cache
 
 @cache
 def element_table() -> list[dict]:
-    """Every element in the database with its X-ray lines, ordered by Z."""
+    """Every element in the database with its X-ray lines and EELS edges, ordered by Z."""
     from exspy.material import elements as db
+
+    from .eels_model import element_edges
 
     table = []
     for symbol in db.keys():
@@ -22,6 +24,8 @@ def element_table() -> list[dict]:
         table.append({
             "symbol": symbol, "Z": int(general.Z), "name": general.name,
             "atomic_weight": float(general.atomic_weight), "lines": lines,
+            # EELS ionisation edges: {edge, onset (eV), major}.
+            "edges": element_edges(symbol),
         })
     table.sort(key=lambda e: e["Z"])
     return table

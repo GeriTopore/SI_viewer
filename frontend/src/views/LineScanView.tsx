@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchFrame, type Frame } from "../api/arrays";
 import { api, dataVersion, type DatasetSummary, type DeconvolutionSelection } from "../api/client";
 import { ContrastControls } from "../components/ContrastControls";
+import { ElementsPicker } from "../components/ElementsPicker";
 import { LineScanImage, type ScanAxis } from "../components/LineScanImage";
 import { BottomPane } from "../components/BottomPane";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
@@ -18,7 +19,9 @@ import { useDeconvPreview } from "./si/useDeconvPreview";
 import { useThresholdLine } from "./si/useThresholdLine";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
 import { ReduceToggle, memberLabel, memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
+import { useFitSeries } from "./useFitSeries";
 import { useImageDisplay } from "./useImageDisplay";
+import { useMarkers } from "./si/xray";
 
 const scaled = (data: Float32Array, k: number) => (k === 1 ? data : data.map((v) => v * k));
 
@@ -194,6 +197,11 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
   const bands = useMemo(() => [...bg.bands, ...zlp.windows], [bg.bands, zlp.windows]);
+  // The model fit (Quantify tab) and the elements' edges.
+  const fitSeries = useFitSeries(ds, axis.x, reduceMode === "mean");
+  const withFit = useMemo(() => [...plotted, ...fitSeries], [plotted, fitSeries]);
+  const [preview, setPreview] = useState<string | null>(null);
+  const markers = useMarkers(ds, preview, axis.x);
 
   const position = (i: number) => `${i}${rows.units ? ` · ${formatValue(rows.offset + i * rows.scale)} ${rows.units}` : ""}`;
   const legend = (
@@ -249,14 +257,20 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
       zoomKey={`${ds.id}:spectra`}
       {...ownLog}
       x={axis.x}
-      series={plotted}
+      series={withFit}
+      markers={markers}
       windows={bands}
       onEditWindow={(id, range, final) => zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : "Loading line scan into memory…"}
       error={whole.error ?? loadError}
-      toolbar={<ReduceToggle unit="position" />}
+      toolbar={
+        <>
+          <ElementsPicker ds={ds} onPreview={setPreview} />
+          <ReduceToggle unit="position" />
+        </>
+      }
       legend={legend}
     />
   );

@@ -6,16 +6,20 @@ import { shapeToRegion, useSi, useSiState } from "../state/si";
 import { lineLabel, useElementTable } from "../views/si/xray";
 import { filterLabel, formatValue, hasTechnique, isLineScan } from "../format";
 import { downloadCsv, safeFileName } from "../download";
+import { EelsFitPanel } from "./EelsFitPanel";
 import { FitMapsSection } from "./FitMapsSection";
 
 /** The EDS spectrum image or spectrum shown in the viewer, if any, and
  * whether what is shown is a line scan (which can't be fitted). */
-function useEdsTarget(): { ds?: DatasetSummary; lineScan: boolean; other?: DatasetSummary } {
+function useEdsTarget(): { ds?: DatasetSummary; lineScan: boolean; other?: DatasetSummary; eels?: DatasetSummary } {
   const files = useDatasets((s) => s.files);
   const selection = useDatasets((s) => s.selection);
   return useMemo(() => {
     const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
     const shown = selection.map((id) => byId.get(id));
+    // EELS spectra, spectrum images and line scans are fitted with the EELS model.
+    const eels = shown.find((d) => d && d.edges && hasTechnique(d));
+    if (eels) return { eels, lineScan: false };
     const lineScan = shown.some((d) => d && isLineScan(d));
     // A shown spectrum or SI that isn't EDS (to say why there is nothing to fit).
     const other = shown.find((d) => d && !d.eds && hasTechnique(d));
@@ -30,12 +34,10 @@ function useEdsTarget(): { ds?: DatasetSummary; lineScan: boolean; other?: Datas
 const BACKGROUND_ORDERS = [2, 3, 4, 5, 6, 7, 8, 10];
 
 /** Quantify tab: fit one spectrum with exSpy's model and quantify it
- * (Cliff-Lorimer with editable k-factors). */
+ * (EDS: Cliff-Lorimer with editable k-factors; EELS: see ``EelsFitPanel``). */
 export function QuantifyPanel() {
-  const { ds, lineScan, other } = useEdsTarget();
-  if (!ds && other?.technique === "EELS") {
-    return <p className="muted">EDS fitting doesn't apply to EELS data. EELS tools come later.</p>;
-  }
+  const { ds, lineScan, other, eels } = useEdsTarget();
+  if (eels) return <EelsFitPanel key={datasetKey(eels)} ds={eels} />;
   if (!ds && lineScan) {
     return <p className="muted">Fitting and quantification need a 2D spectrum image or a spectrum; line scans can't be quantified yet.</p>;
   }

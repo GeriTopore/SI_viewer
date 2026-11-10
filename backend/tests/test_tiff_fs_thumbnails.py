@@ -74,3 +74,36 @@ def test_si_companion_is_adf(example_emd):
     si = next(d for d in datasets if d.kind is DatasetKind.SPECTRUM_IMAGE)
     companion = si_companion_image(si, datasets)
     assert companion is not None and "DF" in companion.title.upper()
+
+
+def test_fs_locate_dropped_items(client, tmp_path, monkeypatch):
+    """Dropped files and folders are found on disk by name, size and time."""
+    from si_viewer.api import fs
+
+    monkeypatch.setattr(fs, "_spotlight", lambda name: [])
+    monkeypatch.setattr(fs, "LOCATE_BUDGET", 0.0)  # hints only: no walk of the home folder
+    folder = tmp_path / "run 1"
+    folder.mkdir()
+    (folder / "a.dm4").write_bytes(b"x" * 10)
+    (folder / "b.dm4").write_bytes(b"y" * 20)
+    stat = (folder / "a.dm4").stat()
+    file_item = {"name": "a.dm4", "size": 10, "modified": stat.st_mtime * 1000}
+    folder_item = {"name": "run 1", "is_dir": True, "children": [{"name": "a.dm4", "size": 10}, {"name": "b.dm4", "size": 20}]}
+
+    def locate(items, hints):
+        r = client.post("/api/fs/locate", json={"items": items, "hints": hints})
+        assert r.status_code == 200, r.text
+        return r.json()["paths"]
+
+    # The file in a hinted folder; the folder beside a hinted one (its parent is tried too).
+    assert locate([file_item, folder_item], [str(folder)]) == [str((folder / "a.dm4").resolve()), str(folder.resolve())]
+    # Another size, another time or other contents: not that one.
+    assert locate([{**file_item, "size": 11}], [str(folder)]) == [None]
+    assert locate([{**file_item, "modified": file_item["modified"] + 60_000}], [str(folder)]) == [None]
+    wrong = {**folder_item, "children": [{"name": "a.dm4", "size": 99}]}
+    assert locate([wrong], [str(folder)]) == [None]
+
+    # Without a hint it is found by walking (here a stand-in for the home folder).
+    monkeypatch.setattr(fs, "LOCATE_BUDGET", 5.0)
+    monkeypatch.setattr(fs.Path, "home", classmethod(lambda cls: tmp_path))
+    assert locate([file_item], []) == [str((folder / "a.dm4").resolve())]

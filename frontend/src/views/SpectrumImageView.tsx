@@ -24,7 +24,7 @@ import { useViewProfiles } from "../state/profiles";
 import { eelsTab, useUi, type BottomTab } from "../state/ui";
 import { useShortcuts } from "../keyboard";
 import { bandPolygon, pixelLength, pointAt } from "../viewer/profile";
-import { fwhmAt, useLineMarkers } from "./si/xray";
+import { fwhmAt, useMarkers } from "./si/xray";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
 import { memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
 import { useFitSeries } from "./useFitSeries";
@@ -278,7 +278,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
 
   // ---------- elements, line markers and energy windows ----------
   const [preview, setPreview] = useState<string | null>(null);
-  const markers = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, [axis.x[0], axis.x[axis.x.length - 1]]);
+  const markers = useMarkers(ds, preview, axis.x);
 
   // Windows drawn on the spectrum: the main one (grey, the virtual image's)
   // and the window maps in the view, each in its map's colour. Selecting one
@@ -452,7 +452,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       onEditWindow={editWindow}
       onWindowMenu={onWindowMenu}
       onWindowDoubleClick={onWindowDoubleClick}
-      onMarkerClick={onMarkerClick}
+      onMarkerClick={ds.eds ? onMarkerClick : undefined}
       toolbar={
         <>
           <ElementsPicker ds={ds} onPreview={setPreview} />

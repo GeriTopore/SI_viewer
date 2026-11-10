@@ -19,9 +19,13 @@ export function ElementsPicker({ ds, onPreview }: Props) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   // Fixed position under the button, so panels with overflow:hidden don't clip it.
   const [pos, setPos] = useState({ top: 0, left: 0 });
-  const elements = ds.eds?.elements ?? [];
+  const elements = ds.edges?.elements ?? ds.eds?.elements ?? [];
   const close = useCallback(() => setOpen(false), []);
-  if (!ds.eds) return null;
+  if (!ds.eds && !ds.edges) return null;
+  const axis = ds.axes.find((a) => !a.navigate);
+  // EELS: only elements with an edge inside the energy range can be chosen.
+  const edgeRange: [number, number] | undefined =
+    ds.edges && axis ? [axis.offset, axis.offset + axis.scale * (axis.size - 1)] : undefined;
 
   const toggle = (symbol: string) =>
     setElements(ds, elements.includes(symbol) ? elements.filter((e) => e !== symbol) : [...elements, symbol]);
@@ -37,7 +41,7 @@ export function ElementsPicker({ ds, onPreview }: Props) {
           setOpen(!open);
         }}
         aria-expanded={open}
-        title="Choose elements to mark their X-ray lines"
+        title={ds.edges ? "Choose elements to mark and fit their edges" : "Choose elements to mark their X-ray lines"}
       >
         Elements{elements.length > 0 && ` (${elements.length})`} ▾
       </button>
@@ -49,7 +53,8 @@ export function ElementsPicker({ ds, onPreview }: Props) {
           onClear={() => setElements(ds, [])}
           onHover={onPreview}
           onClose={close}
-          footer={ds.kind === "spectrum_image" && !isLineScan(ds) ? <MapOptionsControls ds={ds} /> : undefined}
+          edgeRange={edgeRange}
+          footer={ds.eds && ds.kind === "spectrum_image" && !isLineScan(ds) ? <MapOptionsControls ds={ds} /> : undefined}
         />
       )}
     </div>

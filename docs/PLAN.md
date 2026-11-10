@@ -831,14 +831,31 @@ has none.
   - API: `POST …/thickness/threshold {window}` (the Auto estimate for the
     summed spectrum), `POST …/thickness {options}` (job; any member of the
     group).
-- **Plural-scattering deconvolution:**
-  - Fourier-ratio: a core loss with the group's low loss.
-  - Fourier-log: the low loss alone.
-  - Richardson–Lucy: a core loss with the group's low loss as the PSF, with
-    a number of iterations.
-
-  The result is a new SI, "(deconvolved)", whose spectrum can be overlaid
-  on the original's.
+- **Plural-scattering deconvolution** (built): a *Deconvolution* section in
+  the Process tab for EELS spectrum images and line scans, always with the
+  group's low loss (for a background-removed spectrum image, its source's).
+  - **Methods:** *Fourier-log* (the low loss only; optionally keeping the
+    zero-loss peak), *Fourier-ratio* (background-removed spectra only; FWHM
+    typed or that of the summed low loss' zero-loss peak; power-law
+    extrapolation on or off) and *Richardson–Lucy* (iterations; PSF the low
+    loss, or its zero-loss peak to sharpen; not on background-removed
+    spectra, nor the low loss by itself). A method that doesn't fit the
+    dataset is disabled, with the reason.
+  - **Zero-loss peak:** the low loss up to a threshold, Auto (per pixel, as
+    for the thickness; the summed spectrum's where a pixel has none) or Fixed.
+  - **Preview:** with *Show on spectrum*, the deconvolved spectrum of the sum,
+    the cursor and each region is drawn dashed over the original (its own
+    plot or the linked tab), with the threshold and FWHM used.
+  - **Result:** a new spectrum image under the source (`origin
+    "deconvolved"`, "<source> (Fourier-ratio)"), with its settings to change
+    and *Re-run*. A snapshot: later changes to the source leave it as it is.
+    Deletable.
+  - Fourier-log and Fourier-ratio are exSpy's (equal to its own calls); the
+    power-law extrapolation is done per spectrum, so one with no counts at
+    its end doesn't stop the rest. Richardson–Lucy is our own (FFT, every
+    pixel at once, PSF normalised so the counts keep their scale).
+  - API: `POST …/deconvolution/preview {options, selections}`, `POST
+    …/deconvolution {options}` (job), `PUT …/deconvolution` (re-run).
 
 **M10e: background removal** (EELS only; spectrum images, line scans and
 single spectra). A *Background removal* section in the Process tab.
@@ -965,6 +982,154 @@ The pane under the image can be split to show two of its tabs side by side.
 
 **Order:** after M10c. Linked low/core-loss pairs then gain the split pane.
 
+### 4.13 In-situ EELS series (M12, in progress)
+
+Gatan in-situ acquisitions (GMS 3.61 and later) save, per detector, a `.dm4`
+plus the frames in `.raw` chunks (`<name>.raw`, `<name>.raw_1`, …). A
+`.dm5` is only written if saved by hand, so the `.dm4` must be enough.
+
+**What the `.dm4` holds** (`ImageTags.Insitu`):
+- `Raw File Format Info`: `Dimensions/Data0…` (Data0 = x, Data1 = y,
+  Data2 = energy), `Data Type` (DM type code), `Data Size (bytes)`,
+  `Frame Size (bytes)`, `Calibrations/dim-N` (origin, scale, unit).
+- `Recorded`: `# Frames`, `Duration (s)`, `Experiment Start Time`, and
+  `Sync/Per Frame/Time Since Start (ns)`, a 64-bit time per frame stored as
+  pairs of 32-bit words (low, high). HyperSpy gives it as a list (a dict with
+  "[i]" keys, sorted as text, is also handled). The times are when each frame
+  was finished: 18.4 s for the first, exactly `Duration` for the last.
+- The tag group is `In-situ` in the raw tag dict (`Insitu` as an attribute).
+- Type codes are DM's (2 float32, 6 uint8, 10 uint16, …; as RosettaSciIO).
+- Its own image is one frame and is not used.
+
+**`.raw` layout:** frames back to back across the chunks (a frame can
+straddle two files); within a frame the DM order, Data0 fastest, i.e. a
+NumPy array of shape (Data2, Data1, Data0) = (E, y, x) for a spectrum image
+and (y, x) for an image. Checked on `InSitu (3)` (100 × 100 × 3456, float32,
+208 frames, 28.75 GB in 3 chunks): the energy-summed frame matches the
+simultaneous ADF (400 × 400, 4× finer sampling of the same field).
+Unconfirmed on a non-square scan.
+
+**Read costs** (USB exFAT drive, about 40 MB/s): a whole frame 3.6 s; one
+pixel's spectrum in a frame 3.9 s (one read per energy plane); a 100-channel
+window map 0.1 s; one pass over the series about 12 min. So the unit of
+reading is the whole frame, and anything over all frames is one pass.
+
+**M12a — Reader.** `io/insitu.py`: recognise an in-situ `.dm4` (the
+`Insitu` tag plus `.raw*` beside it); a lazy dask array with one chunk per
+frame (one sequential read per frame, across chunk boundaries); the time
+axis from the per-frame times (else duration ÷ frames); fewer complete
+frames than recorded (an aborted run) are used, with a note. Opening the
+SI's `.dm4` also opens the simultaneous ADF as a stack in the same file
+entry. Tests on small synthetic `.raw` sets (non-square, a straddling frame,
+a truncated last frame) and on `examples/InSitu (3)` when present.
+Done. Layout: (Time, y, x, E) for the SI, (Time, y, x) for an image series;
+`metadata.Insitu` holds `frames`, `recorded_frames`, exact `frame_times_s`,
+`time_source`, `note`. The Time axis is uniform (first time, mean spacing).
+The SI was first its own dataset kind (`insitu_si`) that could not be loaded
+whole; M12b made it a dataset holding one frame (see below). The ADF series is
+an ordinary stack. A chunk file
+shorter than the first, followed by another, ends the stream (a copy in
+progress), unless the files already cover every recorded frame.
+
+**M12b — Frame browsing.** Done. The series is shown one frame at a time:
+the current frame is read whole into memory and is an ordinary spectrum image
+to every existing tool; neighbouring frames are read ahead into a small cache.
+A frame slider (frame, time in s) with Frame / Mean / Sum over a frame range;
+the ADF frame at the same time as navigator.
+
+- *Design.* The series is ONE dataset (a row in the list, kind
+  `spectrum_image`, badge "IS EELS"/"IS LL"/"IS HL") whose signal is the
+  frame held, in memory, with the frame's axes and metadata (no `Insitu`
+  tags). `Dataset.insitu` is an `InsituSeries` (`insitu_series.py`): the lazy
+  series signal, the frame cache, the read-ahead and the `ViewState` (frame, or
+  mean/sum of frames a…b). `DatasetKind.INSITU_SI` is gone; summaries carry
+  `insitu` (frames, times, sizes, `view`). Before the first use the signal is
+  a lazy placeholder of frame 0; `materialise()` reads that frame (one read,
+  never the series). A new frame swaps the signal in with `Dataset.refresh_data`:
+  same id and revision (so filters, windows, cursor, regions, contrast and zoom
+  stay), `data_rev` bumped (clients refetch: `dataVersion` includes it,
+  `contrastVersion` does not), caches replaced. Energy-window maps (and
+  computed element maps) are remade for the new data, also without a new
+  revision; fits are removed. Results that are snapshots of a frame stay as
+  made: background removal is titled "… (frame 37)" and redoing it takes the
+  frame shown now; thickness and ZLP shift are not retitled.
+- *Reading.* The unit is the whole frame, via the dask graph of M12a, in the
+  calling thread (request threadpool or job). `FrameCache`: LRU bounded by
+  bytes (`FRAME_CACHE_BYTES` = 1.5 GB), cached frames read-only (shared with
+  the view). After a frame is shown, frames n+1 and n−1 are read on a single
+  background thread; tasks of an earlier frame not yet started are dropped; a
+  frame being read is waited for, not read twice. A range reduction reads the
+  frames (cache hits are used, the others are not cached) and is the only
+  multi-frame read.
+- *API.* `PUT /api/datasets/{id}/insitu/frame {frame}` → `{dataset, file}`
+  (416 out of range); `POST /api/datasets/{id}/insitu/reduce {mode, start, end}`
+  → job "insitu-reduce", progress "Frame 12 of 40", cancellable, result
+  `{file, dataset_id}`; `GET /api/datasets/{id}/insitu/adf` → the ADF image of
+  the view. `/navigators` lists the ADF (source id `insitu-adf`) first when the
+  file has an ADF stack with the series' frame count whose frame is the scan
+  or an integer multiple of it with the same field of view (here 4×); a
+  Mean/Sum view gets the ADF mean/sum over the same range (computed in the job
+  and memoised).
+- *Sub-scan navigators.* Gatan's ADF is acquired k× finer than the SI scan
+  (400² against 100²). Any image k× finer over the same field (±1 %; `subscan.py`,
+  `/navigators` `factor` and `dataset_id`) is a navigator at its own resolution
+  and calibration, not binned. The view works in navigator pixels but cursor,
+  regions and spectra stay in SI pixels: `views/si/scan.ts` divides pointer
+  positions by k and multiplies the overlay transform by k (a k × k box per SI
+  pixel), and maps drawn over it are stretched k× (`Frame.bin = k`).
+- *UI.* Frame bar under the navigator (`InsituFrameBar`): slider 1…N with
+  "37 / 208 · 128.4 s", Frame / Mean / Sum. The slider reads on release (a
+  click or key: after 150 ms), one request at a time, the latest frame wins;
+  the last frame stays until the new one arrives, with "Reading frame 37…".
+  Mean/Sum: From / To and Apply, with a progress bar and Cancel; the result
+  becomes the view. A chip on the navigator names what is held. ←/→ (⇧ ten) and
+  Home/End step the frames; in a series the cursor is nudged with ⌥←/⌥→.
+  Contrast is kept from frame to frame. The Info tab has an "In-situ series"
+  section (frames and the missing-frames note, time span, frame time, duration,
+  start, frame size, raw files and size). The list's shape column is short
+  ("208×100×100|3456") and ellipsizes before the title does.
+- *Disabled on a frame.* Rebin (backend 400/422, button and menu entry
+  disabled, tooltip) and zero-loss alignment (the next frame would undo them).
+  Everything else works on the frame: spectra, regions, line profiles, energy
+  windows and maps, spatial/spectral filters, background removal, thickness
+  (set the role to low loss), FFT, Save (file named with the frame), plot export.
+- *Not done.* Thickness / ZLP-shift titles don't name their frame; a
+  background-removed result is not remade when the frame changes.
+
+**M12c — Time series job.** One pass, chosen outputs: total-counts image per
+frame (a navigator stack), sum spectrum per frame (a spectrum-vs-time
+image), maps of chosen energy windows per frame (a stack), spectra of chosen
+regions per frame. Cached on disk (`~/.cache/si-viewer`, keyed by path and
+modification time).
+
+**M12d — Time tab.** Next to Spectrum: the spectrum-vs-time image with the
+energy windows as bands; window intensity against time for the cursor or a
+region.
+
+**M12e — Sum frames.** A frame range summed into an in-memory spectrum image
+(all EELS tools apply), optionally drift-corrected with the ADF stack's
+alignment, shifts scaled to the SI's pixels (sub-pixel Fourier shift, or
+whole pixels).
+
+**Later:** in-situ low-/core-loss pairs; an optional local copy or
+spectrum-major conversion for fast spectra over time; `.dm5`; in-situ
+4D-STEM.
+
+### 4.14 Experiments: a folder opened together (done)
+
+GMS saves one acquisition as several files in one folder (survey, ADF, the
+EELS spectrum images). *Open all in folder* opens them as one experiment,
+listed under the folder's name by role (Survey, scan images, EELS LL, EELS
+HL, EDS, others), with the experiment's EELS spectrum images linked on opening
+(a dual EELS pair by DM's sibling ids, else ones of the same scan and DM
+spectrum imaging run). An in-situ spectrum image's ADF series opens with it,
+so it is not opened again. Opening files one by one links nothing.
+
+The survey image (DM keyword "Survey") is a **Survey** dataset showing the
+rectangles GMS drew on it: where the spectrum image was taken and the spatial
+drift reference (`io/dm_experiment.py`, from the survey's
+`DocumentObjectList`).
+
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
@@ -992,8 +1157,9 @@ The pane under the image can be split to show two of its tabs side by side.
 | M7 | Export, keyboard shortcuts, polish | Done |
 | M8 | pywebview desktop window and installers (deferred until the features are complete) | |
 | M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Result + Apply (M9c, done), extras (M9d) | In progress |
-| M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d), background removal and edge maps (M10e) | In progress (M10a–c done; M10d: thickness and ZLP alignment built) |
+| M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d), background removal and edge maps (M10e) | In progress (M10a–c done; M10d: thickness, ZLP alignment and deconvolution built) |
 | M11 | Grid / Merged views for images and maps (M11a, done), split pane under the image (M11b, done) | Done |
+| M12 | In-situ EELS series from `.dm4` + `.raw`: reader (M12a), frame browsing (M12b), time-series job (M12c), Time tab (M12d), sum frames with drift correction (M12e) | In progress (M12a, M12b done) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

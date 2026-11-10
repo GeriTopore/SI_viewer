@@ -1,24 +1,25 @@
-/// Power spectrum of a square image patch, off the main thread.
+/// Spectrum of a square image patch, off the main thread.
 ///
-/// The patch (size × size) has its mean removed and a Hann window applied (so
-/// the patch edges don't add a bright cross), is zero-padded to n × n (n a
-/// power of two) and transformed with a radix-2 FFT. The result is
-/// log(1 + |F|²), shifted so zero frequency is at (n/2, n/2).
+/// The patch (size × size) has its mean removed and, if asked, a Hann window
+/// applied (so the patch edges don't add a bright cross), is zero-padded to n × n (n a
+/// power of two) and transformed with a radix-2 FFT. The result is the
+/// amplitude |F|, shifted so zero frequency is at (n/2, n/2); the display
+/// scale (linear or log) is applied by the caller.
 
 export interface FftRequest {
   id: number;
   patch: Float32Array;
   size: number;
   n: number;
+  /** Apply a Hann window before transforming. */
+  hann: boolean;
 }
 
 export interface FftResult {
   id: number;
   n: number;
-  power: Float32Array;
-  /** Display range of ``power`` (percentiles). */
-  lo: number;
-  hi: number;
+  /** Amplitude |F|, n × n, zero frequency at the centre. */
+  amp: Float32Array;
 }
 
 const twiddleCache = new Map<number, { cos: Float32Array; sin: Float32Array; rev: Uint32Array }>();
@@ -79,7 +80,7 @@ function fft1d(re: Float32Array, im: Float32Array, n: number) {
   }
 }
 
-function powerSpectrum({ patch, size, n }: FftRequest): { power: Float32Array; lo: number; hi: number } {
+function amplitudeSpectrum({ patch, size, n, hann: windowed }: FftRequest): Float32Array {
   // Mean of the finite pixels; NaN (masked) pixels count as the mean.
   let sum = 0;
   let count = 0;
@@ -92,7 +93,7 @@ function powerSpectrum({ patch, size, n }: FftRequest): { power: Float32Array; l
   }
   const mean = count ? sum / count : 0;
   const hann = new Float32Array(size);
-  for (let i = 0; i < size; i++) hann[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * (i + 0.5)) / size);
+  for (let i = 0; i < size; i++) hann[i] = windowed ? 0.5 - 0.5 * Math.cos((2 * Math.PI * (i + 0.5)) / size) : 1;
 
   const re = new Float32Array(n * n);
   const im = new Float32Array(n * n);
@@ -126,30 +127,22 @@ function powerSpectrum({ patch, size, n }: FftRequest): { power: Float32Array; l
     }
   }
 
-  // log power, shifted so (0, 0) frequency is at the centre.
-  const power = new Float32Array(n * n);
+  // Amplitude |F|, shifted so (0, 0) frequency is at the centre.
+  const amp = new Float32Array(n * n);
   const h = n / 2;
   for (let y = 0; y < n; y++) {
     const sy = (y + h) % n;
     for (let x = 0; x < n; x++) {
       const i = y * n + x;
-      power[sy * n + ((x + h) % n)] = Math.log1p(re[i] * re[i] + im[i] * im[i]);
+      amp[sy * n + ((x + h) % n)] = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
     }
   }
-  power[h * n + h] = 0; // what is left of the mean
-
-  // Display range from a sample: the median background up to the brightest spots.
-  const sample: number[] = [];
-  const stride = Math.max(1, Math.floor(power.length / 65536));
-  for (let i = 0; i < power.length; i += stride) sample.push(power[i]);
-  sample.sort((a, b) => a - b);
-  const lo = sample[Math.floor(sample.length * 0.5)];
-  const hi = sample[Math.min(sample.length - 1, Math.floor(sample.length * 0.9995))];
-  return { power, lo, hi: hi > lo ? hi : lo + 1 };
+  amp[h * n + h] = 0; // what is left of the mean
+  return amp;
 }
 
 self.onmessage = (e: MessageEvent<FftRequest>) => {
-  const { power, lo, hi } = powerSpectrum(e.data);
-  const result: FftResult = { id: e.data.id, n: e.data.n, power, lo, hi };
-  (self as unknown as Worker).postMessage(result, [power.buffer]);
+  const amp = amplitudeSpectrum(e.data);
+  const result: FftResult = { id: e.data.id, n: e.data.n, amp };
+  (self as unknown as Worker).postMessage(result, [amp.buffer]);
 };

@@ -17,6 +17,14 @@ def load_file(path: str | Path, lazy: bool = True) -> list:
     if path.suffix.lower() == ".emd":
         return load_emd(path, lazy=lazy)
 
+    if path.suffix.lower() == ".dm4":
+        from .insitu import load_insitu
+
+        # An in-situ series (.dm4 + .raw): always lazy, one chunk per frame.
+        series = load_insitu(path)
+        if series is not None:
+            return series
+
     import hyperspy.api as hs
 
     result = hs.load(str(path), lazy=lazy)

@@ -1,5 +1,8 @@
 import { create } from "zustand";
+import { COLORMAPS, isColour } from "../viewer/colormaps";
 
+/** How the FFT is shown: amplitude |F|, or log(1 + |F|²). */
+export type FftScale = "linear" | "log";
 export type ListMode = "list" | "grid";
 export type Theme = "light" | "dark";
 export type RightTab = "info" | "quantify" | "process";
@@ -58,6 +61,29 @@ function save(key: string, value: string) {
   }
 }
 
+function loadCollapsedTypes(): Record<string, true> {
+  try {
+    const v: unknown = JSON.parse(load("si-viewer.collapsedTypes", "{}"));
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.keys(v).map((k) => [k, true as const]));
+  } catch {
+    return {};
+  }
+}
+
+/** Key of a type group in `collapsedTypes`: the file and the type badge. */
+export const typeGroupKey = (filePath: string, label: string) => `${filePath}\n${label}`;
+
+function loadFftGamma(): number {
+  const v = Number(load("si-viewer.fftGamma", ""));
+  return Number.isFinite(v) && v >= 0.01 && v <= 100 ? v : 1;
+}
+
+function loadFftColormap(): string {
+  const c = load("si-viewer.fftColormap", "gray");
+  return COLORMAPS.includes(c) || isColour(c) ? c : "gray";
+}
+
 function loadGridMode(context: GridContext): GridMode | null {
   const v = load<string>(`si-viewer.gridMode.${context}`, "auto");
   return v === "merged" || v === "grid" ? v : null;
@@ -75,6 +101,9 @@ interface UiState {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   listMode: ListMode;
+  /** Dataset type groups folded in the list, by `typeGroupKey` (file path + type). */
+  collapsedTypes: Record<string, true>;
+  toggleTypeGroup: (key: string) => void;
   /** Tab shown in the right-hand column. */
   rightTab: RightTab;
   setRightTab: (tab: RightTab) => void;
@@ -127,11 +156,27 @@ interface UiState {
   /** Clicking the FFT marks a spatial frequency (and shows the mark). */
   fftMeasure: boolean;
   setFftMeasure: (on: boolean) => void;
+  /** The FFT is of the patch with a Hann window (no edge streaks). */
+  fftHann: boolean;
+  setFftHann: (on: boolean) => void;
+  /** FFT display: amplitude or log(1 + |F|²), gamma and colormap. */
+  fftScale: FftScale;
+  setFftScale: (scale: FftScale) => void;
+  fftGamma: number;
+  setFftGamma: (gamma: number) => void;
+  fftColormap: string;
+  setFftColormap: (colormap: string) => void;
+  /** The FFT's contrast controls are shown (else folded to their title). */
+  fftContrastOpen: boolean;
+  setFftContrastOpen: (open: boolean) => void;
   /** Merged/Grid choice per kind of view; null follows the content
    * (spectrum image: merged, images: grid). */
   gridMode: Record<GridContext, GridMode | null>;
   setGridMode: (context: GridContext, mode: GridMode | null) => void;
   lastDir: string;
+  /** The folder last exported to (Export… dialog). */
+  lastExportDir: string;
+  setLastExportDir: (dir: string) => void;
   browserOpen: boolean;
   setListMode: (mode: ListMode) => void;
   setLastDir: (dir: string) => void;
@@ -146,6 +191,15 @@ export const useUi = create<UiState>((set, get) => ({
     set({ theme });
   },
   listMode: load<ListMode>("si-viewer.listMode", "list"),
+  collapsedTypes: loadCollapsedTypes(),
+  toggleTypeGroup: (key) =>
+    set((s) => {
+      const collapsedTypes = { ...s.collapsedTypes };
+      if (collapsedTypes[key]) delete collapsedTypes[key];
+      else collapsedTypes[key] = true;
+      save("si-viewer.collapsedTypes", JSON.stringify(collapsedTypes));
+      return { collapsedTypes };
+    }),
   rightTab: load<RightTab>("si-viewer.rightTab", "info"),
   leftCollapsed: load<string>("si-viewer.leftCollapsed", "false") === "true",
   rightCollapsed: load<string>("si-viewer.rightCollapsed", "false") === "true",
@@ -236,6 +290,31 @@ export const useUi = create<UiState>((set, get) => ({
   },
   fftOpen: load<string>("si-viewer.fftOpen", "true") === "true",
   fftMeasure: load<string>("si-viewer.fftMeasure", "true") === "true",
+  fftScale: load<string>("si-viewer.fftScale", "log") === "linear" ? "linear" : "log",
+  setFftScale: (fftScale) => {
+    save("si-viewer.fftScale", fftScale);
+    set({ fftScale });
+  },
+  fftGamma: loadFftGamma(),
+  setFftGamma: (fftGamma) => {
+    save("si-viewer.fftGamma", String(fftGamma));
+    set({ fftGamma });
+  },
+  fftColormap: loadFftColormap(),
+  setFftColormap: (fftColormap) => {
+    save("si-viewer.fftColormap", fftColormap);
+    set({ fftColormap });
+  },
+  fftHann: load<string>("si-viewer.fftHann", "true") === "true",
+  setFftHann: (fftHann) => {
+    save("si-viewer.fftHann", String(fftHann));
+    set({ fftHann });
+  },
+  fftContrastOpen: load<string>("si-viewer.fftContrastOpen", "true") === "true",
+  setFftContrastOpen: (fftContrastOpen) => {
+    save("si-viewer.fftContrastOpen", String(fftContrastOpen));
+    set({ fftContrastOpen });
+  },
   setFftMeasure: (fftMeasure) => {
     save("si-viewer.fftMeasure", String(fftMeasure));
     set({ fftMeasure });
@@ -254,6 +333,11 @@ export const useUi = create<UiState>((set, get) => ({
     set((s) => ({ gridMode: { ...s.gridMode, [context]: mode } }));
   },
   lastDir: load("si-viewer.lastDir", ""),
+  lastExportDir: load("si-viewer.lastExportDir", ""),
+  setLastExportDir: (lastExportDir) => {
+    save("si-viewer.lastExportDir", lastExportDir);
+    set({ lastExportDir });
+  },
   browserOpen: false,
   setListMode: (listMode) => {
     save("si-viewer.listMode", listMode);

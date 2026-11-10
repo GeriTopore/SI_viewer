@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Frame } from "../api/arrays";
 import { COLORMAPS, OVERLAY_COLOURS, colormapGradient, isColour } from "../viewer/colormaps";
 import { autoRange, fullRange, histogram, percentile, sortedSample } from "../viewer/contrast";
@@ -23,6 +24,7 @@ export function ContrastControls({ frame, display, onChange }: Props) {
   const dragging = useRef<"lo" | "hi" | null>(null);
   // Colour restored when switching back to "solid colour".
   const lastColour = useRef(display && isColour(display.colormap) ? display.colormap : OVERLAY_COLOURS[0]);
+  if (display && isColour(display.colormap)) lastColour.current = display.colormap;
 
   // Histogram range: the bulk of the data, widened to include the current limits.
   const bulk = useMemo(
@@ -89,22 +91,12 @@ export function ContrastControls({ frame, display, onChange }: Props) {
 
   return (
     <div className="contrast-controls">
-      <div className="colormap-picker" title="Colormap">
-        <span className="colormap-swatch" style={{ background: colormapGradient(display.colormap) }} />
-        <select
-          value={isColour(display.colormap) ? SOLID : display.colormap}
-          onChange={(e) =>
-            onChange({ colormap: e.target.value === SOLID ? lastColour.current : e.target.value })
-          }
-          aria-label="Colormap"
-        >
-          {COLORMAPS.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-          <option value={SOLID}>solid colour</option>
-        </select>
+      <div className="colormap-picker">
+        <ColormapMenu
+          current={display.colormap}
+          solidColour={lastColour.current}
+          onPick={(name) => onChange({ colormap: name === SOLID ? lastColour.current : name })}
+        />
         {isColour(display.colormap) && (
           <input
             type="color"
@@ -152,8 +144,9 @@ export function ContrastControls({ frame, display, onChange }: Props) {
         </button>
       </div>
 
-      <label className="gamma" title="Gamma (double-click to reset)">
-        γ {display.gamma.toFixed(2)}
+      <label className="gamma" title="Gamma (double-click the slider to reset)">
+        γ
+        <GammaInput gamma={display.gamma} onChange={(gamma) => onChange({ gamma })} />
         <input
           type="range"
           min={-1}
@@ -165,6 +158,170 @@ export function ContrastControls({ frame, display, onChange }: Props) {
         />
       </label>
     </div>
+  );
+}
+
+/** The colormap's icon; a click lists the colormaps (and "solid colour") in a
+ * popover under it. */
+function ColormapMenu({
+  current, solidColour, onPick,
+}: { current: string; solidColour: string; onPick: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const names = [...COLORMAPS, SOLID];
+  const currentName = isColour(current) ? SOLID : current;
+  const label = (name: string) => (name === SOLID ? "solid colour" : name);
+
+  const show = () => {
+    setActive(Math.max(0, names.indexOf(currentName)));
+    setPos(null);
+    setOpen(true);
+  };
+  const close = (refocus = false) => {
+    setOpen(false);
+    if (refocus) buttonRef.current?.focus();
+  };
+  const choose = (name: string) => {
+    onPick(name);
+    close(true);
+  };
+
+  // Under the icon, kept inside the viewport (flipped above when it won't fit).
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current || !listRef.current) return;
+    const b = buttonRef.current.getBoundingClientRect();
+    const w = listRef.current.offsetWidth;
+    const h = listRef.current.offsetHeight;
+    const m = 6;
+    const left = Math.max(m, Math.min(b.left, window.innerWidth - w - m));
+    let top = b.bottom + 4;
+    if (top + h > window.innerHeight - m) top = Math.max(m, b.top - h - 4);
+    setPos({ left, top });
+  }, [open]);
+
+  // Focus the list once it is placed (a hidden element can't take focus), so
+  // the arrow keys move in the list rather than switching datasets.
+  useEffect(() => {
+    if (open && pos) listRef.current?.focus({ preventScroll: true });
+  }, [open, pos]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!listRef.current?.contains(t) && !buttonRef.current?.contains(t)) setOpen(false);
+    };
+    const onAway = () => setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("resize", onAway);
+    window.addEventListener("blur", onAway);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("resize", onAway);
+      window.removeEventListener("blur", onAway);
+    };
+  }, [open]);
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const n = names.length;
+    if (e.key === "ArrowDown") setActive((a) => (a + 1) % n);
+    else if (e.key === "ArrowUp") setActive((a) => (a + n - 1) % n);
+    else if (e.key === "Home") setActive(0);
+    else if (e.key === "End") setActive(n - 1);
+    else if (e.key === "Enter" || e.key === " ") choose(names[active]);
+    else if (e.key === "Escape") close(true);
+    else if (e.key === "Tab") close();
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`colormap-button${open ? " active" : ""}`}
+        onClick={() => (open ? close() : show())}
+        onKeyDown={(e) => {
+          if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+            e.preventDefault();
+            show();
+          }
+        }}
+        title={`Colormap: ${label(currentName)}`}
+        aria-label={`Colormap: ${label(currentName)}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="colormap-swatch" style={{ background: colormapGradient(current) }} />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={listRef}
+            className="colormap-list"
+            role="listbox"
+            tabIndex={-1}
+            aria-label="Colormap"
+            aria-activedescendant={`colormap-opt-${names[active]}`}
+            style={{ left: pos?.left ?? 0, top: pos?.top ?? 0, visibility: pos ? "visible" : "hidden" }}
+            onKeyDown={onKeyDown}
+          >
+            {names.map((name, i) => (
+              <div
+                key={name}
+                id={`colormap-opt-${name}`}
+                role="option"
+                aria-selected={name === currentName}
+                className={`colormap-option${name === currentName ? " current" : ""}${i === active ? " active" : ""}`}
+                onMouseMove={() => i !== active && setActive(i)}
+                onClick={() => choose(name)}
+              >
+                <span
+                  className="colormap-swatch"
+                  style={{ background: colormapGradient(name === SOLID ? solidColour : name) }}
+                />
+                {label(name)}
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+const GAMMA_MIN = 0.01;
+const GAMMA_MAX = 100;
+
+/** Gamma typed in (the slider covers 0.25–4): applied as soon as it is a
+ * valid number; the field shows the applied value again on Enter or leaving it. */
+function GammaInput({ gamma, onChange }: { gamma: number; onChange: (gamma: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const edit = (text: string) => {
+    setDraft(text);
+    const v = Number(text);
+    if (text.trim() !== "" && v >= GAMMA_MIN && v <= GAMMA_MAX) onChange(v);
+  };
+  const commit = () => setDraft(null);
+  return (
+    <input
+      type="number"
+      className="gamma-input"
+      min={GAMMA_MIN}
+      max={GAMMA_MAX}
+      step={0.05}
+      value={draft ?? Number(gamma.toFixed(2))}
+      onChange={(e) => edit(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => e.key === "Enter" && commit()}
+      aria-label="Gamma"
+    />
   );
 }
 

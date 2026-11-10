@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel
 
 from ..processing.export import FORMATS, export_bytes, maps_zip, safe_name
 from ..session import DatasetKind
@@ -55,6 +57,92 @@ def export_dataset(dataset_id: str, request: Request, format: str) -> Response:
     except ValueError as e:
         raise HTTPException(422, str(e))
     return download(data, name)
+
+
+class SaveBody(BaseModel):
+    format: str
+    # The file to write (a full path; "~" allowed).
+    path: str
+    overwrite: bool = False
+
+
+class BatchBody(BaseModel):
+    ids: list[str]
+    format: str
+    # The folder to write into; each dataset is named after its title.
+    folder: str
+    overwrite: bool = False
+
+
+def _target_folder(folder: str) -> Path:
+    path = Path(folder).expanduser()
+    if not path.is_dir():
+        raise HTTPException(404, f"Not a folder: {path}")
+    return path
+
+
+def _write(path: Path, data: bytes) -> None:
+    try:
+        path.write_bytes(data)
+    except OSError as e:
+        raise HTTPException(422, f"Could not write {path}: {e.strerror or e}")
+
+
+@router.post("/api/datasets/{dataset_id}/save")
+def save_dataset(dataset_id: str, body: SaveBody, request: Request) -> dict:
+    """Write the dataset as ``format`` to ``path`` (409 if the file exists
+    and ``overwrite`` is not set). Returns the path written."""
+    ds = _dataset(request, dataset_id)
+    path = Path(body.path).expanduser()
+    _target_folder(str(path.parent))
+    if path.is_dir():
+        raise HTTPException(422, f"{path} is a folder")
+    if body.format not in {f for f, _, _ in FORMATS.get(ds.kind, [])}:
+        raise HTTPException(422, f"{ds.title} can't be saved as {body.format}")
+    if path.exists() and not body.overwrite:
+        raise HTTPException(409, f"{path.name} already exists")
+    try:
+        data, _ = export_bytes(ds, body.format)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    _write(path, data)
+    return {"path": str(path)}
+
+
+@router.post("/api/export/batch")
+def batch_export(body: BatchBody, request: Request) -> dict:
+    """Write each dataset as ``format`` into ``folder``, named after its
+    title (made unique). 409 lists the files that exist unless ``overwrite``."""
+    session = request.app.state.session
+    folder = _target_folder(body.folder)
+    try:
+        datasets = [session.get_dataset(i) for i in body.ids]
+    except KeyError as e:
+        raise HTTPException(404, f"Unknown dataset id: {e.args[0]}")
+    if not datasets:
+        raise HTTPException(422, "Nothing to export")
+    names: list[str] = []
+    for ds in datasets:
+        known = {f: ext for f, ext, _ in FORMATS.get(ds.kind, [])}
+        if body.format not in known:
+            raise HTTPException(422, f"{ds.title} can't be saved as {body.format}")
+        stem, k = safe_name(ds.title), 2
+        name = f"{stem}.{known[body.format]}"
+        while name in names:
+            name, k = f"{stem}_{k}.{known[body.format]}", k + 1
+        names.append(name)
+    existing = [n for n in names if (folder / n).exists()]
+    if existing and not body.overwrite:
+        raise HTTPException(409, f"Already in the folder: {', '.join(existing)}")
+    written = []
+    for ds, name in zip(datasets, names):
+        try:
+            data, _ = export_bytes(ds, body.format)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        _write(folder / name, data)
+        written.append(str(folder / name))
+    return {"paths": written}
 
 
 @router.get("/api/files/{file_id}/maps")

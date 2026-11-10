@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import type { Frame } from "../api/arrays";
-import { dataVersion, type DatasetSummary } from "../api/client";
+import { contrastVersion, type DatasetSummary } from "../api/client";
 import { allDatasets, initialColormap, planeSize, setMapColour, useDatasets } from "../state/datasets";
 import { DEFAULT_COLORMAP, useDisplay } from "../state/display";
 import { DEFAULT_LAYER, baseLayerKey, useLayers } from "../state/layers";
+import { useViewerImage } from "../state/viewerImage";
 import { isColour, swatchBackground } from "../viewer/colormaps";
 import type { DisplayParams } from "../viewer/renderer";
 import { imageGeometry, type ImageGeometry } from "../views/geometry";
@@ -13,13 +14,22 @@ import { ContrastControls } from "./ContrastControls";
 import { ImageView, type Interaction, type Transform, type ViewLayer } from "./ImageView";
 import { LayersPanel } from "./LayersPanel";
 import { LineOverlay } from "./LineOverlay";
+import { FftBoxOverlay } from "./FftBoxOverlay";
+import { FftCompare } from "./FftCompare";
+import { SurveyRegions } from "./SurveyRegions";
 import { ProfilePanel } from "./ProfilePanel";
 import { useProfiles, useViewProfiles } from "../state/profiles";
 import { useLineTool } from "../views/useLineTool";
+import { useFftBoxTool } from "../views/useFftBoxTool";
 import { useUi, type BottomTab, type GridContext, type GridMode } from "../state/ui";
 import { BottomPane } from "./BottomPane";
 import { ViewerGrid, type GridPanel } from "./ViewerGrid";
 import { useShortcuts } from "../keyboard";
+import { stretch } from "../views/si/scan";
+
+/** Tooltip of the FFT box tool (the image views' and the navigator's). */
+export const FFT_TOOL_TITLE =
+  "FFT region: drag to draw a square (its FFT shows in the FFT panel), drag a corner or the inside to change it, Delete removes it";
 
 /** Drag-and-drop type for datasets dragged from the sidebar. */
 export const DATASET_MIME = "application/x-si-viewer-dataset";
@@ -55,8 +65,10 @@ interface Props {
   interaction?: Interaction;
   renderOverlay?: (t: Transform) => ReactNode;
   /** The line (profile) tool is active. Without this prop the viewer offers
-   * its own Pan / Line tool buttons. */
+   * its own Pan / Line / FFT tool buttons. */
   lineTool?: boolean;
+  /** The FFT box tool is active (with ``lineTool``: the view's own tool bar). */
+  fftTool?: boolean;
   /** Points picked on the profile plot (spectrum images: their spectrum). */
   profilePick?: boolean;
   /** Shown right under the image (e.g. a stack's frame slider). */
@@ -75,6 +87,10 @@ interface Props {
   requestActive?: { key: string } | null;
   /** The layer being edited changed, or a layer was clicked (key as above). */
   onActiveChange?: (key: string) => void;
+  /** The base image is k times finer than the scan the ``images`` (maps) are
+   * on (a sub-scan navigator): they are stretched over it, k × k image pixels
+   * per map pixel (``views/si/scan.ts``). Default 1. */
+  scanFactor?: number;
 }
 
 const BASE = "base";
@@ -84,7 +100,8 @@ export const BASE_LAYER = BASE;
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
   viewKey, base, images, geometry, loading, error, children, empty, interaction, renderOverlay,
-  lineTool, profilePick, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
+  lineTool, fftTool, profilePick, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
+  scanFactor = 1,
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
   const { setFocus, deselect, addToSelection } = useDatasets.getState();
@@ -100,7 +117,7 @@ export function LayeredViewer({
     base?.key ?? `${viewKey}:none`,
     base?.frame ?? null,
     baseDataset ? () => initialColormap(baseDataset) : undefined,
-    base?.version ?? (baseDataset && dataVersion(baseDataset)),
+    base?.version ?? (baseDataset && contrastVersion(baseDataset)),
   );
 
   // Each image gets auto contrast (and its element colour) once its data
@@ -108,11 +125,15 @@ export function LayeredViewer({
   useEffect(() => {
     for (const d of images) {
       const f = frames[d.id];
-      if (f) autoContrast(d.id, f, dataVersion(d), () => initialColormap(d));
+      if (f) autoContrast(d.id, f, contrastVersion(d), () => initialColormap(d));
     }
   }, [frames, images]);
 
   const baseProps = layerProps[baseLayerKey(viewKey)] ?? DEFAULT_LAYER;
+  // Survey images show where their spectrum image was taken.
+  const surveys = [...(baseDataset ? [baseDataset] : []), ...images].filter(
+    (d) => d.survey?.regions.length && (layerProps[d.id]?.visible ?? true),
+  );
   const layers: ViewLayer[] = [
     ...(base
       ? [{ key: BASE, label: base.label, frame: base.frame, display: baseDisplay.display, ...baseProps }]
@@ -120,7 +141,7 @@ export function LayeredViewer({
     ...images.map((d) => ({
       key: d.id,
       label: d.title,
-      frame: frames[d.id] ?? null,
+      frame: frames[d.id] ? stretch(frames[d.id], scanFactor) : null,
       display: displays[d.id],
       ...(layerProps[d.id] ?? DEFAULT_LAYER),
     })),
@@ -134,7 +155,8 @@ export function LayeredViewer({
   const sizes = layers.map((l) => {
     const d = l.key === BASE ? undefined : images.find((x) => x.id === l.key);
     if (!d) return { geometry, w: geometry.width, h: geometry.height };
-    const [w, h] = planeSize(d);
+    const [w0, h0] = planeSize(d);
+    const [w, h] = [w0 * scanFactor, h0 * scanFactor]; // stretched over the base
     const own = w === geometry.width && h === geometry.height ? geometry : imageGeometry(d, "signal");
     return { geometry: own, w: own.width, h: own.height };
   });
@@ -202,6 +224,12 @@ export function LayeredViewer({
   const setImageTool = useProfiles((s) => s.setImageTool);
   const drawingLines = lineTool ?? imageTool === "line";
   const lineInteraction = useLineTool(viewKey);
+  // FFT boxes: squares whose FFT the FFT panel can show instead of the view.
+  const drawingBoxes = lineTool === undefined ? imageTool === "fft" : !!fftTool;
+  const boxInteraction = useFftBoxTool(viewKey, geometry.width, geometry.height);
+  const toolInteraction = drawingLines ? lineInteraction : drawingBoxes ? boxInteraction : interaction;
+  // The FFTs of the view and its boxes, beside the image (when it is the one the FFT panel follows).
+  const showCompare = useViewerImage((s) => s.compare && s.image?.fftView === viewKey);
   const hasLines = useViewProfiles(viewKey).lines.length > 0;
 
   // Pane under the image: the given tabs, plus line profiles (with the line
@@ -291,7 +319,7 @@ export function LayeredViewer({
         <div className="layer-toolbar">
           {lineTool === undefined && (
             <div className="segmented tool-buttons" role="group" aria-label="Image tool">
-              {(["pan", "line"] as const).map((t) => (
+              {(["pan", "line", "fft"] as const).map((t) => (
                 <button
                   key={t}
                   className={imageTool === t ? "active" : undefined}
@@ -300,10 +328,12 @@ export function LayeredViewer({
                   title={
                     t === "pan"
                       ? "Pan (or hold Space / middle-drag with any tool)"
-                      : "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it"
+                      : t === "line"
+                        ? "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it"
+                        : FFT_TOOL_TITLE
                   }
                 >
-                  {t === "pan" ? "✋" : "╱"}
+                  {t === "pan" ? "✋" : t === "line" ? "╱" : "FFT"}
                 </button>
               ))}
             </div>
@@ -345,61 +375,76 @@ export function LayeredViewer({
             onChange={onDisplayChange}
           />
         </div>
-        {grid ? (
-          <ViewerGrid
-            panels={layers
-              .map((layer, i): GridPanel => {
-                const z = sizes[i];
-                const first = sizes[0];
-                return {
-                  layer,
-                  width: z.w,
-                  height: z.h,
-                  calX: z.geometry.calX,
-                  calY: z.geometry.calY,
-                  // Panels of the first image's size share the view's key.
-                  viewKey: z.w === first.w && z.h === first.h ? viewKey : `${viewKey}:${z.w}x${z.h}`,
-                  ...(layer.key === BASE && { loading, error }),
-                };
-              })}
-            active={activeLayer?.key}
-            onActivate={activate}
-            interaction={drawingLines ? lineInteraction : interaction}
-            renderOverlay={(t, p) => (
-              <>
-                {renderOverlay?.(t)}
-                <LineOverlay t={t} view={viewKey} calX={p.calX} calY={p.calY} />
-              </>
-            )}
-            onRemove={(key) => (key === BASE ? null : () => deselect(key))}
-            empty="No images to show"
-          />
-        ) : (
-          <ImageView
-            viewKey={viewKey}
-            layers={layers}
-            fullWidth={geometry.width}
-            fullHeight={geometry.height}
-            calX={geometry.calX}
-            calY={geometry.calY}
-            loading={loading}
-            error={error}
-            empty={layers.length ? null : (empty ?? null)}
-            panel={panel}
-            interaction={drawingLines ? lineInteraction : interaction}
-            renderOverlay={(t) => (
-              <>
-                {renderOverlay?.(t)}
-                <LineOverlay t={t} view={viewKey} calX={geometry.calX} calY={geometry.calY} />
-              </>
-            )}
-            analysisKey={activeLayer?.key}
-            hint={showPanel || !overlays ? undefined : "click or drag maps to overlay them"}
-          >
-            {children}
-          </ImageView>
+        <div className="viewer-row">
+          {grid ? (
+            <ViewerGrid
+              panels={layers
+                .map((layer, i): GridPanel => {
+                  const z = sizes[i];
+                  const first = sizes[0];
+                  return {
+                    layer,
+                    width: z.w,
+                    height: z.h,
+                    calX: z.geometry.calX,
+                    calY: z.geometry.calY,
+                    // Panels of the first image's size share the view's key.
+                    viewKey: z.w === first.w && z.h === first.h ? viewKey : `${viewKey}:${z.w}x${z.h}`,
+                    ...(layer.key === BASE && { loading, error }),
+                  };
+                })}
+              active={activeLayer?.key}
+              onActivate={activate}
+              interaction={toolInteraction}
+              fftView={viewKey}
+              renderOverlay={(t, p) => (
+                <>
+                  {renderOverlay?.(t)}
+                  <FftBoxOverlay t={t} view={viewKey} />
+                  {surveys.filter((d) => d.id === p.layer.key).map((d) => (
+                    <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
+                  ))}
+                  <LineOverlay t={t} view={viewKey} calX={p.calX} calY={p.calY} />
+                </>
+              )}
+              onRemove={(key) => (key === BASE ? null : () => deselect(key))}
+              empty="No images to show"
+              scanFactor={scanFactor}
+            />
+          ) : (
+            <ImageView
+              viewKey={viewKey}
+              layers={layers}
+              fullWidth={geometry.width}
+              fullHeight={geometry.height}
+              calX={geometry.calX}
+              calY={geometry.calY}
+              loading={loading}
+              error={error}
+              empty={layers.length ? null : (empty ?? null)}
+              panel={panel}
+              interaction={toolInteraction}
+              fftView={viewKey}
+              renderOverlay={(t) => (
+                <>
+                  {renderOverlay?.(t)}
+                  <FftBoxOverlay t={t} view={viewKey} />
+                  {surveys.map((d) => (
+                    <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
+                  ))}
+                  <LineOverlay t={t} view={viewKey} calX={geometry.calX} calY={geometry.calY} />
+                </>
+              )}
+              analysisKey={activeLayer?.key}
+              scanFactor={scanFactor}
+              hint={showPanel || !overlays ? undefined : "click or drag maps to overlay them"}
+            >
+              {children}
+            </ImageView>
 
-        )}
+          )}
+          {showCompare && <FftCompare view={viewKey} />}
+        </div>
         {footer}
         {dragOver && <div className="drop-hint">Drop to overlay</div>}
       </div>

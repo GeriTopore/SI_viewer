@@ -18,7 +18,7 @@ const pendingOff = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** A number typed in a field, kept as typed until Enter or leaving the field
  * (empty: none). */
-function ValueInput({ value, onCommit, label, step = "any", disabled }: {
+export function ValueInput({ value, onCommit, label, step = "any", disabled }: {
   value: number | null; onCommit: (v: number | null) => void; label: string; step?: number | "any"; disabled?: boolean;
 }) {
   const shown = (v: number | null) => (v === null ? "" : String(v));

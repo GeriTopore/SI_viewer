@@ -5,9 +5,10 @@ import { useViewerImage } from "../state/viewerImage";
 import { ImageRenderer, type DisplayParams, type ViewTransform } from "../viewer/renderer";
 import { formatValue, niceScaleBar } from "../format";
 import { isTyping, useShortcuts } from "../keyboard";
-import { downloadBlob, safeFileName } from "../download";
-import { compositePng } from "../viewer/snapshot";
-import { useLayers } from "../state/layers";
+import { safeFileName } from "../download";
+import type { SnapshotPanel } from "../viewer/snapshot";
+import { PngExportDialog } from "./PngExportDialog";
+import { scanPixel } from "../views/si/scan";
 
 export interface AxisCal {
   scale: number;
@@ -77,6 +78,8 @@ interface Props {
   interaction?: Interaction;
   /** SVG content drawn over the image in screen coordinates. */
   renderOverlay?: (t: Transform) => ReactNode;
+  /** Key of the FFT boxes drawn on this view, published with the image. */
+  fftView?: string;
   /** Layer whose visible part is published for analysis (the FFT panel);
    * defaults to the first visible layer. */
   analysisKey?: string;
@@ -95,6 +98,9 @@ interface Props {
   hoverChip?: boolean;
   /** Replaces saving this image on ⌘/Ctrl+S (the grid saves all panels). */
   onSave?: () => void;
+  /** Spectrum-image view over a navigator k times finer than the scan: the
+   * hovered position also shows the spectrum-image pixel. */
+  scanFactor?: number;
   /** Receives Fit and 1:1 for this view (null on unmount). */
   controlRef?: { current: ViewControls | null };
 }
@@ -123,8 +129,8 @@ let hoveredView: string | null = null;
 
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
-  interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true,
-  readout = true, follow = false, hoverChip = false, onSave, controlRef,
+  interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true, fftView,
+  readout = true, follow = false, hoverChip = false, onSave, controlRef, scanFactor = 1,
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -253,12 +259,13 @@ export function ImageView({
       frame: analysed.frame,
       calX,
       calY,
+      fftView,
       x0: Math.max(0, Math.floor(view.cx - hw)),
       y0: Math.max(0, Math.floor(view.cy - hh)),
       x1: Math.min(fullWidth, Math.ceil(view.cx + hw)),
       y1: Math.min(fullHeight, Math.ceil(view.cy + hh)),
     });
-  }, [owner, publishes, analysed?.frame, analysed?.label, view, size.w, size.h, fullWidth, fullHeight, calX.scale, calX.units, calY.scale]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [owner, publishes, analysed?.frame, analysed?.label, view, size.w, size.h, fullWidth, fullHeight, calX.scale, calX.units, calY.scale, fftView]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => useViewerImage.getState().clear(owner), [owner]);
 
   const toData = (clientX: number, clientY: number, v: ViewTransform) => {
@@ -378,16 +385,20 @@ export function ImageView({
     return () => window.removeEventListener("keydown", onKey);
   }, [publishes]);
 
+  // The export dialog, opened on the layers shown at that moment.
+  const [exporting, setExporting] = useState<{ panels: SnapshotPanel[]; name: string } | null>(null);
   const saveImage = () => {
     const shown = layers.filter((l) => l.visible && l.frame && l.display);
     if (!shown.length) return;
-    const name = `${safeFileName(shown.map((l) => l.label).join("+"))}.png`;
-    compositePng(
-      shown.map((l) => ({ key: l.key, frame: l.frame!, display: l.display!, opacity: l.opacity })),
-      fullWidth, fullHeight, calX,
-    )
-      .then((blob) => downloadBlob(blob, name))
-      .catch((e) => useLayers.getState().notify(`Could not save the image: ${(e as Error).message}`));
+    setExporting({
+      name: `${safeFileName(shown.map((l) => l.label).join("+"))}.png`,
+      panels: [{
+        layers: shown.map((l) => ({ key: l.key, frame: l.frame!, display: l.display!, opacity: l.opacity })),
+        width: fullWidth,
+        height: fullHeight,
+        calX,
+      }],
+    });
   };
   save.current = onSave ?? saveImage;
 
@@ -446,6 +457,7 @@ export function ImageView({
         {hoverChip && hover && (
           <div className="hover-chip">
             {hover.x}, {hover.y}
+            {scanFactor > 1 && ` · SI ${scanPixel(hover.x, scanFactor)}, ${scanPixel(hover.y, scanFactor)}`}
             {hover.values.map((v, i) => (
               <span key={i}> · {formatValue(v.value)}</span>
             ))}
@@ -476,6 +488,11 @@ export function ImageView({
                   ({formatValue(calX.offset + (hover.x + 0.5) * calX.scale)},{" "}
                   {formatValue(calY.offset + (hover.y + 0.5) * calY.scale)} {calX.units})
                 </span>
+              )}
+              {scanFactor > 1 && (
+                <>
+                  {" · "}SI {scanPixel(hover.x, scanFactor)}, {scanPixel(hover.y, scanFactor)}
+                </>
               )}
               {hover.values.length === 1 && <> · {formatValue(hover.values[0].value)}</>}
               {hover.values.length > 1 &&
@@ -516,6 +533,16 @@ export function ImageView({
           </button>
         </span>
       </div>}
+      {exporting && (
+        <PngExportDialog
+          panels={exporting.panels}
+          cols={1}
+          grid={false}
+          name={exporting.name}
+          scaleBar={scaleBar}
+          onClose={() => setExporting(null)}
+        />
+      )}
     </div>
   );
 }

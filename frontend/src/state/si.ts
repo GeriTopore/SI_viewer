@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Tool = "cursor" | "rect" | "ellipse" | "polygon" | "line" | "pan";
+export type Tool = "cursor" | "rect" | "ellipse" | "polygon" | "line" | "fft" | "pan";
 export type Reduce = "mean" | "sum";
 
 /** Region geometry in data pixel coordinates (pixel i spans [i, i+1)). */

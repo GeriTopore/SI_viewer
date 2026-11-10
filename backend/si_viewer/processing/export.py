@@ -65,6 +65,11 @@ def _processed_signal(ds: Dataset):
         signal.metadata.set_item(f"Processing.si_viewer.filters_{key}", description)
     if ds.rebinned:
         signal.metadata.set_item("Processing.si_viewer.rebinned", "; then ".join(ds.rebinned))
+    if ds.insitu is not None:
+        view = ds.insitu.view
+        signal.metadata.set_item("Processing.si_viewer.insitu_view", view.label())
+        times = ds.insitu.times
+        signal.metadata.set_item("Processing.si_viewer.insitu_time_s", [float(times[view.start]), float(times[view.end])])
     return signal
 
 
@@ -87,7 +92,8 @@ def export_bytes(ds: Dataset, fmt: str) -> tuple[bytes, str]:
     known = {f: ext for f, ext, _ in FORMATS.get(ds.kind, [])}
     if fmt not in known:
         raise ValueError(f"{ds.title} can't be saved as {fmt} (choose from {', '.join(known) or 'nothing'})")
-    name = f"{safe_name(ds.title)}.{known[fmt]}"
+    frame = f" ({ds.insitu.view.label()})" if ds.insitu is not None else ""  # which frame of an in-situ series
+    name = f"{safe_name(ds.title + frame)}.{known[fmt]}"
     signal = _processed_signal(ds)
 
     if fmt == "csv":

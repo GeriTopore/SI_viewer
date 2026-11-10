@@ -19,9 +19,11 @@
   --badge-map: #db2777;
   --badge-window: #0891b2;
   --badge-background: #65a30d;
+  --badge-deconvolved: #0f766e;
   --badge-thickness: #e11d48;
   --badge-shift: #7c3aed;
   --badge-other: #6b7280;
+  --badge-survey: #4f46e5;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -420,6 +422,42 @@ button.primary:disabled {
   white-space: nowrap;
 }
 
+/* While renaming, the field takes the room left by the colour dot and link
+   mark (as text it would overflow into the ellipsis). */
+.dataset-title:has(.rename-input) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: visible;
+}
+
+.dataset-title:has(.rename-input) .rename-input {
+  flex: 1;
+  width: auto;
+}
+
+/* Renaming a dataset in place (Datasets pane, Info tab). */
+.rename-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0 3px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+}
+
+.editable-title {
+  cursor: text;
+  border-radius: 3px;
+}
+
+.editable-title:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.15));
+}
+
 .dataset-shape {
   font-family: var(--mono);
   font-size: 11px;
@@ -445,11 +483,155 @@ button.primary:disabled {
 .badge-map { background: var(--badge-map); }
 .badge-window { background: var(--badge-window); }
 .badge-background { background: var(--badge-background); }
+.badge-deconvolved { background: var(--badge-deconvolved); }
 .badge-thickness { background: var(--badge-thickness); }
 .badge-shift { background: var(--badge-shift); }
+.badge-survey { background: var(--badge-survey); }
 
 .empty-list {
   margin: 0;
+}
+
+/* Foldable group of datasets of one type */
+.type-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.type-group-toggle:hover {
+  background: var(--hover);
+}
+
+.type-group.active > .type-group-toggle {
+  background: var(--selected);
+}
+
+.type-group.collapsed .process-chevron {
+  margin: 0 3px 0 0;
+  transform: rotate(-45deg);
+}
+
+/* Members hang off a tree: a trunk under the chevron (x = 10px) and a branch
+   to each row's vertical centre; the last branch ends the trunk (└─). */
+.type-group > .dataset-list {
+  --tree-line: color-mix(in srgb, var(--muted) 45%, transparent);
+  margin: 0 0 0 10px;
+}
+
+.type-group > .dataset-list > li {
+  position: relative;
+  padding-left: 10px;
+}
+
+.type-group > .dataset-list > li::before,
+.type-group > .dataset-list > li::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  background: var(--tree-line);
+  pointer-events: none;
+}
+
+.type-group > .dataset-list > li::before {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+.type-group > .dataset-list > li:last-child::before {
+  bottom: 50%;
+}
+
+.type-group > .dataset-list > li::after {
+  top: 50%;
+  width: 10px;
+  height: 1px;
+}
+
+/* An experiment's files hang off a tree, like a type group's members (the
+   branch goes to the file's header row). */
+.experiment > .file-header .fb-icon {
+  flex: none;
+  margin-right: 2px;
+}
+
+.experiment-files {
+  --tree-line: color-mix(in srgb, var(--muted) 45%, transparent);
+  margin: 4px 0 0 7px;
+}
+
+.experiment-files > li {
+  position: relative;
+  padding-left: 10px;
+}
+
+.experiment-files > li + li {
+  margin-top: 6px;
+}
+
+.experiment-files > li::before,
+.experiment-files > li::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  background: var(--tree-line);
+  pointer-events: none;
+}
+
+.experiment-files > li::before {
+  top: -6px;
+  bottom: 0;
+  width: 1px;
+}
+
+.experiment-files > li:first-child::before {
+  top: 0;
+}
+
+.experiment-files > li:last-child::before {
+  bottom: auto;
+  height: 17px;
+}
+
+.experiment-files > li:first-child:last-child::before {
+  height: 11px;
+}
+
+.experiment-files > li::after {
+  top: 11px;
+  width: 8px;
+  height: 1px;
+}
+
+.experiment + .experiment,
+.experiment + .file,
+.file + .experiment,
+.experiment + .pair-box,
+.pair-box + .experiment {
+  margin-top: 10px;
+}
+
+/* Members of a type group: the group row names the type, so no badge. */
+.dataset.no-badge {
+  grid-template-columns: minmax(10ch, 1fr) minmax(0, auto) 18px;
+}
+
+.type-group > .dataset-grid {
+  margin-top: 4px;
+}
+
+.dataset-grid > .type-group {
+  grid-column: 1 / -1;
 }
 
 /* Large icon view */
@@ -655,6 +837,24 @@ button.primary:disabled {
   flex: none;
 }
 
+/* Export… dialog: a file name and type under the folder list. */
+.export-dialog {
+  height: min(480px, calc(100vh - 64px));
+}
+
+.export-fields {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+}
+
+.export-name {
+  flex: 1;
+  min-width: 0;
+}
+
 /* Main placeholder */
 .placeholder {
   margin: auto;
@@ -742,8 +942,7 @@ button.primary:disabled {
   color: var(--muted);
 }
 
-.field select,
-.colormap-picker select {
+.field select {
   padding: 2px 4px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -766,10 +965,60 @@ button.primary:disabled {
 }
 
 .colormap-swatch {
+  flex: none;
   width: 36px;
   height: 12px;
   border-radius: 2px;
   border: 1px solid var(--border);
+}
+
+.colormap-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+
+.colormap-button:hover,
+.colormap-button.active {
+  background: var(--selected);
+  border-color: var(--accent);
+}
+
+/* Colormap list: portalled to the body, positioned under the icon */
+.colormap-list {
+  position: fixed;
+  z-index: 40;
+  min-width: 130px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  outline: none;
+}
+
+.colormap-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.colormap-option.active {
+  background: var(--selected);
+}
+
+.colormap-option.current {
+  font-weight: 600;
 }
 
 .histogram {
@@ -808,8 +1057,12 @@ button.primary:disabled {
   font-variant-numeric: tabular-nums;
 }
 
-.gamma input {
+.gamma input[type="range"] {
   width: 80px;
+}
+
+.gamma input.gamma-input {
+  width: 52px;
 }
 
 /* Image view */
@@ -940,6 +1193,76 @@ button.primary:disabled {
   text-align: right;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
+}
+
+/* In-situ frame bar: slider or frame range, mode, and what is happening */
+.insitu-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.insitu-bar .stack-slider {
+  flex: 1 1 120px;
+  min-width: 80px;
+}
+
+.insitu-bar .stack-index {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.insitu-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  color: var(--muted);
+}
+
+.insitu-range input[type="number"] {
+  width: 60px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.insitu-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.insitu-status.error {
+  color: #ff8a80;
+  white-space: normal;
+}
+
+.insitu-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 160px;
+  color: var(--muted);
+}
+
+.insitu-progress .q-progress {
+  flex: 1;
+  min-width: 60px;
+}
+
+.dl-section-title {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* Spectrum image: navigator and spectrum side by side when wide enough */
@@ -1401,7 +1724,9 @@ button.primary:disabled {
   display: inline-block;
   width: 11px;
   height: 11px;
-  margin-right: 6px;
+  /* Room for the ring (box-shadow) inside the title's clipped box, also
+     when the dot grows on hover. */
+  margin: 0 6px 0 3.5px;
   border-radius: 50%;
   vertical-align: -1px;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 0 2px rgba(255, 255, 255, 0.12);
@@ -1455,6 +1780,147 @@ button.primary:disabled {
   paint-order: stroke;
   stroke: rgba(0, 0, 0, 0.75);
   stroke-width: 3px;
+}
+
+/* The image and, beside it, the FFTs of the view and its FFT boxes. */
+.viewer-row {
+  flex: 1 1 0;
+  display: flex;
+  gap: 8px;
+  min-height: 0;
+}
+
+.fft-compare {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.fft-compare-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fft-compare-title {
+  flex: 1;
+  font-weight: 600;
+}
+
+.fft-compare-grid {
+  flex: 1;
+  display: grid;
+  align-content: start;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.fft-compare-cell .fft-canvas-wrap {
+  max-width: none;
+}
+
+.fft-compare-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fft-compare-name:hover {
+  background: var(--hover);
+}
+
+.fft-compare-name.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fft-regions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+
+/* The FFT panel's choice of region: the view or an FFT box. */
+.fft-regions {
+  flex-wrap: wrap;
+}
+
+.fft-regions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fft-region-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+/* FFT boxes: dashed, the one the FFT panel shows solid. */
+.fft-box rect {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+}
+
+.fft-box.source rect {
+  stroke-width: 2;
+  stroke-dasharray: none;
+}
+
+.fft-box .roi-handle {
+  fill: #111;
+  stroke-dasharray: none;
+}
+
+.fft-box .roi-label {
+  fill: currentColor;
+}
+
+.survey-region rect {
+  fill: none;
+  stroke: #22c55e;
+  stroke-width: 1.5;
+}
+
+.survey-region.drift rect {
+  stroke: #f97316;
+  stroke-dasharray: 4 3;
+}
+
+.survey-region.other rect {
+  stroke: #e5e7eb;
+}
+
+.survey-region .roi-label {
+  fill: #22c55e;
+}
+
+.survey-region.drift .roi-label {
+  fill: #f97316;
+}
+
+.survey-region.other .roi-label {
+  fill: #e5e7eb;
 }
 
 .roi-handle {
@@ -1627,7 +2093,14 @@ button.primary:disabled {
 /* Element maps: delete buttons */
 
 .dataset {
-  grid-template-columns: auto 1fr auto 18px;
+  /* The title keeps room; the shape label gives way (ellipsis) when it is long. */
+  grid-template-columns: auto minmax(10ch, 1fr) minmax(0, auto) 18px;
+}
+
+.dataset .dataset-shape {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-delete,
@@ -1852,6 +2325,201 @@ button.primary:disabled {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
+}
+
+/* PNG export dialog */
+.png-dialog {
+  width: min(800px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+.png-dialog h2 {
+  font-size: 14px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+  margin: 0 0 10px;
+}
+
+.png-dialog h3 {
+  margin: 12px 0 4px;
+}
+
+.png-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.png-preview-col {
+  flex: 1 1 300px;
+  min-width: 0;
+}
+
+.png-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background:
+    repeating-conic-gradient(var(--hover) 0% 25%, var(--bg) 0% 50%) 50% / 16px 16px;
+}
+
+.png-preview canvas {
+  image-rendering: pixelated;
+}
+
+.png-size {
+  margin-top: 4px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.png-options {
+  flex: 0 0 250px;
+  min-width: 0;
+}
+
+.png-options > h3:first-child {
+  margin-top: 0;
+}
+
+.png-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.png-row-label {
+  flex: 0 0 76px;
+  color: var(--muted);
+}
+
+.png-row-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.png-row input[type="number"] {
+  width: 72px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.png-row select {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.png-dialog .field-error {
+  margin: 10px 0 0;
+}
+
+/* Plot export dialog (matplotlib) */
+.plot-dialog {
+  width: min(1000px, calc(100vw - 32px));
+}
+
+.plot-dialog .png-options {
+  flex: 0 0 340px;
+}
+
+.plot-dialog .png-preview-col {
+  position: sticky;
+  top: 0;
+}
+
+.plot-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  background: #fff;
+}
+
+.plot-preview.stale img {
+  opacity: 0.55;
+}
+
+.plot-dialog .png-size {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 16px;
+}
+
+.png-row input[type="text"],
+.plot-series input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.png-row input[type="text"] {
+  min-width: 150px;
+}
+
+.plot-dialog .png-row-field {
+  flex: 1 1 auto;
+}
+
+.plot-dialog .png-row-label {
+  flex: 0 0 70px;
+}
+
+.plot-dialog .png-row input[type="number"] {
+  width: 64px;
+}
+
+.plot-series {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.plot-series input[type="text"] {
+  flex: 1 1 auto;
+}
+
+.plot-series select {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.plot-swatch {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
 }
 
 .rebin-warning {
@@ -2288,8 +2956,10 @@ button.primary:disabled {
 
 .fft-header {
   display: flex;
+  flex-wrap: wrap; /* the zoom buttons go to a second row when the pane is narrow */
   align-items: center;
   justify-content: space-between;
+  gap: 4px;
   margin-bottom: 6px;
 }
 
@@ -2370,6 +3040,64 @@ button.primary:disabled {
   font-size: 12px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+/* The FFT's contrast controls: the narrow panel puts the histogram on its own
+ * full-width row, the rest wraps below. */
+.fft-contrast {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fft-contrast-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.fft-contrast-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fft-contrast.collapsed {
+  margin-top: 4px;
+}
+
+.fft-contrast.collapsed .process-chevron {
+  margin: 0 3px 0 0;
+  transform: rotate(-45deg);
+}
+
+.fft-contrast .contrast-controls {
+  gap: 6px 10px;
+  min-height: 0;
+}
+
+.fft-contrast .histogram {
+  order: -1;
+  flex: 1 0 100%;
+  width: 100%;
+}
+
+.fft-contrast .colormap-picker {
+  min-width: 0;
+}
+
+.fft-contrast .gamma {
+  flex: 1 1 100%;
+}
+
+.fft-contrast .gamma input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  width: auto;
 }
 
 /* ---------- Process tab ---------- */
@@ -2951,6 +3679,12 @@ kbd {
   stroke: #00e5ff;
   stroke-width: 1.5;
   stroke-dasharray: 5 4;
+}
+
+.align-ring.hot circle,
+.align-ring.hot ellipse {
+  stroke-width: 3;
+  stroke-dasharray: none;
 }
 
 .align-ring text {

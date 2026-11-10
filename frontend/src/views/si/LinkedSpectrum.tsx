@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, dataVersion, type DatasetSummary, type EelsRole } from "../../api/client";
+import { api, dataVersion, type DatasetSummary, type DeconvolutionSelection, type EelsRole } from "../../api/client";
 import { SpectrumPlot, type SpectrumSeries } from "../../components/SpectrumPlot";
 import { allDatasets, groupOf, useDatasets } from "../../state/datasets";
 import { useDisplay } from "../../state/display";
-import { CURSOR_COLOR, useSi, type Reduce, type SiState } from "../../state/si";
+import { CURSOR_COLOR, shapeToRegion, useSi, type Reduce, type SiState } from "../../state/si";
 import { eelsTab, type BottomTab } from "../../state/ui";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "../SpectrumView";
 import { CURSOR_CHANNEL, useSiSpectra } from "./useSiSpectra";
 import { useThresholdLine } from "./useThresholdLine";
+import { useDeconvPreview } from "./useDeconvPreview";
 
 /** The link group ``ds`` is in, itself included (low loss first, then core
  * losses by energy offset); just ``ds`` when it is not linked. */
@@ -105,29 +106,41 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
   // Thickness (Process tab): the zero-loss threshold, drawn on the low loss.
   const zlp = useThresholdLine(member);
 
-  const series = useMemo<SpectrumSeries[]>(() => {
+  // Each series with the pixels it sums (for the deconvolution preview).
+  const { series: plain, sel } = useMemo(() => {
     const k = (count: number) => (reduce === "mean" ? 1 / Math.max(1, count) : 1);
     const scaled = (data: Float32Array, f: number) => (f === 1 ? data : data.map((v) => v * f));
     const out: SpectrumSeries[] = [];
+    const sel: (DeconvolutionSelection | null)[] = [];
     if (st.showWhole && whole.data) {
       out.push({ label: lineScan ? "All positions" : "All pixels", data: scaled(whole.data, k(total)), color: SPECTRUM_COLOR });
+      sel.push({ kind: "whole" });
     }
     for (const roi of st.rois) {
       const s = roi.visible ? spectra[roi.id] : undefined;
       if (!s || roi.shape.kind === "polygon") {
-        if (s && s.pixels > 0) out.push({ label: roi.name, data: scaled(s.data, k(s.pixels)), color: roi.color });
+        if (s && s.pixels > 0) {
+          out.push({ label: roi.name, data: scaled(s.data, k(s.pixels)), color: roi.color });
+          sel.push({ kind: "region", region: shapeToRegion(roi.shape) });
+        }
         continue;
       }
       // A line scan's range sums the positions lo…hi.
       const count = lineScan ? roi.shape.x1 - roi.shape.x0 : s.pixels;
-      if (count > 0) out.push({ label: roi.name, data: scaled(s.data, k(count)), color: roi.color });
+      if (count > 0) {
+        out.push({ label: roi.name, data: scaled(s.data, k(count)), color: roi.color });
+        sel.push({ kind: "region", region: shapeToRegion(roi.shape) });
+      }
     }
     const c = spectra[CURSOR_CHANNEL];
     if (st.showCursor && st.cursor && c) {
       out.push({ label: "Cursor", data: lineScan ? c.data : scaled(c.data, k(c.pixels)), color: CURSOR_COLOR });
+      sel.push({ kind: "pixel", x: st.cursor.x, y: st.cursor.y, size: lineScan ? 1 : cursorSize });
     }
-    return out;
-  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, total, lineScan]);
+    return { series: out, sel };
+  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, total, lineScan, cursorSize]);
+  // Deconvolution (Process tab): the deconvolved spectra, dashed.
+  const series = useDeconvPreview(member, plain, sel, reduce === "mean");
 
   const role = member.eels?.role === "low_loss" ? "low loss" : "core loss";
   return (

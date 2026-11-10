@@ -37,6 +37,12 @@ def _preview_array(dataset: Dataset, siblings: list[Dataset]) -> np.ndarray:
         return filter_image(_to_numpy(data), dataset.filter_spec)
     if dataset.kind is DatasetKind.STACK:
         return filter_image(_to_numpy(data.mean(axis=0)), dataset.filter_spec)
+    if dataset.insitu is not None:
+        # The frame held (the first one until another is shown): one frame
+        # read, never the series.
+        dataset.materialise()
+        data = dataset.signal.data
+        return filter_image(np.asarray(data, dtype=np.float32).sum(axis=-1), dataset.filter_spec)
     if dataset.is_line_scan:
         from .processing.frames import get_frame
 
@@ -55,16 +61,16 @@ def _preview_array(dataset: Dataset, siblings: list[Dataset]) -> np.ndarray:
 
 
 def si_companion_image(si: Dataset, siblings: list[Dataset]) -> Dataset | None:
-    """The ADF-type image acquired with a spectrum image, if the file has one."""
+    """The ADF-type image acquired with a spectrum image, if the file has one
+    (on the scan's grid, or a whole multiple finer: a DM "sub-scan")."""
+    from .subscan import scan_factor_of
+
     if si.is_line_scan:
         return None
-    shape = tuple(si.signal.axes_manager.navigation_shape)
     candidates = [
         d
         for d in siblings
-        if d.kind is DatasetKind.IMAGE
-        and not d.is_element_map
-        and tuple(d.signal.axes_manager.signal_shape) == shape
+        if d.kind is DatasetKind.IMAGE and not d.is_element_map and scan_factor_of(si, d) is not None
     ]
     for pattern in _SI_PREVIEW_TITLES:
         for d in candidates:

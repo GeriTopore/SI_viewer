@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchFrame, type Frame } from "../api/arrays";
-import { api, dataVersion, type DatasetSummary } from "../api/client";
+import { api, dataVersion, type DatasetSummary, type DeconvolutionSelection } from "../api/client";
 import { ContrastControls } from "../components/ContrastControls";
 import { LineScanImage, type ScanAxis } from "../components/LineScanImage";
 import { BottomPane } from "../components/BottomPane";
@@ -9,11 +9,12 @@ import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
 import { useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
-import { CURSOR_COLOR, getSiState, useSi, useSiState } from "../state/si";
+import { CURSOR_COLOR, getSiState, shapeToRegion, useSi, useSiState } from "../state/si";
 import { eelsTab, useUi } from "../state/ui";
 import { isAbort, spectralAxis } from "./geometry";
 import { CURSOR_CHANNEL, useSiSpectra } from "./si/useSiSpectra";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
+import { useDeconvPreview } from "./si/useDeconvPreview";
 import { useThresholdLine } from "./si/useThresholdLine";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
 import { ReduceToggle, memberLabel, memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
@@ -162,23 +163,34 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   const axis = useEnergyAxis(ds);
   const whole = useSpectrum(ds, ready);
   const spectra = useSiSpectra(ds.id, version, st, 1, ready);
-  const series = useMemo<SpectrumSeries[]>(() => {
+  // Each series with the positions it sums (for the deconvolution preview).
+  const { series, sel } = useMemo(() => {
     const k = (count: number) => (reduceMode === "mean" ? 1 / count : 1);
     const out: SpectrumSeries[] = [];
+    const sel: DeconvolutionSelection[] = [];
     if (st.showWhole && whole.data) {
       out.push({ label: "All positions", data: scaled(whole.data, k(n)), color: SPECTRUM_COLOR });
+      sel.push({ kind: "whole" });
     }
     for (const { roi, lo, hi } of ranges) {
       const s = roi.visible ? spectra[roi.id] : undefined;
-      if (s) out.push({ label: roi.name, data: scaled(s.data, k(hi - lo + 1)), color: roi.color });
+      if (s) {
+        out.push({ label: roi.name, data: scaled(s.data, k(hi - lo + 1)), color: roi.color });
+        sel.push({ kind: "region", region: shapeToRegion(roi.shape) });
+      }
     }
     const c = spectra[CURSOR_CHANNEL];
-    if (st.showCursor && st.cursor && c) out.push({ label: "Cursor", data: c.data, color: CURSOR_COLOR });
-    return out;
+    if (st.showCursor && st.cursor && c) {
+      out.push({ label: "Cursor", data: c.data, color: CURSOR_COLOR });
+      sel.push({ kind: "pixel", x: st.cursor.x, y: st.cursor.y, size: 1 });
+    }
+    return { series: out, sel };
   }, [st.showWhole, st.showCursor, st.cursor, ranges, whole.data, spectra, reduceMode, n]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Background removal (Process tab): its fits and bands on this plot.
   const bg = useBackgroundPreview(ds, axis.x, series);
+  // Deconvolution (Process tab): the deconvolved spectra, dashed.
+  const plotted = useDeconvPreview(ds, bg.series, sel, reduceMode === "mean");
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
   const bands = useMemo(() => [...bg.bands, ...zlp.windows], [bg.bands, zlp.windows]);
@@ -237,7 +249,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
       zoomKey={`${ds.id}:spectra`}
       {...ownLog}
       x={axis.x}
-      series={bg.series}
+      series={plotted}
       windows={bands}
       onEditWindow={(id, range, final) => zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
       xLabel={axis.label}

@@ -1,10 +1,12 @@
 import { create } from "zustand";
-import { api, type DatasetSummary, type EelsRole, type FileSummary } from "../api/client";
+import { api, type DatasetSummary, type EelsRole, type ExperimentSummary, type FileSummary } from "../api/client";
 import { DEFAULT_COLORMAP, useDisplay } from "./display";
 import { useProfiles } from "./profiles";
+import { useFftBoxes } from "./fftBoxes";
 import { useLayers } from "./layers";
 import { useSi } from "./si";
-import { isLineScan, isWindowMap } from "../format";
+import { isLineScan, isWindowMap, kindLabel } from "../format";
+import { typeGroupKey, useUi } from "./ui";
 
 interface OpenProgress {
   done: number;
@@ -22,7 +24,11 @@ interface DatasetsState {
   progress: OpenProgress | null;
   errors: string[];
   refresh: () => Promise<void>;
-  openFiles: (paths: string[]) => Promise<void>;
+  /** Open files one by one (into an experiment: see ``openFolder``). */
+  openFiles: (paths: string[], experimentId?: string) => Promise<void>;
+  /** Open a folder's files as one experiment (listed together, their EELS
+   * spectrum images linked). */
+  openFolder: (folder: string) => Promise<void>;
   /** Open a bundled example dataset (see the Examples menu). */
   openExample: (id: string, title: string) => Promise<void>;
   closeFile: (fileId: string) => Promise<void>;
@@ -135,6 +141,53 @@ export function layoutGroups(files: FileSummary[]): GroupLayout {
   return { colourOf, items };
 }
 
+/** A top-level stretch of the dataset pane: an experiment (the files of one
+ * folder opened together, by role: survey, scan images, low loss, core
+ * losses, …) or, for other files, a file or the files of a link group. */
+export type PaneItem = FileItem | { type: "experiment"; experiment: ExperimentSummary; files: FileSummary[] };
+
+const roleRank = (f: FileSummary) => {
+  const r = f.role ?? "";
+  if (r === "Survey") return 0;
+  if (r === "EELS LL") return 2;
+  if (r.startsWith("EELS")) return 3;
+  if (r === "EDS") return 4;
+  return r ? 1 : 5;
+};
+
+/** The dataset pane's layout: experiments, files and the files of link
+ * groups in the order they were opened (link colours as ``layoutGroups``). */
+export function layoutPane(files: FileSummary[]): { colourOf: Map<string, number>; items: PaneItem[] } {
+  const { colourOf } = layoutGroups(files);
+  const loose = layoutGroups(files.filter((f) => !f.experiment)).items.map((it): FileItem => {
+    if (it.type !== "group") return it;
+    const linked = it.files.flatMap((f) => f.datasets).find((d) => colourOf.has(d.id));
+    return { ...it, colour: linked ? colourOf.get(linked.id)! : it.colour };
+  });
+  const items: PaneItem[] = [];
+  const done = new Set<string>();
+  for (const f of files) {
+    if (f.experiment) {
+      const id = f.experiment.id;
+      if (done.has(id)) continue;
+      done.add(id);
+      const members = files.filter((g) => g.experiment?.id === id);
+      const sorted = members.map((g, i) => [g, i] as const).sort(([a, i], [b, j]) => roleRank(a) - roleRank(b) || i - j);
+      items.push({ type: "experiment", experiment: f.experiment, files: sorted.map(([g]) => g) });
+    } else {
+      const it = loose.find((x) => (x.type === "file" ? [x.file] : x.files).some((g) => g.id === f.id));
+      const key = it && (it.type === "file" ? it.file.id : it.files.map((g) => g.id).join("+"));
+      if (!it || done.has(key!)) continue;
+      done.add(key!);
+      items.push(it);
+    }
+  }
+  return { colourOf, items };
+}
+
+/** The files of a pane item, in order. */
+export const paneFiles = (it: PaneItem): FileSummary[] => (it.type === "file" ? [it.file] : it.files);
+
 /** One file's datasets, with the members of a link group that live in this
  * same file side by side (low loss first, at the place of whichever comes first). */
 export function layoutFile(f: FileSummary, colourOf: Map<string, number>): DatasetItem[] {
@@ -154,13 +207,44 @@ export function layoutFile(f: FileSummary, colourOf: Map<string, number>): Datas
   return out;
 }
 
-/** The datasets in the order the list shows them. */
-export function displayDatasets(files: FileSummary[]): DatasetSummary[] {
-  const { colourOf, items } = layoutGroups(files);
+/** A file's rows: plain datasets, link groups, and type groups (two or more
+ * unlinked datasets with the same badge, at the place of the first). */
+export type RowItem = DatasetItem | { type: "types"; key: string; label: string; ds: DatasetSummary[] };
+
+export function layoutRows(f: FileSummary, colourOf: Map<string, number>): RowItem[] {
+  const items = layoutFile(f, colourOf);
+  const byLabel = new Map<string, DatasetSummary[]>();
+  for (const it of items) {
+    if (it.type !== "dataset") continue;
+    const label = kindLabel(it.d);
+    byLabel.set(label, [...(byLabel.get(label) ?? []), it.d]);
+  }
+  const out: RowItem[] = [];
+  const placed = new Set<string>();
+  for (const it of items) {
+    if (it.type !== "dataset") {
+      out.push(it);
+      continue;
+    }
+    const label = kindLabel(it.d);
+    const ds = byLabel.get(label)!;
+    if (ds.length < 2) out.push(it);
+    else if (!placed.has(label)) {
+      placed.add(label);
+      out.push({ type: "types", key: typeGroupKey(f.path, label), label, ds });
+    }
+  }
+  return out;
+}
+
+/** The datasets in the order the list shows them. With ``collapsed``, the ones
+ * hidden in folded type groups are left out. */
+export function displayDatasets(files: FileSummary[], collapsed?: Record<string, true>): DatasetSummary[] {
+  const { colourOf, items } = layoutPane(files);
   return items
-    .flatMap((it) => (it.type === "file" ? [it.file] : it.files))
-    .flatMap((f) => layoutFile(f, colourOf))
-    .flatMap((it) => (it.type === "dataset" ? [it.d] : it.ds));
+    .flatMap(paneFiles)
+    .flatMap((f) => layoutRows(f, colourOf))
+    .flatMap((it) => (it.type === "dataset" ? [it.d] : it.type === "types" && collapsed?.[it.key] ? [] : it.ds));
 }
 
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
@@ -208,7 +292,8 @@ const rank = (d: DatasetSummary) =>
   isWindowMap(d) ? 4.5 : d.is_element_map ? 4 : (KIND_ORDER[d.kind] ?? 5);
 
 const madeByProcess = (d: DatasetSummary) =>
-  d.origin === "background" || d.origin === "background-r" || d.origin === "thickness" || d.origin === "zlp-shift";
+  d.origin === "background" || d.origin === "background-r" || d.origin === "thickness" || d.origin === "zlp-shift" ||
+  d.origin === "deconvolved";
 
 /** A file's datasets in list order; what background removal made (the new
  * spectrum image, then its r map), the thickness and the ZLP shift sit right under their source. */
@@ -281,27 +366,50 @@ export const useDatasets = create<DatasetsState>((set, get) => {
     },
 
     // Files open one at a time so each appears in the list as soon as it loads.
-    openFiles: async (paths) => {
+    openFiles: async (paths, experimentId) => {
       if (!paths.length || get().progress) return;
       set({ errors: [] });
       const errors: string[] = [];
+      const opened: FileSummary[] = [];
       for (const [i, path] of paths.entries()) {
         set({ progress: { done: i, total: paths.length, current: baseName(path) } });
         try {
-          const entry = sortFile(await api.openFile(path));
+          const entry = sortFile(await api.openFile(path, experimentId));
           const files = get().files.filter((f) => f.id !== entry.id).concat(entry);
           assignElementColours([entry]);
           set({ files });
+          opened.push(entry);
           // Follow the newest file, so the user sees what they just opened
           // (sorted, so a spectrum image comes first if there is one).
           const first = entry.datasets[0];
-          if (first) get().select(first.id);
-          if (linkedElsewhere(entry)) await get().syncFiles();
+          if (first && !experimentId) get().select(first.id);
+          // Linking changes the others (and their roles in the experiment).
+          if (experimentId || linkedElsewhere(entry)) await get().syncFiles();
         } catch (e) {
           errors.push(`${baseName(path)}: ${(e as Error).message}`);
         }
       }
+      // An experiment: show its (first) spectrum image.
+      const all = opened.flatMap((f) => f.datasets);
+      const shown = all.find((d) => d.kind === "spectrum_image") ?? all[0];
+      if (experimentId && shown) get().select(shown.id);
       set({ progress: null, errors });
+    },
+
+    openFolder: async (folder) => {
+      if (get().progress) return;
+      let plan: Awaited<ReturnType<typeof api.openFolder>>;
+      try {
+        plan = await api.openFolder(folder);
+      } catch (e) {
+        set({ errors: [`${baseName(folder)}: ${(e as Error).message}`] });
+        return;
+      }
+      if (!plan.paths.length) {
+        set({ errors: [`${baseName(folder)}: no files to open`] });
+        return;
+      }
+      await get().openFiles(plan.paths, plan.experiment.id);
     },
 
     openExample: async (id, title) => {
@@ -348,6 +456,7 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       if (changed.length) {
         useDisplay.getState().resetDisplay(changed.map((d) => d.id));
         useProfiles.getState().reset(changed.map((d) => d.id));
+        useFftBoxes.getState().reset(changed.map((d) => d.id));
         changed.forEach((d) => d.kind === "spectrum_image" && useSi.getState().reset(d.id));
       }
       const files = get().files.map((f) => (f.id === file.id ? sorted : f));
@@ -431,11 +540,23 @@ export const useDatasets = create<DatasetsState>((set, get) => {
 
     // Arrow keys: step the focus; spectrum images, stacks and spectra also
     // become the view, while images are only inspected (click adds them).
+    // Datasets hidden in folded type groups are skipped.
     selectRelative: (step) => {
-      const list = displayDatasets(get().files);
-      if (!list.length) return;
+      const files = get().files;
+      const list = displayDatasets(files);
+      const visible = new Set(displayDatasets(files, useUi.getState().collapsedTypes).map((d) => d.id));
+      if (!visible.size) return;
       const i = list.findIndex((d) => d.id === get().focusId);
-      const next = list[i < 0 ? 0 : Math.min(list.length - 1, Math.max(0, i + step))];
+      let j = i < 0 ? -1 : i;
+      // Nearest visible row in the direction of travel (the focus itself may be hidden).
+      for (let k = i < 0 ? 0 : i + step; k >= 0 && k < list.length; k += step) {
+        if (visible.has(list[k].id)) {
+          j = k;
+          break;
+        }
+      }
+      if (j < 0) j = list.findIndex((d) => visible.has(d.id));
+      const next = list[j];
       if (next.kind === "image") set({ focusId: next.id });
       else if (get().selection.includes(next.id)) set({ focusId: next.id });
       else get().select(next.id);
@@ -448,7 +569,7 @@ export const useDatasets = create<DatasetsState>((set, get) => {
 /** Datasets made in the app that can be deleted: maps, thickness, ZLP shifts and background-removed SIs (with their r maps). */
 export const canDelete = (d: DatasetSummary) =>
   d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r" ||
-  d.origin === "thickness" || d.origin === "zlp-shift";
+  d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);

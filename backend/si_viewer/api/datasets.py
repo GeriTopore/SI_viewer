@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from ..processing.frames import NotApplicable, get_frame, get_spectrum, navigator_sources
+from ..session import NotAvailable
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -43,7 +44,10 @@ def get_dataset(dataset_id: str, request: Request) -> dict:
 def load_dataset(dataset_id: str, request: Request) -> dict:
     """Load the dataset into RAM (spectrum images: makes cursor/ROI work fast)."""
     ds = _dataset(request, dataset_id)
-    ds.materialise()
+    try:
+        ds.materialise()
+    except NotAvailable as e:
+        raise HTTPException(400, str(e))
     return ds.summary()
 
 
@@ -99,6 +103,21 @@ def calibrate_axes(dataset_id: str, body: list[AxisCalibration], request: Reques
             ds.set_axis_calibration(cal.index, cal.scale, cal.offset, cal.units)
         except ValueError as e:
             raise HTTPException(422, str(e))
+    return ds.summary()
+
+
+class TitleBody(BaseModel):
+    title: str
+
+
+@router.put("/{dataset_id}/title")
+def rename_dataset(dataset_id: str, body: TitleBody, request: Request) -> dict:
+    """Rename a dataset; the name is kept when its data is recomputed."""
+    ds = _dataset(request, dataset_id)
+    try:
+        ds.rename(body.title)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     return ds.summary()
 
 

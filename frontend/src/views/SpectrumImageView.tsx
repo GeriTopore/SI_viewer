@@ -1,22 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchEnergyMap, fetchFrame, type Frame, type PixelsSpectrum } from "../api/arrays";
+import { fetchEnergyMap, fetchFrame, fetchInsituAdf, type Frame, type PixelsSpectrum } from "../api/arrays";
 import { Coalescer } from "../api/coalesce";
-import { api, dataVersion, type DatasetSummary, type NavigatorSource } from "../api/client";
+import { api, contrastVersion, dataVersion, type DatasetSummary, type DeconvolutionSelection, type NavigatorSource } from "../api/client";
 import { ContextMenu } from "../components/ContextMenu";
 import { ElementsPicker } from "../components/ElementsPicker";
-import { BASE_LAYER, LayeredViewer } from "../components/LayeredViewer";
+import { InsituFrameBar } from "../components/InsituFrameBar";
+import { BASE_LAYER, FFT_TOOL_TITLE, LayeredViewer } from "../components/LayeredViewer";
 import { RoiOverlay } from "../components/RoiOverlay";
 import { SeriesLegend } from "../components/SeriesLegend";
 import { SpectrumPlot, type EnergyRange, type Marker, type PlotWindow, type SpectrumSeries } from "../components/SpectrumPlot";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import { baseLayerKey, useLayers } from "../state/layers";
-import { CURSOR_COLOR, getSiState, useSi, useSiState, type Reduce, type Tool } from "../state/si";
+import { CURSOR_COLOR, getSiState, shapeToRegion, useSi, useSiState, type Reduce, type Tool } from "../state/si";
 import { autoRange, sortedSample } from "../viewer/contrast";
 import { isColour } from "../viewer/colormaps";
-import { bytesLabel, formatValue } from "../format";
+import { bytesLabel, formatValue, insituViewLabel } from "../format";
 import { imageGeometry, isAbort } from "./geometry";
 import { useNavigatorTools } from "./si/useNavigatorTools";
+import { navigatorGeometry, polygonToScan, scanInteraction, scanPixel, scanTransform } from "./si/scan";
 import { CURSOR_CHANNEL, LINE_CHANNEL, useSiSpectra, type LineBand } from "./si/useSiSpectra";
 import { useViewProfiles } from "../state/profiles";
 import { eelsTab, useUi, type BottomTab } from "../state/ui";
@@ -27,12 +29,15 @@ import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
 import { memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
+import { useDeconvPreview } from "./si/useDeconvPreview";
 import { useThresholdLine } from "./si/useThresholdLine";
 
 /** Navigator source meaning "no base image": only the overlaid maps are shown. */
 const NONE = "none";
 /** Navigator source: the spectrum image summed over the main window. */
 const VIRTUAL = "virtual";
+/** Navigator source (in-situ series): the simultaneous ADF of the frame held (the backend's id). */
+const ADF = "insitu-adf";
 
 const TOOLS: { tool: Tool; label: string; title: string }[] = [
   { tool: "cursor", label: "✛", title: "Cursor: drag its marker to see the spectrum at another pixel (arrow keys nudge it)" },
@@ -44,6 +49,7 @@ const TOOLS: { tool: Tool; label: string; title: string }[] = [
     label: "╱",
     title: "Line profile: drag to draw (Shift snaps the angle); click on the profile for the spectrum there",
   },
+  { tool: "fft", label: "FFT", title: FFT_TOOL_TITLE },
   { tool: "pan", label: "✋", title: "Pan (or hold Space / middle-drag with any tool)" },
 ];
 
@@ -84,7 +90,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       patch(ds.id, { cursor: { x: Math.floor(g.width / 2), y: Math.floor(g.height / 2) } });
     }
   }, [ds.id, g.width, g.height, patch]);
-  const tools = useNavigatorTools(ds.id, g.width, g.height);
+  const tools = useNavigatorTools(ds.id, g.width, g.height, !!ds.insitu?.view);
   useShortcuts({
     c: () => setTool("cursor"),
     r: () => setTool("rect"),
@@ -99,7 +105,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const linked = !!ds.eels && group.length > 1;
   const setBottomTab = useUi((s) => s.setBottomTab);
   useEffect(() => {
-    if (tool === "line" || tool === "pan") return;
+    if (tool === "line" || tool === "fft" || tool === "pan") return;
     const tab = useUi.getState().bottomTab;
     const mine: BottomTab[] = linked ? group.map((m) => eelsTab(m.id)) : ["spectrum"];
     if (!mine.includes(tab)) setBottomTab(linked ? eelsTab(ds.id) : "spectrum");
@@ -141,20 +147,27 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const [navError, setNavError] = useState<string | null>(null);
   // Fetched as a plain image: a navigator image, or the total counts (the
   // virtual image over the whole range), which needs the SI in memory.
+  const isAdf = sourceId === ADF;
   const frameId = isVirtual ? (main ? null : ds.id) : sourceId;
   const sourceReady = frameId !== null && frameId !== NONE && (frameId !== ds.id || ready);
-  const sourceSummary = allDatasets(files).find((d) => d.id === (isVirtual ? ds.id : sourceId));
+  // The ADF of a series follows the frame held: it has the dataset's version.
+  const sourceSummary = allDatasets(files).find((d) => d.id === (isVirtual || isAdf ? ds.id : sourceId));
   const sourceVersion = sourceSummary ? dataVersion(sourceSummary) : "";
+  // Contrast is redone when this changes: not for the next frame.
+  const sourceContrast = sourceSummary ? contrastVersion(sourceSummary) : "";
   useEffect(() => {
     if (!sourceReady) return;
     const ac = new AbortController();
     const source = sourceId!;
     const version = sourceVersion;
-    fetchFrame(frameId!, {}, ac.signal)
-      .then((frame) => setNav({ source, version, windowed: false, frame }))
+    (isAdf ? fetchInsituAdf(ds.id, ac.signal) : fetchFrame(frameId!, {}, ac.signal))
+      .then((frame) => {
+        setNav({ source, version, windowed: false, frame });
+        setNavError(null);
+      })
       .catch((e) => !isAbort(e) && setNavError((e as Error).message));
     return () => ac.abort();
-  }, [sourceId, frameId, sourceReady, sourceVersion]);
+  }, [sourceId, frameId, sourceReady, sourceVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The virtual image over a narrower main window follows it live (latest-only
   // while dragging).
@@ -175,14 +188,24 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     );
   }, [isVirtual, main?.lo, main?.hi, ready, ds.id, sourceVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // An in-situ series keeps showing the last frame's image until the next one arrives.
+  const keepLast = !!ds.insitu?.view;
   const navFrame =
-    nav && nav.source === sourceId && nav.version === sourceVersion && (!isVirtual || nav.windowed === !!main)
+    nav && nav.source === sourceId && (keepLast || nav.version === sourceVersion) && (!isVirtual || nav.windowed === !!main)
       ? nav.frame
       : null;
   const sourceDataset = sourceId && sourceId !== VIRTUAL ? allDatasets(files).find((d) => d.id === sourceId) : undefined;
+  // A navigator finer than the scan (a sub-scan ADF) is shown at its own
+  // resolution: k image pixels per spectrum pixel along each axis. The view
+  // works in the image's pixels; the cursor, regions and spectra stay in
+  // spectrum pixels (see ./si/scan.ts).
+  const navSource = sourceId && sourceId !== VIRTUAL && sourceId !== NONE ? sources.find((s) => s.id === sourceId) : undefined;
+  const scanK = navSource?.factor ?? 1;
+  const imageDataset = navSource && scanK > 1 ? allDatasets(files).find((d) => d.id === navSource.dataset_id) : undefined;
+  const navGeometry = navigatorGeometry(g, scanK, imageDataset && imageGeometry(imageDataset, "signal"));
   // A navigator image shares its display settings (contrast, element colour)
   // with the dataset itself; the virtual image has its own.
-  const navKey = isVirtual ? `${ds.id}:total` : (sourceId ?? "");
+  const navKey = isVirtual ? `${ds.id}:total` : isAdf ? `${ds.id}:adf` : (sourceId ?? "");
 
   // The virtual image is auto-contrasted whenever its window changes (it
   // stays greyscale); the whole range keeps the viewer's own contrast.
@@ -204,39 +227,54 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const whole = useSpectrum(ds, ready);
   // A point or stretch picked on a line's profile: its spectrum (the band
   // across the line's width; a point covers one pixel along it).
-  const navView = `${ds.id}:nav`;
+  // Lines are drawn in the navigator's pixels: a finer navigator has its own.
+  const navView = scanK > 1 ? `${ds.id}:nav:x${scanK}` : `${ds.id}:nav`;
   const profiles = useViewProfiles(navView);
   const pickLine = profiles.pick && profiles.lines.find((l) => l.id === profiles.pick!.line && l.visible);
   const lineBand = useMemo<LineBand | null>(() => {
     if (!pickLine || !profiles.pick) return null;
     let { t0, t1 } = profiles.pick;
-    const half = 0.5 / Math.max(1, pixelLength(pickLine));
+    // A picked point and the line's width cover at least one spectrum pixel (scanK image pixels).
+    const half = (0.5 * scanK) / Math.max(scanK, pixelLength(pickLine));
     if (t1 - t0 < 2 * half) [t0, t1] = [(t0 + t1) / 2 - half, (t0 + t1) / 2 + half];
     const [x, y] = pointAt(pickLine, (t0 + t1) / 2);
-    const clamp = (v: number, n: number) => Math.min(n - 1, Math.max(0, Math.floor(v)));
-    return { points: bandPolygon(pickLine, Math.max(1, pickLine.width), t0, t1), pixel: [clamp(x, g.width), clamp(y, g.height)] };
-  }, [pickLine, profiles.pick, g.width, g.height]);
+    const clamp = (v: number, n: number) => Math.min(n - 1, Math.max(0, scanPixel(v, scanK)));
+    return {
+      points: polygonToScan(bandPolygon(pickLine, Math.max(scanK, pickLine.width), t0, t1), scanK),
+      pixel: [clamp(x, g.width), clamp(y, g.height)],
+    };
+  }, [pickLine, profiles.pick, g.width, g.height, scanK]);
   const spectra = useSiSpectra(ds.id, dataVersion(ds), st, cursorSize, ready, lineBand);
   const totalPixels = g.width * g.height;
   const fitSeries = useFitSeries(ds, axis.x, reduce === "mean");
-  const series = useMemo<SpectrumSeries[]>(() => {
+  // Each series with the pixels it sums (for the deconvolution preview; none for fits).
+  const { series, sel } = useMemo(() => {
     const k = (n: number) => (reduce === "mean" ? 1 / n : 1);
     const out: SpectrumSeries[] = [];
+    const sel: (DeconvolutionSelection | null)[] = [];
     if (st.showWhole && whole.data) {
       out.push({ label: "All pixels", data: scaled(whole.data, k(totalPixels)), color: SPECTRUM_COLOR });
+      sel.push({ kind: "whole" });
     }
     for (const r of st.rois) {
       const s: PixelsSpectrum | undefined = spectra[r.id];
-      if (r.visible && s && s.pixels > 0) out.push({ label: r.name, data: scaled(s.data, k(s.pixels)), color: r.color });
+      if (r.visible && s && s.pixels > 0) {
+        out.push({ label: r.name, data: scaled(s.data, k(s.pixels)), color: r.color });
+        sel.push({ kind: "region", region: shapeToRegion(r.shape) });
+      }
     }
     const ls = spectra[LINE_CHANNEL];
     if (pickLine && lineBand && ls) {
       out.push({ label: `${pickLine.name} (profile)`, data: scaled(ls.data, k(ls.pixels)), color: pickLine.color });
+      sel.push(null);
     }
     const c = spectra[CURSOR_CHANNEL];
-    if (st.showCursor && st.cursor && c) out.push({ label: "Cursor", data: scaled(c.data, k(c.pixels)), color: CURSOR_COLOR });
-    return [...out, ...fitSeries];
-  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, totalPixels, fitSeries, pickLine, lineBand]);
+    if (st.showCursor && st.cursor && c) {
+      out.push({ label: "Cursor", data: scaled(c.data, k(c.pixels)), color: CURSOR_COLOR });
+      sel.push({ kind: "pixel", x: st.cursor.x, y: st.cursor.y, size: cursorSize });
+    }
+    return { series: [...out, ...fitSeries], sel };
+  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, totalPixels, fitSeries, pickLine, lineBand, cursorSize]);
 
   // ---------- elements, line markers and energy windows ----------
   const [preview, setPreview] = useState<string | null>(null);
@@ -274,6 +312,8 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   }, [files, images, sourceId, isVirtual, main, axis.x, displays, windowColours, layerProps, edit, draft, navView, ds.id, virtualLabel, showMain]);
   // Background removal (Process tab): its fits and bands on this plot.
   const bg = useBackgroundPreview(ds, axis.x, series);
+  // Deconvolution (Process tab): the deconvolved spectra, dashed.
+  const plotted = useDeconvPreview(ds, bg.series, sel, reduce === "mean");
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
   const allWindows = useMemo(() => [...plotWindows, ...bg.bands, ...zlp.windows], [plotWindows, bg.bands, zlp.windows]);
@@ -398,7 +438,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       zoomKey={`${ds.id}:spectra`}
       {...ownLog}
       x={axis.x}
-      series={bg.series}
+      series={plotted}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : loadingMsg}
@@ -467,6 +507,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
         <LayeredViewer
           viewKey={navView}
           lineTool={tool === "line"}
+          fftTool={tool === "fft"}
           profilePick
           gridContext="si"
           base={
@@ -477,11 +518,12 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
                   label: isVirtual ? virtualLabel : (sources.find((s) => s.id === sourceId)?.label ?? "Navigator"),
                   frame: navFrame,
                   dataset: sourceDataset,
-                  version: sourceVersion,
+                  version: sourceContrast,
                 }
           }
           images={images.filter((d) => d.id !== sourceId)}
-          geometry={g}
+          geometry={navGeometry}
+          scanFactor={scanK}
           loading={
             navFrame || sourceId === NONE
               ? null
@@ -493,12 +535,15 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           empty="No navigator image. Click element maps in the dataset pane to show them here."
           requestActive={activate}
           onActiveChange={onActiveLayer}
-          interaction={tools.interaction}
+          interaction={scanInteraction(tools.interaction, scanK)}
           renderOverlay={(t) => (
-            <RoiOverlay t={t} state={st} cursorSize={cursorSize} draft={tools.draft} hover={tools.hover} />
+            <RoiOverlay t={scanTransform(t, scanK)} state={st} cursorSize={cursorSize} draft={tools.draft} hover={tools.hover} />
           )}
           bottomTabs={memberTabs(ds, group, spectrumPlot, st, false, legend)}
-        />
+          footer={ds.insitu?.view ? <InsituFrameBar ds={ds} /> : undefined}
+        >
+          {ds.insitu?.view && <span className="frame-chip">{insituViewLabel(ds.insitu)}</span>}
+        </LayeredViewer>
       </section>
       {menu && (
         <ContextMenu

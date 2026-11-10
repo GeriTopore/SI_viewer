@@ -5,8 +5,9 @@ import { useDisplay } from "../state/display";
 import { useSi } from "../state/si";
 import { useUi } from "../state/ui";
 import { formatValue } from "../format";
-import { downloadBlob, downloadCsv, safeFileName } from "../download";
+import { downloadCsv, safeFileName } from "../download";
 import { isTyping } from "../keyboard";
+import { PlotExportDialog } from "./PlotExportDialog";
 
 export interface SpectrumSeries {
   label: string;
@@ -554,19 +555,11 @@ export function SpectrumPlot({
       `${safeFileName(name)}.csv`,
     );
 
-  /** The plot as drawn (current zoom), on the panel colour. */
-  const savePng = () => {
-    const plot = plotRef.current;
-    if (!plot) return;
-    const src = plot.ctx.canvas;
-    const out = document.createElement("canvas");
-    out.width = src.width;
-    out.height = src.height;
-    const ctx = out.getContext("2d")!;
-    ctx.fillStyle = cssVar("--panel") || "#fff";
-    ctx.fillRect(0, 0, out.width, out.height);
-    ctx.drawImage(src, 0, 0);
-    out.toBlob((b) => b && downloadBlob(b, `${safeFileName(name)}.png`), "image/png");
+  /** The plot, redrawn by the server (current zoom as the x limits). */
+  const [exportZoom, setExportZoom] = useState<{ xlim: [number, number] | null } | null>(null);
+  const openExport = () => {
+    const { min, max } = plotRef.current?.scales.x ?? {};
+    setExportZoom({ xlim: min != null && max != null ? [min, max] : null });
   };
 
   return (
@@ -617,10 +610,31 @@ export function SpectrumPlot({
         >
           CSV
         </button>
-        <button className="link-button" onClick={savePng} disabled={!series.length} title="Save the plot as shown as PNG">
+        <button
+          className="link-button"
+          onClick={openExport}
+          disabled={!series.length}
+          title="Save the plot (PNG, SVG or PDF)"
+        >
           PNG
         </button>
       </div>
+      {exportZoom && (
+        <PlotExportDialog
+          series={series.map((s) => ({ label: s.label, x, y: s.data, color: s.color, dash: s.dash, width: s.width }))}
+          // Not the hovered element's preview lines, nor windows hidden on the plot.
+          markers={markers.filter((m) => !m.dashed)}
+          markersOn
+          windows={visibleWindows({ windows, showWindows }).filter((w) => !w.draft)}
+          windowsOn
+          xLabel={xUnits ? `${xLabel} (${xUnits})` : xLabel}
+          yLabel="Counts"
+          xlim={exportZoom.xlim}
+          log={log}
+          name={name}
+          onClose={() => setExportZoom(null)}
+        />
+      )}
       {legend}
       <div className="spectrum-plot-wrap">
         <div ref={wrapRef} className="spectrum-plot" />

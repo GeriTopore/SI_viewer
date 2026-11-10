@@ -23,7 +23,9 @@ export async function fetchArray(url: string, signal?: AbortSignal, init?: Reque
   return { data: new Float32Array(await res.arrayBuffer()), shape, meta };
 }
 
-/** A 2D frame as displayed: possibly binned relative to the full image. */
+/** A 2D frame as displayed: ``bin`` is the number of pixels of the full
+ * image per pixel of the frame (a binned preview; or a map drawn over a finer
+ * navigator, see ``views/si/scan.ts``). */
 export interface Frame {
   data: Float32Array;
   width: number;
@@ -42,6 +44,13 @@ export async function fetchFrame(
   if (params.bin && params.bin > 1) q.set("bin", String(params.bin));
   const { data, shape } = await fetchArray(`/api/datasets/${datasetId}/frame?${q}`, signal);
   return { data, height: shape[0], width: shape[1], bin: params.bin ?? 1 };
+}
+
+/** The ADF image of the frame (or range) an in-situ series holds, at the ADF's
+ * own resolution (finer than the scan for a sub-scan). */
+export async function fetchInsituAdf(datasetId: string, signal?: AbortSignal): Promise<Frame> {
+  const { data, shape } = await fetchArray(`/api/datasets/${datasetId}/insitu/adf`, signal);
+  return { data, height: shape[0], width: shape[1], bin: 1 };
 }
 
 export async function fetchSpectrum(datasetId: string, signal?: AbortSignal): Promise<Float32Array> {

@@ -230,6 +230,28 @@ def test_moving_a_window_map_keeps_a_label_the_user_gave(client, eels_cuzn):
     assert _move(client, ds, lo2, hi2).json()["dataset"]["title"] == "Cu L"
 
 
+def test_a_renamed_window_map_keeps_its_name_when_moved_or_refiltered(client, eels_cuzn):
+    si = _si(_open(client, eels_cuzn))
+    lo, hi, _ = _window(si)
+    ds = _keep(client, si, lo, hi).json()["dataset"]
+    r = client.put(f"/api/datasets/{ds['id']}/title", json={"title": "  Cu   L edge "})
+    assert r.status_code == 200 and r.json()["title"] == "Cu L edge"
+    lo2, hi2, _ = _window(si, 0.5, 0.6)
+    assert _move(client, ds, lo2, hi2).json()["dataset"]["title"] == "Cu L edge"
+    f = {"spatial": "gaussian", "sigma": 1.5}
+    assert client.put(f"/api/datasets/{si['id']}/filters", json=f).status_code == 200
+    m = client.app.state.session.get_dataset(ds["id"])
+    assert m.title == "Cu L edge" and m.signal.metadata.General.title == "Cu L edge"
+
+
+def test_rename_errors(client, eels_cuzn):
+    si = _si(_open(client, eels_cuzn))
+    assert client.put(f"/api/datasets/{si['id']}/title", json={"title": "   "}).status_code == 422
+    assert client.put("/api/datasets/nope/title", json={"title": "x"}).status_code == 404
+    r = client.put(f"/api/datasets/{si['id']}/title", json={"title": "Cu–Zn SI"})
+    assert r.json()["title"] == "Cu–Zn SI"
+
+
 def test_moved_window_map_follows_the_spatial_filter(client, eels_cuzn):
     si = _si(_open(client, eels_cuzn))
     lo, hi, ax = _window(si)

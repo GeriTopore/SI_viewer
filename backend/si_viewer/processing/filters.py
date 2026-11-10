@@ -4,10 +4,15 @@ A dataset's filters are applied whenever its data is read for display, so the
 loaded data stays untouched and a filter can be changed or removed at any time.
 
 - **Spatial** (images, stacks, spectrum images): Gaussian, median or mean
-  (box) blur. On a spectrum image only the linear ones (Gaussian, mean) are
-  offered: they commute with summing channels, so a map of the blurred
-  spectrum image is simply the blurred map, and the summed spectrum of any
-  pixels of it is a weighted sum of the raw spectra (``spatial_weights``).
+  (box) blur, or a Fourier bandpass. On a spectrum image only the linear ones
+  (Gaussian, mean, bandpass) are offered: they commute with summing channels,
+  so a map of the filtered spectrum image is simply the filtered map, and the
+  summed spectrum of any pixels of it is a weighted sum of the raw spectra
+  (``spatial_weights``).
+- The **bandpass** is a radially symmetric Fourier-space Gaussian filter, like
+  ImageJ's "FFT Bandpass Filter": structures smaller than ``small`` px and
+  larger than ``large`` px are suppressed, the mean level is kept. See
+  ``bandpass_transfer`` for the exact transfer function.
 - **Spectral** (spectra, spectrum images): Gaussian or Savitzky–Golay smoothing
   along the energy axis. A weighted sum of the channels of smoothed spectra is
   a weighted sum of the raw channels (``spectral_adjoint``), so maps and
@@ -26,11 +31,15 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class Filters(BaseModel):
-    spatial: Literal["none", "gaussian", "median", "mean"] = "none"
+    spatial: Literal["none", "gaussian", "median", "mean", "bandpass"] = "none"
     # Gaussian σ in pixels.
     sigma: float = Field(1.0, gt=0, le=50)
     # Median / mean window in pixels (odd).
     size: int = Field(3, ge=3, le=51)
+    # Bandpass: structures smaller than ``small`` px and larger than ``large``
+    # px are removed.
+    small: float = Field(2.0, gt=0, le=10000)
+    large: float = Field(40.0, gt=0, le=10000)
     spectral: Literal["none", "gaussian", "savgol"] = "none"
     # Gaussian σ in channels.
     spectral_sigma: float = Field(1.0, gt=0, le=50)
@@ -46,7 +55,13 @@ class Filters(BaseModel):
             raise ValueError("The Savitzky–Golay window must be odd")
         if self.order >= self.window:
             raise ValueError("The Savitzky–Golay order must be less than its window")
+        if self.spatial == "bandpass" and self.small >= self.large:
+            raise ValueError("The bandpass's small size must be less than its large size")
         return self
+
+    def spatial_params(self) -> dict:
+        """The spatial filter's settings (what linked datasets share)."""
+        return {"spatial": self.spatial, "sigma": self.sigma, "size": self.size, "small": self.small, "large": self.large}
 
     @property
     def has_spatial(self) -> bool:
@@ -63,6 +78,8 @@ class Filters(BaseModel):
             parts.append(f"Gaussian σ {self.sigma:g} px")
         elif self.spatial in ("median", "mean"):
             parts.append(f"{self.spatial.capitalize()} {self.size}×{self.size} px")
+        elif self.spatial == "bandpass":
+            parts.append(f"Bandpass {self.small:g}–{self.large:g} px")
         if self.spectral == "gaussian":
             parts.append(f"spectral Gaussian σ {self.spectral_sigma:g} ch")
         elif self.spectral == "savgol":
@@ -95,7 +112,13 @@ def filter_image(arr: np.ndarray, f: Filters) -> np.ndarray:
         return arr
     arr = np.asarray(arr, dtype=np.float32)
     nan = np.isnan(arr)
-    if f.spatial == "median":
+    if f.spatial == "bandpass":
+        if nan.all():
+            return arr
+        # NaN pixels take the mean of the valid ones for the transform.
+        filled = np.where(nan, arr[~nan].mean(), arr) if nan.any() else arr
+        out = bandpass(filled, f.small, f.large)
+    elif f.spatial == "median":
         if nan.any():
             out = ndimage.generic_filter(arr, np.nanmedian, size=f.size, mode="reflect")
         else:
@@ -114,6 +137,82 @@ def filter_image(arr: np.ndarray, f: Filters) -> np.ndarray:
             out = smooth(arr)
     out = out.astype(np.float32, copy=False)
     out[nan] = np.nan
+    return out
+
+
+# Bandpass cutoffs: the constants make a sinusoid whose period equals the
+# given size pass at half power (amplitude 1/√2) through its own Gaussian.
+#   low-pass   exp(-c_low·(f·small)²)        = 2^-½ at f = 1/small
+#   high-pass  1 - exp(-c_high·(f·large)²)   = 2^-½ at f = 1/large
+_C_LOW = 0.5 * np.log(2.0)
+_C_HIGH = -np.log(1.0 - 2.0**-0.5)
+
+
+def bandpass_transfer(shape: tuple[int, int], small: float, large: float, dtype=np.float64) -> np.ndarray:
+    """The bandpass's transfer function H on the ``rfft2`` grid of an image of
+    ``shape``. With f the radial spatial frequency in cycles per pixel::
+
+        H(f) = exp(-c_low·(f·small)²) · (1 - exp(-c_high·(f·large)²)),   H(0) = 1
+
+    where c_low = ½·ln 2 and c_high = -ln(1 - 2^-½), so a structure with a
+    period of ``small`` (``large``) px is at half power (amplitude 2^-½) of
+    the low-pass (high-pass) part. H(0) is set to 1, so the mean level is
+    kept. H is real and even, so the filter is a symmetric operator."""
+    f2 = np.fft.fftfreq(shape[0])[:, None] ** 2 + np.fft.rfftfreq(shape[1])[None, :] ** 2
+    h = np.exp(-_C_LOW * small**2 * f2) * -np.expm1(-_C_HIGH * large**2 * f2)
+    h[0, 0] = 1.0
+    return h.astype(dtype, copy=False)
+
+
+def _reflect_plan(shape: tuple[int, int], large: float):
+    """Padding for the bandpass: per axis, the source index of every padded
+    pixel (scipy's "reflect" edges, ``d c b a | a b c d | d c b a``) and the
+    offset of the image in the padded array. Padded to about ``large`` px
+    each side (at most one image), and to a length that is fast to transform."""
+    from scipy import fft
+
+    src, start = [], []
+    for n in shape:
+        before = min(int(np.ceil(large)), n)
+        total = fft.next_fast_len(n + 2 * before, real=True)
+        p = np.mod(np.arange(-before, total - before), 2 * n)
+        src.append(np.where(p < n, p, 2 * n - 1 - p))
+        start.append(before)
+    return src, start
+
+
+def _apply_h(a: np.ndarray, small: float, large: float) -> np.ndarray:
+    from scipy import fft
+
+    h = bandpass_transfer(a.shape, small, large, a.dtype)
+    return fft.irfft2(fft.rfft2(a) * h, s=a.shape)
+
+
+def bandpass(arr: np.ndarray, small: float, large: float) -> np.ndarray:
+    """``arr`` (2D, no NaN) with the Fourier bandpass applied (see
+    ``bandpass_transfer``), reflect-padded before the transform and cropped
+    after. Keeps the dtype (float32 or float64)."""
+    arr = np.asarray(arr)
+    if arr.dtype not in (np.float32, np.float64):
+        arr = arr.astype(np.float64)
+    (sy, sx), (y0, x0) = _reflect_plan(arr.shape, large)
+    out = _apply_h(arr[np.ix_(sy, sx)], small, large)
+    return out[y0 : y0 + arr.shape[0], x0 : x0 + arr.shape[1]]
+
+
+def bandpass_adjoint(arr: np.ndarray, small: float, large: float) -> np.ndarray:
+    """Transpose of ``bandpass``: crop and pad are each other's transpose
+    (zero-fill; fold the padding back onto the pixels it was copied from),
+    and the filter itself is symmetric."""
+    arr = np.asarray(arr, dtype=np.float64)
+    (sy, sx), (y0, x0) = _reflect_plan(arr.shape, large)
+    z = np.zeros((len(sy), len(sx)))
+    z[y0 : y0 + arr.shape[0], x0 : x0 + arr.shape[1]] = arr
+    z = _apply_h(z, small, large)
+    rows = np.zeros((arr.shape[0], z.shape[1]))
+    np.add.at(rows, sy, z)
+    out = np.zeros(arr.shape)
+    np.add.at(out.T, sx, rows.T)
     return out
 
 
@@ -151,6 +250,8 @@ def spatial_weights(mask: np.ndarray, f: Filters) -> np.ndarray:
     """Weights w (same shape as ``mask``) such that summing the spatially
     filtered image over ``mask`` equals Σ w·(raw image), for any image (and so
     for every channel of a spectrum image)."""
+    if f.spatial == "bandpass":
+        return bandpass_adjoint(mask, f.small, f.large)
     k = _kernel1d(f)
     return _adjoint_1d(_adjoint_1d(np.asarray(mask, np.float64), k, 0), k, 1)
 
@@ -160,6 +261,15 @@ def filtered_sum(data: np.ndarray, mask: np.ndarray, raw_sum: np.ndarray, f: Fil
     filtered spectrum image, from the raw sum over it: only pixels whose
     weight differs from the mask (near its edge) need adding."""
     delta = spatial_weights(mask, f) - mask
+    if f.spatial == "bandpass":
+        # The weights reach every pixel: sum over the scan in blocks of rows.
+        out = np.asarray(raw_sum, np.float64).copy()
+        h, w = delta.shape
+        rows = max(1, chunk // w)
+        for y in range(0, h, rows):
+            block = np.asarray(data[y : y + rows], np.float32)
+            out += delta[y : y + rows].reshape(-1) @ block.reshape(-1, block.shape[-1])
+        return out
     ys, xs = np.nonzero(np.abs(delta) > 1e-12)
     out = np.asarray(raw_sum, np.float64).copy()
     for i in range(0, len(ys), chunk):

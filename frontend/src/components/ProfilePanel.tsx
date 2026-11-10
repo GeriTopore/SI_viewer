@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { PlotExportDialog } from "./PlotExportDialog";
 import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from "../state/profiles";
 import { isColour } from "../viewer/colormaps";
 import { calibratedLength, sampleProfile } from "../viewer/profile";
@@ -30,6 +31,7 @@ interface Props {
  * (width, visibility), normalisation and CSV export. */
 export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShowSpectrum }: Props) {
   const { lines, selected, normalise, pick } = useViewProfiles(view);
+  const [exporting, setExporting] = useState(false);
   const { patch, updateLine, removeLine } = useProfiles.getState();
   const units = calX.units || "px";
   const shown = lines.filter((l) => l.visible);
@@ -134,7 +136,33 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
         <button className="link-button" onClick={exportCsv} disabled={!tables.length} title="Save the profiles as CSV">
           CSV
         </button>
+        <button
+          className="link-button"
+          onClick={() => setExporting(true)}
+          disabled={!tables.length}
+          title="Save the plot (PNG, SVG or PDF)"
+        >
+          PNG
+        </button>
       </div>
+      {exporting && (
+        <PlotExportDialog
+          series={tables.flatMap((t) =>
+            t.series.map((s) => ({
+              label: s.label,
+              x: t.x,
+              y: s.values,
+              color: s.color,
+              dash: s.dash,
+              axis: s.scale === "y2" ? ("right" as const) : ("left" as const),
+            })),
+          )}
+          xLabel={`Distance (${units})`}
+          yLabel={normalise ? "Normalised intensity" : ""}
+          name={`${title}_profile`}
+          onClose={() => setExporting(false)}
+        />
+      )}
       {!lines.length ? (
         <p className="muted small profile-empty">
           Drag on the image to draw a line; its profile appears here for every image layer shown.

@@ -7,7 +7,7 @@ import { bytesLabel } from "../format";
 /** Modal for picking one or more files (or a whole folder) on the backend's disk. */
 export function FileBrowser() {
   const { lastDir, setLastDir, setBrowserOpen } = useUi();
-  const { files: openFiles, openFiles: open } = useDatasets();
+  const { files: openFiles, openFiles: open, openFolder } = useDatasets();
   const [listing, setListing] = useState<FsListing | null>(null);
   const [pathInput, setPathInput] = useState(lastDir);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -157,10 +157,15 @@ export function FileBrowser() {
           <div className="fb-actions">
             <button
               className="secondary"
-              disabled={!dataFiles.length}
-              onClick={() => openPathsAndClose(dataFiles.map((f) => f.path))}
+              disabled={!dataFiles.length || !listing}
+              title="Open every file here as one experiment"
+              onClick={() => {
+                if (!listing) return;
+                close();
+                openFolder(listing.path);
+              }}
             >
-              Open all in folder ({dataFiles.length})
+              Open all in folder
             </button>
             <button
               className="primary"

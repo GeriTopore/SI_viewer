@@ -1,9 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { api, exportUrl, mapsZipUrl, type DatasetSummary, type EelsRole, type Technique } from "../api/client";
-import { downloadUrl, useExportFormats } from "../download";
+import { api, type DatasetSummary, type EelsRole, type Technique } from "../api/client";
+import { useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
 import { useLayers } from "../state/layers";
-import { bytesLabel, filterLabel, hasTechnique, isLineScan, isThickness, isZlpShift, kindLabel, shapeLabel } from "../format";
+import { EditableTitle } from "./RenameInput";
+import { ExportDialog } from "./ExportDialog";
+import { bytesLabel, filterLabel, formatValue, hasTechnique, isLineScan, isThickness, isZlpShift, kindLabel, shapeLabel } from "../format";
 
 export function Inspector() {
   const d = useFocusedDataset();
@@ -13,7 +15,9 @@ export function Inspector() {
     <div className="inspector">
       <dl className="props">
         <dt>Title</dt>
-        <dd>{d.title}</dd>
+        <dd>
+          <EditableTitle key={d.id} d={d} />
+        </dd>
         <dt>Type</dt>
         <dd>
           {isThickness(d)
@@ -66,9 +70,67 @@ export function Inspector() {
           </>
         )}
       </dl>
+      {d.insitu?.view && <SeriesInfo d={d} />}
       <AxesTable key={d.id} d={d} />
       <SaveButtons d={d} />
     </div>
+  );
+}
+
+/** The in-situ series behind a spectrum image: its frames, times and files. */
+function SeriesInfo({ d }: { d: DatasetSummary }) {
+  const s = d.insitu!;
+  const [h, w] = s.frame_shape;
+  const channels = d.signal_shape.join("×");
+  const duration = s.duration_s ?? s.last_time_s - s.first_time_s;
+  return (
+    <>
+      <h3 className="dl-section-title">In-situ series</h3>
+      <dl className="props">
+        <dt>Frames</dt>
+        <dd>
+          {s.frames}
+          {s.recorded_frames != null && s.recorded_frames !== s.frames && ` of ${s.recorded_frames} recorded`}
+        </dd>
+        {s.note && (
+          <>
+            <dt>Note</dt>
+            <dd className="field-error">{s.note}</dd>
+          </>
+        )}
+        <dt>Time span</dt>
+        <dd title={s.time_source === "recorded" ? "Time each frame was finished" : `Times from the ${s.time_source}`}>
+          {formatValue(s.first_time_s)}–{formatValue(s.last_time_s)} s
+        </dd>
+        {s.frame_step_s != null && (
+          <>
+            <dt>Frame time</dt>
+            <dd>{formatValue(s.frame_step_s)} s</dd>
+          </>
+        )}
+        <dt>Duration</dt>
+        <dd>{formatValue(duration)} s</dd>
+        {s.start_time && (
+          <>
+            <dt>Started</dt>
+            <dd>{s.start_time}</dd>
+          </>
+        )}
+        <dt>Frame size</dt>
+        <dd>
+          {w}×{h} px{channels && ` · ${channels} ch`}
+          {s.frame_bytes != null && ` · ${bytesLabel(s.frame_bytes)}`}
+        </dd>
+        {s.raw_bytes != null && (
+          <>
+            <dt>Raw files</dt>
+            <dd title={s.raw_files?.join(", ")}>
+              {s.raw_files?.length ?? 0} · {bytesLabel(s.raw_bytes)}
+            </dd>
+          </>
+        )}
+      </dl>
+    </>
   );
 }
 
@@ -234,25 +296,18 @@ function TechniquePopover({
   );
 }
 
-/** Buttons saving the dataset in each format it supports. */
+/** Export… opens the dialog saving the dataset in a format it supports. */
 function SaveButtons({ d }: { d: DatasetSummary }) {
   const formats = useExportFormats()[d.kind] ?? [];
+  const [open, setOpen] = useState(false);
   if (!formats.length) return null;
   return (
     <section className="inspector-save">
       <h3>Save</h3>
       <div className="inspector-save-buttons">
-        {formats.map((f) => (
-          <button key={f.format} onClick={() => downloadUrl(exportUrl(d.id, f.format))} title={`Save as ${f.label}`}>
-            {f.label.split(" (")[0]}
-          </button>
-        ))}
-        {d.is_element_map && (
-          <button onClick={() => downloadUrl(mapsZipUrl(d.file_id))} title="Every element map of this file as TIFFs in a zip">
-            All maps (.zip)
-          </button>
-        )}
+        <button onClick={() => setOpen(true)}>Export…</button>
       </div>
+      {open && <ExportDialog datasets={[d]} onClose={() => setOpen(false)} />}
     </section>
   );
 }

@@ -1,36 +1,47 @@
 import { useEffect, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
-import { api, exportUrl, mapsZipUrl, thumbnailUrl, type DatasetSummary, type EelsPartner, type FileSummary } from "../api/client";
-import { allDatasets, canDelete, elementOf, isColourMap, layoutFile, layoutGroups, setMapColour, useDatasets } from "../state/datasets";
+import { api, thumbnailUrl, type DatasetSummary, type EelsPartner, type FileSummary } from "../api/client";
+import { allDatasets, canDelete, elementOf, isColourMap, layoutPane, layoutRows, setMapColour, useDatasets, type PaneItem, type RowItem } from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
 import { isColour, swatchBackground } from "../viewer/colormaps";
-import { datasetTooltip, isBackgroundRemoved, isThickness, isWindowMap, isZlpShift, kindLabel, shapeLabel } from "../format";
+import { datasetTooltip, isBackgroundRemoved, isDeconvolved, isInsituView, isThickness, isWindowMap, isZlpShift, kindLabel, shapeLabel } from "../format";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { openAlignment } from "./AlignSection";
-import { downloadUrl, useExportFormats } from "../download";
+import { RenameInput } from "./RenameInput";
+import { ExportDialog } from "./ExportDialog";
+import { useExportFormats } from "../download";
 
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
 const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.is_element_map ? "map" : d.kind}`;
+  `badge badge-${isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
-  d.origin === "fitted" || d.origin === "composition" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
-    ? "Delete this map"
-    : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
-      (d.origin === "file" ? ". The file on disk is not changed." : "");
+  isBackgroundRemoved(d) || isDeconvolved(d)
+    ? "Delete this spectrum image (and what was made from it)"
+    : d.origin === "fitted" || d.origin === "composition" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
+      ? "Delete this map"
+      : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
+        (d.origin === "file" ? ". The file on disk is not changed." : "");
 
 export function DatasetList() {
-  const { files, selection, clickDataset, toggleSelect, closeFile, deleteDataset } = useDatasets();
+  const { files, selection, focusId, clickDataset, toggleSelect, closeFile, deleteDataset } = useDatasets();
   const listMode = useUi((s) => s.listMode);
+  const collapsedTypes = useUi((s) => s.collapsedTypes);
+  const toggleTypeGroup = useUi((s) => s.toggleTypeGroup);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // Right-click menu (Rebin…, Delete) and the rebin dialog it opens.
   const [menu, setMenu] = useState<{ x: number; y: number; d: DatasetSummary } | null>(null);
   const [rebinTarget, setRebinTarget] = useState<DatasetSummary | null>(null);
+  // The dataset whose name is being edited (Rename…, F2 or double-clicking its name).
+  const [renaming, setRenaming] = useState<string | null>(null);
+  // Right-click on a type group's row (Batch export…), and the Export dialog.
+  const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; ds: DatasetSummary[] } | null>(null);
+  const [exporting, setExporting] = useState<DatasetSummary[] | null>(null);
   const exportFormats = useExportFormats();
   // Link groups: candidates for the right-clicked EELS spectrum image.
   const [partners, setPartners] = useState<EelsPartner[] | null>(null);
@@ -70,6 +81,11 @@ export function DatasetList() {
       setMenu({ x: e.clientX, y: e.clientY, d });
     },
     onKeyDown: (e: KeyboardEvent) => {
+      if (e.key === "F2") {
+        e.preventDefault();
+        setRenaming(d.id);
+        return;
+      }
       if (canDelete(d) && (e.key === "Delete" || e.key === "Backspace")) {
         e.preventDefault();
         deleteDataset(d);
@@ -79,7 +95,7 @@ export function DatasetList() {
       e.preventDefault();
       activate(d, e.metaKey || e.ctrlKey);
     },
-    draggable: d.kind === "image",
+    draggable: d.kind === "image" && renaming !== d.id,
     onDragStart: (e: DragEvent) => {
       e.dataTransfer.setData(DATASET_MIME, d.id);
       e.dataTransfer.effectAllowed = "copy";
@@ -90,10 +106,20 @@ export function DatasetList() {
     return <p className="muted empty-list">No files open. Use Open… (⌘/Ctrl+O).</p>;
   }
 
-  const { colourOf, items } = layoutGroups(files);
+  const { colourOf, items } = layoutPane(files);
   const titles = new Map(allDatasets(files).map((x) => [x.id, x.title]));
+  const titleOf = (d: DatasetSummary) =>
+    renaming === d.id ? (
+      <RenameInput d={d} onDone={() => setRenaming(null)} />
+    ) : (
+      <span className="dataset-name" onDoubleClick={() => setRenaming(d.id)}>
+        {d.title}
+      </span>
+    );
   const parentTitle = (d: DatasetSummary) => (d.parent_id ? titles.get(d.parent_id) : undefined);
-  const renderDataset = (d: DatasetSummary) =>
+  // `inGroup`: a member of a type group, whose header already names the type
+  // (list view only; the cards keep their badge).
+  const renderDataset = (d: DatasetSummary, inGroup = false) =>
     listMode === "grid" ? (
       <li key={d.id}>
         <div {...itemProps(d, "dataset-card")} title={datasetTooltip(d, parentTitle(d))}>
@@ -106,19 +132,19 @@ export function DatasetList() {
           <span className="dataset-title">
             {isColourMap(d) && <ColourDot d={d} />}
             <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} />
-            {d.title}
+            {titleOf(d)}
           </span>
           <span className="dataset-shape">{shapeLabel(d)}</span>
         </div>
       </li>
     ) : (
       <li key={d.id}>
-        <div {...itemProps(d, "dataset")} title={datasetTooltip(d, parentTitle(d))}>
-          <span className={badgeClass(d)}>{kindLabel(d)}</span>
+        <div {...itemProps(d, inGroup ? "dataset no-badge" : "dataset")} title={datasetTooltip(d, parentTitle(d))}>
+          {!inGroup && <span className={badgeClass(d)}>{kindLabel(d)}</span>}
           <span className="dataset-title">
             {isColourMap(d) && <ColourDot d={d} />}
             <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} />
-            {d.title}
+            {titleOf(d)}
           </span>
           <span className="dataset-shape">{shapeLabel(d)}</span>
           {canDelete(d) ? <DeleteButton d={d} className="row-delete" onDelete={deleteDataset} /> : <span />}
@@ -126,6 +152,31 @@ export function DatasetList() {
       </li>
     );
   const listClass = listMode === "grid" ? "dataset-grid" : "dataset-list";
+  // Two or more datasets of one type: a foldable group.
+  const renderTypes = (g: Extract<RowItem, { type: "types" }>) => {
+    const isCollapsed = !!collapsedTypes[g.key];
+    const active = isCollapsed && g.ds.some((d) => highlighted.has(d.id) || d.id === focusId);
+    return (
+      <li key={g.key} className={`type-group${isCollapsed ? " collapsed" : ""}${active ? " active" : ""}`}>
+        <button
+          className="type-group-toggle"
+          aria-expanded={!isCollapsed}
+          title={`${g.ds.length} × ${g.label}`}
+          onClick={() => toggleTypeGroup(g.key)}
+          onContextMenu={(e) => {
+            if (!exportFormats[g.ds[0].kind]?.length) return;
+            e.preventDefault();
+            setGroupMenu({ x: e.clientX, y: e.clientY, ds: g.ds });
+          }}
+        >
+          <span className="process-chevron" aria-hidden />
+          <span className={badgeClass(g.ds[0])}>{g.label}</span>
+          <span className="dataset-shape">{g.ds.length}</span>
+        </button>
+        {!isCollapsed && <ul className={listClass}>{g.ds.map((d) => renderDataset(d, true))}</ul>}
+      </li>
+    );
+  };
   const renderFile = (file: FileSummary) => {
     const isCollapsed = collapsed[file.id];
     return (
@@ -138,8 +189,9 @@ export function DatasetList() {
           >
             {isCollapsed ? "▸" : "▾"}
           </button>
+          {/* In an experiment: what the file is (Survey, ADF, EELS LL, …). */}
           <span className="file-name" title={file.path}>
-            {file.name}
+            {file.role ?? file.name}
           </span>
           <button className="icon-button" title="Close file" onClick={() => closeFile(file.id)}>
             ×
@@ -147,19 +199,54 @@ export function DatasetList() {
         </div>
         {!isCollapsed && (
           <ul className={listClass}>
-            {layoutFile(file, colourOf).map((it) =>
+            {layoutRows(file, colourOf).map((it) =>
               it.type === "dataset" ? (
                 renderDataset(it.d)
+              ) : it.type === "types" ? (
+                renderTypes(it)
               ) : (
                 // Linked datasets of this file, side by side in a box.
                 <li key={it.ds.map((d) => d.id).join("+")} className="pair-box pair-rows" style={pairStyle(it.colour)}>
                   <span className="pair-label">Linked EELS</span>
-                  <ul className={listClass}>{it.ds.map(renderDataset)}</ul>
+                  <ul className={listClass}>{it.ds.map((d) => renderDataset(d))}</ul>
                 </li>
               ),
             )}
           </ul>
         )}
+      </li>
+    );
+  };
+
+  // The files of one folder opened together, by role, on a tree.
+  const renderExperiment = (it: Extract<PaneItem, { type: "experiment" }>) => {
+    const { experiment: x } = it;
+    const isCollapsed = collapsed[x.id];
+    return (
+      <li key={x.id} className="experiment">
+        <div className="file-header">
+          <button
+            className="disclosure"
+            aria-expanded={!isCollapsed}
+            onClick={() => setCollapsed((c) => ({ ...c, [x.id]: !isCollapsed }))}
+          >
+            {isCollapsed ? "▸" : "▾"}
+          </button>
+          <span className="fb-icon dir" aria-hidden />
+          <span className="file-name" title={x.path}>
+            {x.name}
+          </span>
+          <button
+            className="icon-button"
+            title="Close the experiment's files"
+            onClick={async () => {
+              for (const f of it.files) await closeFile(f.id);
+            }}
+          >
+            ×
+          </button>
+        </div>
+        {!isCollapsed && <ul className="file-list experiment-files">{it.files.map(renderFile)}</ul>}
       </li>
     );
   };
@@ -170,6 +257,8 @@ export function DatasetList() {
         {items.map((it) =>
           it.type === "file" ? (
             renderFile(it.file)
+          ) : it.type === "experiment" ? (
+            renderExperiment(it)
           ) : (
             <li key={it.files.map((f) => f.id).join("+")} className="pair-box" style={pairStyle(it.colour)}>
               <span className="pair-label">Linked EELS</span>
@@ -184,21 +273,31 @@ export function DatasetList() {
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
+            { label: "Rename…", onSelect: () => setRenaming(menu.d.id) },
             ...eelsItems(menu.d, partners, files),
             ...(menu.d.kind === "stack" ? [{ label: "Align frames…", onSelect: () => openAlignment(menu.d) }] : []),
-            ...(canRebin(menu.d) ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
-            ...(exportFormats[menu.d.kind] ?? []).map((f) => ({
-              label: `Save as ${f.label}`,
-              onSelect: () => downloadUrl(exportUrl(menu.d.id, f.format)),
-            })),
-            ...(menu.d.is_element_map
-              ? [{ label: "Save all maps of this file (TIFF, .zip)", onSelect: () => downloadUrl(mapsZipUrl(menu.d.file_id)) }]
+            ...(canRebin(menu.d)
+              ? [
+                  isInsituView(menu.d)
+                    ? { label: "Rebin…", disabled: true, title: "Not for in-situ frames: the next frame would undo it" }
+                    : { label: "Rebin…", onSelect: () => setRebinTarget(menu.d) },
+                ]
               : []),
+            ...(exportFormats[menu.d.kind]?.length ? [{ label: "Export…", onSelect: () => setExporting([menu.d]) }] : []),
             ...(canDelete(menu.d) ? [{ label: "Delete", danger: true, onSelect: () => deleteDataset(menu.d) }] : []),
           ]}
         />
       )}
+      {groupMenu && (
+        <ContextMenu
+          x={groupMenu.x}
+          y={groupMenu.y}
+          onClose={() => setGroupMenu(null)}
+          items={[{ label: "Batch export…", onSelect: () => setExporting(groupMenu.ds) }]}
+        />
+      )}
       {rebinTarget && <RebinDialog d={rebinTarget} onClose={() => setRebinTarget(null)} />}
+      {exporting && <ExportDialog datasets={exporting} onClose={() => setExporting(null)} />}
     </>
   );
 }

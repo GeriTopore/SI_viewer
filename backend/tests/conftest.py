@@ -31,7 +31,10 @@ def _find_example_emd() -> Path | None:
 
 
 def _example(name: str) -> Path:
+    """``examples/<name>``, or the first file of that name in a folder under it."""
     path = EXAMPLES / name
+    if not path.is_file():
+        path = next((p for p in sorted(EXAMPLES.glob(f"**/{name}")) if p.is_file()), path)
     if not path.is_file():
         pytest.skip(f"No {name} in examples/")
     return path

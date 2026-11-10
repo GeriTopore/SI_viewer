@@ -5,6 +5,42 @@ export type TechniqueSource = "metadata" | "dm_tag" | "energy_axis" | "user";
 
 export type DatasetKind = "image" | "stack" | "spectrum" | "spectrum_image" | "other";
 
+/** What an in-situ series dataset holds: one frame, or the mean/sum of frames
+ * start…end (0-based, inclusive). */
+export interface InsituView {
+  mode: "frame" | "mean" | "sum";
+  start: number;
+  end: number;
+}
+
+/** A Gatan in-situ series (time, y, x[, energy]), read one frame at a time.
+ * The spectrum image of such a series (``view`` is set) holds one frame, or a
+ * reduction of a range, as an ordinary 2D spectrum image. */
+export interface InsituInfo {
+  /** Complete frames present in the .raw files. */
+  frames: number;
+  /** Frames the .dm4 says were recorded (null if it doesn't say). */
+  recorded_frames: number | null;
+  /** One frame as in the array: [y, x, energy] or [y, x]. */
+  frame_shape: number[];
+  first_time_s: number;
+  last_time_s: number;
+  time_source: "recorded" | "duration" | "index";
+  duration_s: number | null;
+  /** Set when fewer frames than recorded are present. */
+  note: string | null;
+  /** Spectrum image only: the time of every frame (s), the median step, the
+   * experiment start, the size of a frame and of the .raw files (bytes). */
+  frame_times_s?: number[];
+  frame_step_s?: number | null;
+  start_time?: string | null;
+  frame_bytes?: number | null;
+  raw_bytes?: number | null;
+  raw_files?: string[];
+  /** Spectrum image only: what the dataset holds now. */
+  view?: InsituView;
+}
+
 export interface Axis {
   name: string;
   size: number;
@@ -79,11 +115,13 @@ export interface DatasetSummary {
   technique_source: TechniqueSource | null;
   /** EELS spectrum images only. */
   eels: EelsInfo | null;
+  /** In-situ series (spectrum image or image stack); null otherwise. */
+  insitu: InsituInfo | null;
   /** "computed": an element map made from a spectrum image (window +
    * background); "fitted"/"composition": from fitting every pixel. */
   origin:
     | "file" | "computed" | "fitted" | "composition" | "aligned-average" | "window" | "background" | "background-r"
-    | "thickness" | "zlp-shift";
+    | "thickness" | "zlp-shift" | "deconvolved";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -92,6 +130,11 @@ export interface DatasetSummary {
   parent_id: string | null;
   /** Bumped when the data is recomputed or rebinned. */
   revision: number;
+  /** Bumped when the data is replaced by other data of the same kind (the next
+   * frame of an in-situ series): refetch, but keep contrast and zoom. */
+  data_rev: number;
+  /** Background removal of an in-situ frame: which one, e.g. "frame 37". */
+  source_frame: string | null;
   /** Rebinning applied to the loaded data, e.g. ["x×2, y×2"]. */
   rebinned: string[];
   /** Zero-loss alignment applied to the loaded data, e.g. ["sub-pixel, cropped"]. */
@@ -107,12 +150,17 @@ export interface DatasetSummary {
   alignment: AppliedAlignment | null;
   /** A dataset made from another, e.g. a stack's aligned average. */
   derived_from: string | null;
+  /** The survey image of a spectrum imaging run: the rectangles GMS drew on it. */
+  survey: { regions: SurveyRegion[] } | null;
   /** EELS spectrum images made by background removal: the settings used
    * (re-run with PUT /background); else null. */
   background: BackgroundInfo | null;
   /** The thickness of a low loss (a map, or a profile for a line scan): the
    * settings it was made with (re-run with POST /thickness); else null. */
   thickness: ThicknessInfo | null;
+  /** A deconvolved spectrum image: the settings it was made with (re-run
+   * with PUT /deconvolution); else null. */
+  deconvolution: DeconvolutionInfo | null;
 }
 
 /** Options of a thickness estimate. ``threshold`` is "auto" (estimated at
@@ -157,6 +205,48 @@ export interface BackgroundOptions {
   signal: [number, number];
 }
 
+export type DeconvolutionMethod = "fourier_log" | "fourier_ratio" | "richardson_lucy";
+
+/** Options of a plural-scattering deconvolution (energies in the low loss' units). */
+export interface DeconvolutionOptions {
+  method: DeconvolutionMethod;
+  /** End of the zero-loss peak: estimated at every pixel, or one energy. */
+  threshold: "auto" | number;
+  /** Auto threshold: how far above the peak the search goes. */
+  window: number;
+  /** Fourier-log: add the zero-loss peak back. */
+  add_zlp: boolean;
+  /** Fourier-ratio: width of the Gaussian the result is convolved with (null: the zero-loss peak's). */
+  fwhm: number | null;
+  /** Fourier-ratio: extrapolate both spectra with a power law. */
+  extrapolate: boolean;
+  /** Richardson–Lucy. */
+  iterations: number;
+  psf: "low_loss" | "zlp";
+}
+
+/** The settings a deconvolved spectrum image was made with. */
+export interface DeconvolutionInfo extends DeconvolutionOptions {
+  source_id: string;
+  low_loss_id: string | null;
+  units: string;
+}
+
+/** Pixels whose summed spectrum is previewed. */
+export type DeconvolutionSelection =
+  | { kind: "whole" }
+  | { kind: "pixel"; x: number; y: number; size: number }
+  | { kind: "region"; region: object };
+
+/** Deconvolved summed spectra (null for a selection with no pixels), and
+ * the threshold and FWHM used for the first. */
+export interface DeconvolutionPreview {
+  spectra: (number[] | null)[];
+  pixels: number[];
+  threshold: number | null;
+  fwhm: number | null;
+}
+
 /** The settings a background-removed spectrum image was made with. */
 export interface BackgroundInfo extends BackgroundOptions {
   source_id: string;
@@ -194,7 +284,7 @@ export interface AppliedAlignment {
   loaded_frames: number;
 }
 
-export type SpatialFilter = "none" | "gaussian" | "median" | "mean";
+export type SpatialFilter = "none" | "gaussian" | "median" | "mean" | "bandpass";
 export type SpectralFilter = "none" | "gaussian" | "savgol";
 
 /** Pre-processing filters of a dataset (see backend processing/filters.py). */
@@ -204,6 +294,9 @@ export interface Filters {
   sigma: number;
   /** Median / mean window (pixels, odd). */
   size: number;
+  /** Bandpass: structures smaller / larger than these (pixels) are removed. */
+  small: number;
+  large: number;
   spectral: SpectralFilter;
   /** Gaussian σ (channels). */
   spectral_sigma: number;
@@ -340,12 +433,15 @@ export const registrationShiftsUrl = (id: string) => `/api/datasets/${id}/regist
 export const registrationReportUrl = (id: string) => `/api/datasets/${id}/registration/report.pdf`;
 export const alignmentShiftsUrl = (id: string) => `/api/datasets/${id}/alignment/shifts.csv`;
 
-/** Download URL of a zip of every element map of a file. */
-export const mapsZipUrl = (fileId: string) => `/api/files/${fileId}/maps`;
 
-/** Changes whenever the data shown for a dataset does (recomputed, rebinned
- * or filtered), for cache keys. */
-export const dataVersion = (d: { revision: number; filter_rev: number }) => `${d.revision}.${d.filter_rev}`;
+type Versioned = { revision: number; filter_rev: number; data_rev?: number };
+
+/** Changes whenever the data shown for a dataset does (recomputed, rebinned,
+ * filtered or replaced by the next frame), for cache keys. */
+export const dataVersion = (d: Versioned) => `${d.revision}.${d.filter_rev}.${d.data_rev ?? 0}`;
+
+/** Like ``dataVersion`` but unchanged by a new frame: contrast is redone when it changes. */
+export const contrastVersion = (d: Versioned) => `${d.revision}.${d.filter_rev}`;
 
 /** Options of a spectrum fit (exSpy EDS model). */
 export interface FitOptions {
@@ -394,10 +490,31 @@ export interface DatasetAndFile {
   warnings?: string[];
 }
 
+/** A rectangle on a survey image, in pixels: where the spectrum image was
+ * taken ("si"), the spatial drift reference ("drift"), or another one. */
+export interface SurveyRegion {
+  label: string;
+  kind: "si" | "drift" | "other";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The files of one folder, opened together. */
+export interface ExperimentSummary {
+  id: string;
+  name: string;
+  path: string;
+}
+
 export interface FileSummary {
   id: string;
   path: string;
   name: string;
+  experiment: ExperimentSummary | null;
+  /** What the file is in its experiment ("Survey", "ADF", "EELS LL", …). */
+  role: string | null;
   datasets: DatasetSummary[];
 }
 
@@ -418,6 +535,11 @@ export interface FsListing {
 export interface NavigatorSource {
   id: string;
   label: string;
+  /** Pixels of the image per pixel of the spectrum image's scan, along each
+   * axis (1: the scan's own grid; k > 1: a sub-scan, shown at its resolution). */
+  factor: number;
+  /** The image dataset (its axes are the navigator's calibration). */
+  dataset_id: string;
 }
 
 export interface AxisCalibration {
@@ -492,11 +614,108 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
+/** A curve of an exported plot (matplotlib); null values are gaps. */
+export interface PlotSeriesBody {
+  label: string;
+  x: number[];
+  y: (number | null)[];
+  /** Hex colour. */
+  color: string;
+  dash?: number[];
+  /** Relative to the live plot's line width (1.25). */
+  width?: number;
+  axis: "left" | "right";
+}
+
+export interface PlotMarkerBody {
+  x: number;
+  label?: string;
+  color: string;
+  weight: number;
+}
+
+export interface PlotWindowBody {
+  lo: number;
+  hi: number;
+  color: string;
+  label: string;
+}
+
+export type PlotLimits = [number | null, number | null];
+
+export interface PlotOptionsBody {
+  style: "overlap" | "cascade";
+  padding: number;
+  normalise: boolean;
+  reverse: boolean;
+  log: boolean;
+  title: string;
+  x_label: string;
+  y_label: string;
+  y2_label: string;
+  xlim: PlotLimits;
+  ylim: PlotLimits;
+  y2lim: PlotLimits;
+  title_size: number;
+  label_size: number;
+  tick_size: number;
+  legend_size: number;
+  legend: boolean;
+  legend_loc: string;
+  /** Base line width (pt). */
+  line_width: number;
+  /** Figure size (inches). */
+  width: number;
+  height: number;
+  dpi: number;
+  format: "png" | "svg" | "pdf";
+}
+
+export interface PlotBody {
+  series: PlotSeriesBody[];
+  markers: PlotMarkerBody[];
+  windows: PlotWindowBody[];
+  options: PlotOptionsBody;
+}
+
+/** The plot drawn by the server as an image (PNG, SVG or PDF). */
+async function renderPlot(body: PlotBody, signal?: AbortSignal): Promise<Blob> {
+  const res = await fetch("/api/plot/render", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    let detail: string = res.statusText;
+    try {
+      const d = (await res.json()).detail;
+      // A malformed request comes back as a list of problems.
+      if (typeof d === "string") detail = d;
+      else if (Array.isArray(d)) detail = d.map((e: { msg?: string }) => e.msg ?? "").filter(Boolean).join("; ") || detail;
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return res.blob();
+}
+
 export const api = {
   health: () => request<Health>("/api/health"),
+  renderPlot,
   listFiles: () => request<FileSummary[]>("/api/files"),
-  openFile: (path: string) =>
-    request<FileSummary>("/api/files", { method: "POST", body: JSON.stringify({ path }) }),
+  openFile: (path: string, experimentId?: string) =>
+    request<FileSummary>("/api/files", {
+      method: "POST",
+      body: JSON.stringify({ path, experiment_id: experimentId ?? null }),
+    }),
+  /** Start an experiment of a folder: the files to open into it, in order. */
+  openFolder: (path: string) =>
+    request<{ experiment: ExperimentSummary; paths: string[] }>("/api/files/folder", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
   closeFile: (id: string) => request<void>(`/api/files/${id}`, { method: "DELETE" }),
   getDataset: (id: string) => request<DatasetSummary>(`/api/datasets/${id}`),
   loadDataset: (id: string) => request<DatasetSummary>(`/api/datasets/${id}/load`, { method: "POST" }),
@@ -518,6 +737,9 @@ export const api = {
       body: JSON.stringify({ partner_id: partnerId }),
     }),
   /** Say by hand that a spectrum image is a low or core loss; every changed file comes back. */
+  /** Give a dataset a name of the user's (kept when its data is recomputed). */
+  rename: (id: string, title: string) =>
+    request<DatasetSummary>(`/api/datasets/${id}/title`, { method: "PUT", body: JSON.stringify({ title }) }),
   setEelsRole: (id: string, role: EelsRole) =>
     request<{ files: FileSummary[] }>(`/api/datasets/${id}/eels-role`, {
       method: "PUT",
@@ -556,6 +778,21 @@ export const api = {
   /** Job: redo a background-removed spectrum image in place with new options. */
   rerunBackground: (id: string, options: BackgroundOptions) =>
     request<JobSummary>(`/api/datasets/${id}/background`, { method: "PUT", body: JSON.stringify({ options }) }),
+  /** Deconvolved summed spectra of some selections of pixels. */
+  deconvolutionPreview: (
+    id: string, options: DeconvolutionOptions, selections: DeconvolutionSelection[], signal?: AbortSignal,
+  ) =>
+    request<DeconvolutionPreview>(`/api/datasets/${id}/deconvolution/preview`, {
+      method: "POST",
+      body: JSON.stringify({ options, selections }),
+      signal,
+    }),
+  /** Job: a new spectrum image, deconvolved with the group's low loss. */
+  deconvolve: (id: string, options: DeconvolutionOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/deconvolution`, { method: "POST", body: JSON.stringify({ options }) }),
+  /** Job: redo a deconvolved spectrum image in place with new options. */
+  rerunDeconvolution: (id: string, options: DeconvolutionOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/deconvolution`, { method: "PUT", body: JSON.stringify({ options }) }),
   /** The automatic zero-loss threshold of a low loss's summed spectrum (null: none found). */
   thicknessThreshold: (id: string, window: number, signal?: AbortSignal) =>
     request<{ low_loss_id: string; threshold: number | null }>(`/api/datasets/${id}/thickness/threshold`, {
@@ -573,6 +810,15 @@ export const api = {
     request<JobSummary>(`/api/datasets/${id}/zlp-alignment`, { method: "POST", body: JSON.stringify({ options }) }),
   startFitMaps: (id: string, options: FitOptions, quant: QuantSpec) =>
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
+  /** In-situ series: hold frame ``frame`` (0-based). Reads one frame; the file's window maps follow it. */
+  setInsituFrame: (id: string, frame: number) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/insitu/frame`, { method: "PUT", body: JSON.stringify({ frame }) }),
+  /** Job: hold the mean or sum of frames start…end (0-based, inclusive); reads every frame of the range. */
+  reduceInsitu: (id: string, mode: "mean" | "sum", start: number, end: number) =>
+    request<JobSummary>(`/api/datasets/${id}/insitu/reduce`, {
+      method: "POST",
+      body: JSON.stringify({ mode, start, end }),
+    }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<JobSummary>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   startRegistration: (id: string, first: number, last: number) =>
@@ -610,10 +856,28 @@ export const api = {
   exportFormats: () => request<Record<string, ExportFormat[]>>("/api/export-formats"),
   listExamples: () => request<ExampleInfo[]>("/api/examples"),
   openExample: (id: string) => request<FileSummary>(`/api/examples/${id}`, { method: "POST" }),
-  listDir: (path?: string) =>
-    request<FsListing>(`/api/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  /** A folder's subfolders and openable files, or with ``ext`` its files with that extension. */
+  listDir: (path?: string, ext?: string) => {
+    const q = new URLSearchParams();
+    if (path) q.set("path", path);
+    if (ext) q.set("ext", ext);
+    const query = q.toString();
+    return request<FsListing>(`/api/fs/list${query ? `?${query}` : ""}`);
+  },
+  /** Write a dataset as ``format`` to ``path`` (ApiError 409 if it exists and not ``overwrite``). */
+  saveDataset: (id: string, format: string, path: string, overwrite = false) =>
+    request<{ path: string }>(`/api/datasets/${id}/save`, {
+      method: "POST",
+      body: JSON.stringify({ format, path, overwrite }),
+    }),
+  /** Write datasets as ``format`` into ``folder``, named after their titles (409 if any exist). */
+  batchExport: (ids: string[], format: string, folder: string, overwrite = false) =>
+    request<{ paths: string[] }>("/api/export/batch", {
+      method: "POST",
+      body: JSON.stringify({ ids, format, folder, overwrite }),
+    }),
 };
 
 /** Thumbnail URL; the version makes recomputed or filtered data bypass the browser cache. */
-export const thumbnailUrl = (d: { id: string; revision: number; filter_rev: number }, size = 256) =>
+export const thumbnailUrl = (d: Versioned & { id: string }, size = 256) =>
   `/api/datasets/${d.id}/thumbnail?size=${size}&v=${dataVersion(d)}`;

@@ -35,6 +35,9 @@ export interface ViewProfiles {
   hover: number | null;
 }
 
+/** Pan, profile lines, or FFT boxes. */
+export type ImageTool = "pan" | "line" | "fft";
+
 const LINE_COLORS = ["#ffd60a", "#00e5ff", "#ff6bd6", "#8cff5a", "#ff7a59", "#b18cff"];
 
 const EMPTY: ViewProfiles = { lines: [], selected: null, normalise: false, pick: null, hover: null };
@@ -42,8 +45,8 @@ const EMPTY: ViewProfiles = { lines: [], selected: null, normalise: false, pick:
 interface ProfilesStore {
   byView: Record<string, ViewProfiles>;
   /** Tool of image and stack views (spectrum images use their own tool bar). */
-  imageTool: "pan" | "line";
-  setImageTool: (tool: "pan" | "line") => void;
+  imageTool: ImageTool;
+  setImageTool: (tool: ImageTool) => void;
   patch: (view: string, patch: Partial<ViewProfiles>) => void;
   addLine: (view: string, geometry: LineGeometry) => string;
   updateLine: (view: string, id: string, patch: Partial<ProfileLine>) => void;

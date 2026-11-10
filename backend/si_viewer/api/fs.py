@@ -16,7 +16,10 @@ router = APIRouter(prefix="/api/fs", tags=["filesystem"])
 
 
 @router.get("/list")
-def list_directory(path: str | None = None) -> dict:
+def list_directory(path: str | None = None, ext: str | None = None) -> dict:
+    """Folders and the files that can be opened, or with ``ext`` (e.g.
+    "tif", for saving) the files with that extension instead."""
+    suffixes = {f".{ext.lower().lstrip('.')}"} if ext else SUPPORTED_SUFFIXES
     directory = Path(path).expanduser() if path else Path.home()
     try:
         directory = directory.resolve()
@@ -38,7 +41,7 @@ def list_directory(path: str | None = None) -> dict:
             stat = child.stat()
         except OSError:
             continue
-        supported = not is_dir and child.suffix.lower() in SUPPORTED_SUFFIXES
+        supported = not is_dir and child.suffix.lower() in suffixes
         if not (is_dir or supported):
             continue
         entries.append(

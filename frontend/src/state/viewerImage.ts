@@ -10,6 +10,8 @@ export interface ViewerImage {
   frame: Frame;
   calX: AxisCal;
   calY: AxisCal;
+  /** Key of the view's FFT boxes (see state/fftBoxes.ts), if it has any. */
+  fftView?: string;
   /** Visible part of the image, in full-resolution pixels (clipped to it). */
   x0: number;
   y0: number;
@@ -29,6 +31,12 @@ interface ViewerImageState {
   showFftMask: boolean;
   setFftMask: (mask: MaskSettings | null) => void;
   setShowFftMask: (show: boolean) => void;
+  /** The FFTs of the view and its FFT boxes are shown beside the image. */
+  compare: boolean;
+  setCompare: (compare: boolean) => void;
+  /** Changes the mask when its cutoff ring is dragged on the FFT panel. */
+  editFftMask: ((mask: MaskSettings) => void) | null;
+  setEditFftMask: (edit: ((mask: MaskSettings) => void) | null) => void;
 }
 
 export const useViewerImage = create<ViewerImageState>((set, get) => ({
@@ -40,4 +48,8 @@ export const useViewerImage = create<ViewerImageState>((set, get) => ({
   showFftMask: true,
   setFftMask: (fftMask) => set({ fftMask }),
   setShowFftMask: (showFftMask) => set({ showFftMask }),
+  compare: false,
+  setCompare: (compare) => set({ compare }),
+  editFftMask: null,
+  setEditFftMask: (editFftMask) => set({ editFftMask }),
 }));

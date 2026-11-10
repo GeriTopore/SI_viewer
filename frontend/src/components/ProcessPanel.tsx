@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, type DatasetSummary, type Filters, type SpatialFilter, type SpectralFilter } from "../api/client";
+import type { DatasetSummary, Filters, SpatialFilter, SpectralFilter } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
-import { useLayers } from "../state/layers";
+import { applyFilters } from "../state/filters";
 import { useAlignment } from "../state/alignment";
 import { useUi } from "../state/ui";
-import { filterLabel, isLineScan } from "../format";
+import { filterLabel, isInsituView, isLineScan } from "../format";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { AlignSection } from "./AlignSection";
 import { BackgroundSection } from "./BackgroundSection";
 import { canRemoveBackground } from "../state/background";
 import { ThicknessSection } from "./ThicknessSection";
+import { DeconvolutionSection } from "./DeconvolutionSection";
+import { canDeconvolve } from "../state/deconvolution";
 import { canEstimateThickness } from "../state/thickness";
 import { ZlpSection } from "./ZlpSection";
 
@@ -18,6 +20,7 @@ const SPATIAL: { id: SpatialFilter; label: string; title: string }[] = [
   { id: "gaussian", label: "Gaussian", title: "Gaussian blur" },
   { id: "median", label: "Median", title: "Median filter: removes outliers, keeps edges" },
   { id: "mean", label: "Mean", title: "Mean (box) filter" },
+  { id: "bandpass", label: "Bandpass", title: "Fourier bandpass: removes structures smaller than Small and larger than Large" },
 ];
 
 const SPECTRAL: { id: SpectralFilter; label: string; title: string }[] = [
@@ -26,7 +29,9 @@ const SPECTRAL: { id: SpectralFilter; label: string; title: string }[] = [
   { id: "savgol", label: "Savitzky–Golay", title: "Savitzky–Golay smoothing: keeps peak heights better" },
 ];
 
-const spatialKey = (f: Filters) => `${f.spatial}|${f.sigma}|${f.size}`;
+/** What is wrong with the bandpass sizes (not sent until fixed), if anything. */
+const bandpassError = (f: Filters) =>
+  f.spatial === "bandpass" && f.small >= f.large ? "Small must be less than Large" : null;
 
 const ODD_SIZES = [3, 5, 7, 9, 11, 15, 21];
 const SAVGOL_WINDOWS = [5, 7, 9, 11, 15, 21, 31];
@@ -80,9 +85,7 @@ export function ProcessPanel() {
 }
 
 function ProcessTarget({ d }: { d: DatasetSummary }) {
-  const replaceFile = useDatasets((s) => s.replaceFile);
   const files = useDatasets((s) => s.files);
-  const notify = useLayers((s) => s.notify);
   const [draft, setDraft] = useState<Filters>(d.filters);
   const [error, setError] = useState<string | null>(null);
   const [rebinOpen, setRebinOpen] = useState(false);
@@ -102,18 +105,7 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   const send = async (ids: string[], filters: Filters) => {
     setError(null);
     try {
-      let notes: string[] = [];
-      let partnerChanged = false;
-      for (const id of ids) {
-        const before = allDatasets(useDatasets.getState().files).find((x) => x.id === id);
-        const r = await api.setFilters(id, filters);
-        replaceFile(r.file);
-        notes = [...notes, ...r.notes];
-        // The EELS spectrum images linked to it get the same spatial filter.
-        if (before?.eels?.linked.length && spatialKey(before.filters) !== spatialKey(filters)) partnerChanged = true;
-      }
-      if (partnerChanged) await useDatasets.getState().syncFiles();
-      if (notes.length) notify(notes.join(" "));
+      await applyFilters(ids, filters);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -122,7 +114,7 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   // Changes apply live, debounced.
   useEffect(() => {
     const json = JSON.stringify(draft);
-    if (json === sent.current) return;
+    if (json === sent.current || bandpassError(draft)) return;
     const t = setTimeout(() => {
       sent.current = json;
       send([d.id], draft);
@@ -136,7 +128,7 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   useEffect(
     () => () => {
       const json = JSON.stringify(latest.current);
-      if (json !== sent.current) {
+      if (json !== sent.current && !bandpassError(latest.current)) {
         sent.current = json;
         send([d.id], latest.current);
       }
@@ -164,6 +156,7 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
     d.kind === "stack" && "align", canRebin(d) && "rebin", canEstimateThickness(d) && "zlp", "filters",
     canRemoveBackground(d) && "background",
     canEstimateThickness(d) && "thickness",
+    canDeconvolve(d) && "deconvolution",
   ].filter(Boolean);
   const num = (s: string) => `${sections.indexOf(s) + 1}. `;
 
@@ -183,7 +176,12 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
 
       {canRebin(d) && (
         <ProcessGroup id="rebin" title={`${num("rebin")}Rebin`} tip="Sum neighbouring pixels or channels; overwrites the loaded data">
-          <button className="process-rebin" onClick={() => setRebinOpen(true)}>
+          <button
+            className="process-rebin"
+            onClick={() => setRebinOpen(true)}
+            disabled={isInsituView(d)}
+            title={isInsituView(d) ? "Not for in-situ frames: the next frame would undo it" : undefined}
+          >
             Rebin…
           </button>
         </ProcessGroup>
@@ -243,6 +241,33 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
                   />
                 </span>
               </label>
+            )}
+            {draft.spatial === "bandpass" && (
+              <>
+                <label title="Structures smaller than this are removed, in pixels">
+                  Small (px)
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={10000}
+                    step={0.5}
+                    value={draft.small}
+                    onChange={(e) => Number(e.target.value) > 0 && set({ small: Number(e.target.value) })}
+                  />
+                </label>
+                <label title="Structures larger than this are removed, in pixels">
+                  Large (px)
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={10000}
+                    step={1}
+                    value={draft.large}
+                    onChange={(e) => Number(e.target.value) > 0 && set({ large: Number(e.target.value) })}
+                  />
+                </label>
+                {bandpassError(draft) && <p className="field-error">{bandpassError(draft)}</p>}
+              </>
             )}
             {(draft.spatial === "median" || draft.spatial === "mean") && (
               <label title="Width of the square window, in pixels">
@@ -361,6 +386,16 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
           tip="Thickness of the low loss from the share of its counts in the zero-loss peak; makes a new map"
         >
           <ThicknessSection d={d} />
+        </ProcessGroup>
+      )}
+
+      {canDeconvolve(d) && (
+        <ProcessGroup
+          id="deconvolution"
+          title={`${num("deconvolution")}Deconvolution`}
+          tip="Remove plural scattering (or sharpen) with the low loss; makes a new spectrum image"
+        >
+          <DeconvolutionSection d={d} />
         </ProcessGroup>
       )}
 

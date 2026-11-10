@@ -5,7 +5,10 @@ from pydantic import ValidationError
 from scipy import ndimage
 
 from si_viewer.app import create_app
-from si_viewer.processing.filters import Filters, filter_image, filter_spectrum, spectral_adjoint
+from si_viewer.processing.filters import (
+    Filters, bandpass, bandpass_adjoint, bandpass_transfer, check_applicable, filter_image, filter_spectrum,
+    spatial_weights, spectral_adjoint,
+)
 from si_viewer.processing.regions import (
     Region, pixel_spectrum, processed_energy_map, processed_pixel_spectrum, processed_region_spectrum,
     region_spectrum,
@@ -24,6 +27,15 @@ def test_validation():
     with pytest.raises(ValidationError):
         Filters(spectral="savgol", window=5, order=5)
     assert Filters().describe() == ""
+    for bad in ({"small": 40, "large": 40}, {"small": 50, "large": 10}, {"small": 0}, {"large": 20000}):
+        with pytest.raises(ValidationError):
+            Filters(spatial="bandpass", **bad)
+    with pytest.raises(ValidationError, match="less than"):
+        Filters(spatial="bandpass", small=5, large=3)
+    assert Filters(spatial="bandpass").describe() == "Bandpass 2–40 px"
+    assert Filters(spatial="bandpass", small=1.5, large=25).describe() == "Bandpass 1.5–25 px"
+    check_applicable("spectrum_image", Filters(spatial="bandpass"))
+    check_applicable("image", Filters(spatial="bandpass"))
     assert Filters(spatial="gaussian", sigma=1.5, spectral="savgol").describe() == (
         "Gaussian σ 1.5 px; Savitzky–Golay 7 ch, order 2"
     )
@@ -50,10 +62,14 @@ def _processed_cube(data: np.ndarray, f: Filters) -> np.ndarray:
         cube = ndimage.gaussian_filter(cube, (f.sigma, f.sigma, 0), mode="reflect")
     elif f.spatial == "mean":
         cube = ndimage.uniform_filter(cube, (f.size, f.size, 1), mode="reflect")
+    elif f.spatial == "bandpass":
+        cube = np.stack([bandpass(cube[..., c], f.small, f.large) for c in range(cube.shape[-1])], axis=-1)
     return filter_spectrum(cube, f)
 
 
 PROCESSING = [
+    Filters(spatial="bandpass", small=1.5, large=8),
+    Filters(spatial="bandpass", small=2, large=40, spectral="gaussian", spectral_sigma=1),
     Filters(spatial="gaussian", sigma=1.3),
     Filters(spatial="mean", size=5),
     Filters(spatial="gaussian", sigma=0.8, spectral="savgol", window=5),
@@ -81,8 +97,71 @@ def test_processed_spectra_match_processed_cube(f):
         got, _ = processed_region_spectrum(data, region, f)
         np.testing.assert_allclose(got, region_spectrum(cube, region)[0], rtol=1e-6, atol=1e-9)
     np.testing.assert_allclose(
-        processed_energy_map(data, 0.0, 1.0, 4, 9, f), cube[..., 4:9].sum(-1), rtol=1e-5, atol=1e-6
+        processed_energy_map(data, 0.0, 1.0, 4, 9, f), cube[..., 4:9].sum(-1), rtol=1e-5, atol=1e-4  # float32 maps
     )
+
+
+def test_bandpass_transfer():
+    h = bandpass_transfer((256, 256), 4, 64)
+    assert h[0, 0] == 1
+    assert (h >= 0).all() and (h <= 1).all()
+    # Half power (amplitude 2^-½) at a period of "large" px (high-pass side)...
+    assert h[0, 4] == pytest.approx(2**-0.5, abs=0.01)  # f = 4/256 = 1/64 cycles/px
+    # ... and at a period of "small" px (low-pass side).
+    assert bandpass_transfer((256, 256), 4, 1000)[0, 64] == pytest.approx(2**-0.5, abs=1e-6)
+    # Isotropic.
+    assert h[4, 0] == pytest.approx(h[0, 4], rel=1e-12)
+
+
+def test_bandpass_image():
+    rng = np.random.default_rng(3)
+    # A flat image stays flat (and keeps its level), whatever its size.
+    for shape in [(40, 50), (7, 90), (1, 30)]:
+        flat = np.full(shape, 5.0, np.float32)
+        np.testing.assert_allclose(filter_image(flat, Filters(spatial="bandpass")), 5.0, atol=1e-4)
+    img = rng.random((64, 64)).astype(np.float32)
+    out = filter_image(img, Filters(spatial="bandpass", small=2, large=30))
+    assert out.dtype == np.float32 and out.shape == img.shape
+    assert abs(float(out.mean()) - float(img.mean())) < 0.02
+    assert out.std() < img.std()
+    # A slow ramp is removed (up to the mean); a fine checkerboard too.
+    yy, xx = np.mgrid[:128, :128]
+    ramp = (0.2 * xx).astype(np.float32)
+    got = filter_image(ramp, Filters(spatial="bandpass", small=1, large=10))
+    assert np.abs(got[40:90, 40:90] - ramp.mean()).max() < 0.3 * np.ptp(ramp)
+    assert np.abs(got[40:90, 40:90] - got[40:90, 40:90].mean()).max() < 0.5
+    checker = ((xx + yy) % 2).astype(np.float32)
+    got = filter_image(checker, Filters(spatial="bandpass", small=4, large=60))
+    assert np.abs(got[20:100, 20:100] - 0.5).max() < 0.05
+
+
+def test_bandpass_nan():
+    rng = np.random.default_rng(4)
+    img = rng.random((30, 30)).astype(np.float32)
+    img[5, 5] = np.nan
+    img[20:22, 10:14] = np.nan
+    f = Filters(spatial="bandpass", small=1.5, large=12)
+    out = filter_image(img, f)
+    assert np.isnan(out[5, 5]) and np.isnan(out[20:22, 10:14]).all()
+    assert np.isfinite(out[~np.isnan(img)]).all()
+    # NaN pixels are filled with the valid mean for the transform.
+    filled = np.where(np.isnan(img), np.nanmean(img), img)
+    expected = filter_image(filled, f)
+    np.testing.assert_allclose(out[~np.isnan(img)], expected[~np.isnan(img)], rtol=1e-5, atol=1e-6)
+    assert np.isnan(filter_image(np.full((8, 8), np.nan, np.float32), f)).all()
+
+
+def test_bandpass_adjoint():
+    rng = np.random.default_rng(5)
+    for shape in [(20, 24), (9, 31)]:
+        a, b = rng.random(shape), rng.random(shape)
+        lhs = (bandpass(a, 1.5, 9) * b).sum()
+        rhs = (a * bandpass_adjoint(b, 1.5, 9)).sum()
+        assert lhs == pytest.approx(rhs, rel=1e-10)
+        mask = np.zeros(shape)
+        mask[3:7, 2:9] = 1
+        np.testing.assert_allclose(spatial_weights(mask, Filters(spatial="bandpass", small=1.5, large=9)),
+                                   bandpass_adjoint(mask, 1.5, 9))
 
 
 def test_spectral_adjoint():
@@ -131,6 +210,10 @@ def test_filters_api(client_si):
     assert client.put(f"/api/datasets/{haadf['id']}/filters", json={"spectral": "gaussian"}).status_code == 422
     assert client.put(f"/api/datasets/{si['id']}/filters", json={"spatial": "median"}).status_code == 422
     assert client.put(f"/api/datasets/{si['id']}/filters", json={"spatial": "mean", "size": 4}).status_code == 422
+    assert client.put(f"/api/datasets/{si['id']}/filters", json={"spatial": "bandpass", "small": 9, "large": 3}).status_code == 422
+    # A bandpass is linear, so a spectrum image takes it.
+    assert client.put(f"/api/datasets/{si['id']}/filters", json={"spatial": "bandpass"}).status_code == 200
+    client.put(f"/api/datasets/{si['id']}/filters", json={})
 
 
 def test_si_filters_reach_maps_and_spectra(client_si):

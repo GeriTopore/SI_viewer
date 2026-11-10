@@ -31,6 +31,11 @@ def post_zlp_alignment(dataset_id: str, body: ZlpBody, request: Request) -> dict
     session = request.app.state.session
     ll = _low_loss(request, dataset_id)
     options = body.options
+    for d in (ll, *session.zlp_followers(ll)):
+        if d.insitu is not None:
+            raise HTTPException(
+                422, f"{d.title} is a frame of an in-situ series and can't be aligned: the next frame would undo it"
+            )
     try:
         check_signal(ll.signal)  # fail now, not in the job
     except ValueError as e:

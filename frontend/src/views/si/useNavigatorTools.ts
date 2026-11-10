@@ -32,14 +32,15 @@ function dedupe(points: [number, number][]) {
  * Pointer and keyboard handling for the SI navigator:
  * - cursor tool: the spectrum cursor moves only by dragging its marker (a
  *   press within a few px of it; snapped to pixels) — a click or drag
- *   elsewhere leaves it alone (the image pans); arrows nudge it (Shift: ×10)
+ *   elsewhere leaves it alone (the image pans); arrows nudge it (Shift: ×10;
+ *   with ``frameArrows``, ←/→ are the frame keys and ⌥←/⌥→ nudge it)
  * - rect/ellipse: drag draws a region; drag inside a region moves it
  * - polygon: click adds vertices; click the first vertex, double-click or
  *   Enter closes it; Esc cancels
  * - the selected region's corner handles resize it with any tool;
  *   Delete removes it
  */
-export function useNavigatorTools(si: string, width: number, height: number) {
+export function useNavigatorTools(si: string, width: number, height: number, frameArrows = false) {
   const tool = useSi((s) => s.tool);
   const cursorSize = useSi((s) => s.cursorSize);
   const { patch, addRoi, updateRoi, removeRoi } = useSi.getState();
@@ -96,7 +97,7 @@ export function useNavigatorTools(si: string, width: number, height: number) {
       tool === "pan" ? "grab" : tool === "cursor" ? (grabbing ? "grabbing" : near ? "move" : undefined) : "cell",
 
     onDown(p, _e, t) {
-      if (tool === "pan" || tool === "line") return false; // lines: the viewer's line tool
+      if (tool === "pan" || tool === "line" || tool === "fft") return false; // lines, FFT boxes: the viewer's tools
       const s = getSiState(si);
       const selected = s.rois.find((r) => r.id === s.selected && r.visible);
       if (selected && tool !== "polygon") {
@@ -108,8 +109,15 @@ export function useNavigatorTools(si: string, width: number, height: number) {
         }
       }
       if (tool === "cursor") {
+        // No cursor shown: put it where the image was clicked (and drag on).
+        if (!s.cursor || !s.showCursor) {
+          setCursor(p);
+          drag.current = { mode: "cursor", start: p, orig: toCursor(p) };
+          setGrabbing(true);
+          return true;
+        }
         const cur = s.cursor;
-        if (!cur || !onMarker(p, t)) return false; // elsewhere the image pans
+        if (!onMarker(p, t)) return false; // elsewhere the image pans
         drag.current = { mode: "cursor", start: p, orig: cur };
         setGrabbing(true);
         return true;
@@ -192,6 +200,8 @@ export function useNavigatorTools(si: string, width: number, height: number) {
       const arrows: Record<string, [number, number]> = {
         ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step],
       };
+      // In-situ series: ←/→ step the frames, so the cursor moves sideways with ⌥←/⌥→.
+      if (frameArrows && (e.key === "ArrowLeft" || e.key === "ArrowRight") && !e.altKey) return false;
       if (e.key in arrows && s.cursor) {
         const [dx, dy] = arrows[e.key];
         setCursor({ x: s.cursor.x + dx + 0.5, y: s.cursor.y + dy + 0.5 });

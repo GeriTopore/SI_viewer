@@ -178,6 +178,12 @@ function MaskStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
     setFftMask(a.mask);
   }, [a.mask, setFftMask]);
   useEffect(() => () => setFftMask(null), [setFftMask]);
+  // Dragging the cutoff ring on the FFT changes the mask.
+  const setEditFftMask = useViewerImage((s) => s.setEditFftMask);
+  useEffect(() => {
+    setEditFftMask((mask) => useAlignment.getState().patch(ds.id, { mask }));
+    return () => setEditFftMask(null);
+  }, [ds.id, setEditFftMask]);
 
   const compareFraction = useUi((s) => s.compareFraction);
   const setCompareFraction = useUi((s) => s.setCompareFraction);

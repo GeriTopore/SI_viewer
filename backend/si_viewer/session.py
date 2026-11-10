@@ -12,6 +12,9 @@ from pathlib import Path
 import numpy as np
 
 from .io import load_file
+from .io.dm_experiment import is_survey, survey_regions
+from .insitu_series import InsituSeries, ViewState
+from .io.insitu import insitu_summary, is_insitu_series
 from .processing.technique import apply_technique, detect_technique, technique_of
 
 
@@ -21,6 +24,10 @@ class DatasetKind(str, Enum):
     SPECTRUM = "spectrum"
     SPECTRUM_IMAGE = "spectrum_image"
     OTHER = "other"
+
+
+class NotAvailable(ValueError):
+    """The operation isn't available for this dataset (yet)."""
 
 
 def classify(signal) -> DatasetKind:
@@ -105,8 +112,9 @@ class Dataset:
     # "fitted" / "composition" (per-pixel fits), "window" (an energy-window map),
     # "background" (EELS spectra with the background removed), "background-r"
     # (the power-law exponent map of one), "thickness" (the thickness of an
-    # EELS low loss: a map, or a profile for a line scan) or "zlp-shift" (the
-    # energy shift zero-loss alignment applied at every pixel of a low loss).
+    # EELS low loss: a map, or a profile for a line scan), "zlp-shift" (the
+    # energy shift zero-loss alignment applied at every pixel of a low loss)
+    # or "deconvolved" (EELS spectra with plural scattering removed).
     origin: str = "file"
     # Element symbol of an element map (Velox maps: their title).
     element: str | None = None
@@ -120,8 +128,21 @@ class Dataset:
     # Thickness of a low loss ("thickness"): the options it was made with (see
     # processing/thickness.py) and the energy units of the threshold.
     thickness: dict | None = None
+    # Deconvolved EELS spectra ("deconvolved"): the options they were made
+    # with (see processing/deconvolution.py) and the low loss used.
+    deconvolution: dict | None = None
     # Bumped whenever the data is recomputed, so clients refresh caches.
     revision: int = 0
+    # Bumped when the data is replaced by other data of the same kind (the next
+    # frame of an in-situ series): clients refetch but keep their display
+    # settings (contrast, zoom, cursor), unlike after a new revision.
+    data_rev: int = 0
+    # In-situ series: the series this dataset is a view of. The dataset holds
+    # one frame (or a reduction of a frame range) as an ordinary 2D spectrum
+    # image (see insitu_series.py).
+    insitu: InsituSeries | None = field(default=None, repr=False)
+    # Background-removed spectra made from an in-situ frame: which one ("frame 37").
+    source_frame: str | None = None
     # Spectrum images: how their computed element maps are made.
     map_options: dict = field(default_factory=dict)
     # Rebinning applied to the loaded data, e.g. ["x×2, y×2"] (oldest first).
@@ -152,6 +173,11 @@ class Dataset:
     original_signal: object | None = field(default=None, repr=False)
     # A dataset made from another (e.g. a stack's aligned average).
     derived_from: str | None = None
+    # A name the user gave (see ``rename``): kept when the data is recomputed.
+    custom_title: str | None = None
+    # The survey image of a spectrum imaging run: {"regions": the rectangles
+    # GMS drew on it (see io/dm_experiment.py)}.
+    survey: dict | None = None
     thumbnails: dict[int, bytes] = field(default_factory=dict, repr=False)
     # Derived arrays (projections, sum spectra, …) keyed by name.
     cache: dict[str, object] = field(default_factory=dict, repr=False)
@@ -159,7 +185,20 @@ class Dataset:
 
     @property
     def title(self) -> str:
-        return self.signal.metadata.General.get_item("title", "") or "untitled"
+        return self.custom_title or self.signal.metadata.General.get_item("title", "") or "untitled"
+
+    def rename(self, title: str) -> None:
+        """Give the dataset a name of the user's (also written into its
+        metadata, so saved files carry it)."""
+        title = " ".join(title.split())
+        if not title:
+            raise ValueError("Enter a name")
+        if len(title) > 200:
+            raise ValueError("The name is too long")
+        self.custom_title = title
+        for s in (self.signal, self.original_signal, self.aligned_signal):
+            if s is not None:
+                s.metadata.General.title = title
 
     @property
     def filter_spec(self):
@@ -184,7 +223,9 @@ class Dataset:
     def materialise(self) -> None:
         """Load the data into RAM (no-op if already in memory)."""
         with self._load_lock:
-            if self.lazy:
+            if self.insitu is not None:
+                self.insitu.load_view(self)  # one frame, never the series
+            elif self.lazy:
                 self.signal.compute(close_file=False, show_progressbar=False)
 
     def set_axis_calibration(
@@ -204,10 +245,23 @@ class Dataset:
 
     def replace_signal(self, signal) -> None:
         """Swap in recomputed data (new revision, caches cleared)."""
+        if self.custom_title:
+            signal.metadata.General.title = self.custom_title
         self.signal = signal
         self.revision += 1
         self.thumbnails.clear()
-        self.cache.clear()
+        self.cache = {}  # a new dict: a result still being computed from the old data lands in the old one
+
+    def refresh_data(self, signal) -> None:
+        """Swap in other data of the same kind (the next frame): the same
+        revision, so clients keep their display settings, but a new ``data_rev``
+        so they refetch."""
+        if self.custom_title:
+            signal.metadata.General.title = self.custom_title
+        self.signal = signal
+        self.data_rev += 1
+        self.thumbnails = {}
+        self.cache = {}
 
     def summary(self) -> dict:
         from .processing.element_maps import MapOptions
@@ -237,7 +291,14 @@ class Dataset:
                 "units": _defined(am.signal_axes[0].units),
             },
             "thickness": None if self.thickness is None else {"source_id": self.parent_id, **self.thickness},
+            "deconvolution": None if self.deconvolution is None else {
+                "source_id": self.parent_id,
+                **self.deconvolution,
+                "units": _defined(am.signal_axes[0].units),
+            },
             "revision": self.revision,
+            "data_rev": self.data_rev,
+            "source_frame": self.source_frame,
             "rebinned": list(self.rebinned),
             "zlp_aligned": list(self.zlp_aligned),
             "filters": self.filter_spec.model_dump(),
@@ -248,7 +309,9 @@ class Dataset:
                 "loaded_frames": int(self.loaded_signal.axes_manager.navigation_size),
             },
             "derived_from": self.derived_from,
+            "survey": self.survey,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
+            "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
             "file_id": self.file_id,
             "title": self.title,
@@ -276,18 +339,59 @@ class Dataset:
 
 
 @dataclass
+class Experiment:
+    """The files of one folder, opened together (``Session.open_folder``)."""
+
+    id: str
+    path: Path
+    file_ids: list[str] = field(default_factory=list)
+
+    def summary(self) -> dict:
+        return {"id": self.id, "name": self.path.name, "path": str(self.path)}
+
+
+@dataclass
 class FileEntry:
     id: str
     path: Path
     dataset_ids: list[str] = field(default_factory=list)
     # Shown instead of the file name (e.g. an example's title).
     label: str | None = None
+    # The experiment (folder) it was opened in.
+    experiment_id: str | None = None
+
+    def role(self, session: "Session") -> str | None:
+        """What the file is in its experiment: "Survey", "ADF", "EELS LL",
+        "EELS HL", "EDS", ... (None if it can't tell)."""
+        from .io.dm_experiment import scan_signal_name
+        from .processing.eels import is_eels_si
+
+        loaded = [session.datasets[d] for d in self.dataset_ids if session.datasets[d].origin == "file"]
+        for d in loaded:
+            if d.survey is not None:
+                return "Survey"
+        for d in loaded:
+            if is_eels_si(d):
+                if d.eels_role_source == "default" and not d.eels_linked:
+                    return "EELS"
+                return "EELS LL" if d.eels_role == "low_loss" else "EELS HL"
+        for d in loaded:
+            if d.kind is DatasetKind.SPECTRUM_IMAGE and technique_of(d.signal):
+                return technique_of(d.signal)
+        for d in loaded:
+            name = scan_signal_name(d.signal)
+            if name:
+                return name
+        return None
 
     def summary(self, session: "Session") -> dict:
+        experiment = session.experiments.get(self.experiment_id) if self.experiment_id else None
         return {
             "id": self.id,
             "path": str(self.path),
             "name": self.label or self.path.name,
+            "experiment": experiment.summary() if experiment else None,
+            "role": self.role(session) if experiment else None,
             "datasets": [session.datasets[d].summary() for d in self.dataset_ids],
         }
 
@@ -299,15 +403,96 @@ class Session:
         # Link groups of EELS spectrum images (two or more, at most one low
         # loss): group id -> member dataset ids.
         self.eels_groups: dict[str, list[str]] = {}
+        self.experiments: dict[str, Experiment] = {}
         self._lock = threading.RLock()
 
-    def open_file(self, path: str | Path) -> FileEntry:
+    def open_file(self, path: str | Path, experiment_id: str | None = None) -> FileEntry:
+        """Open ``path`` (an open file is not opened again). With
+        ``experiment_id``, the file joins that experiment and its EELS
+        spectrum images are linked with the experiment's."""
         path = Path(path).expanduser().resolve()
+        experiment = None
+        if experiment_id is not None:
+            experiment = self.experiments.get(experiment_id)
+            if experiment is None:
+                raise KeyError(experiment_id)
         with self._lock:
-            for entry in self.files.values():
-                if entry.path == path:
-                    return entry
-        return self.open_signals(path, load_file(path, lazy=True))
+            entry = next((e for e in self.files.values() if e.path == path), None)
+        if entry is None:
+            entry = self.open_signals(path, load_file(path, lazy=True))
+        if experiment is not None and entry.experiment_id != experiment.id:
+            with self._lock:
+                self._leave_experiment(entry)
+                entry.experiment_id = experiment.id
+                experiment.file_ids.append(entry.id)
+            self._link_experiment(entry, experiment)
+        return entry
+
+    # ---------- experiments (the files of one folder) ----------
+
+    def open_folder(self, folder: str | Path) -> tuple[Experiment, list[Path]]:
+        """Start an experiment of ``folder`` (the same one again if it is
+        open). Returns it and the files to open into it, in order (an in-situ
+        spectrum image's image series open with it, so they are left out)."""
+        from .io import SUPPORTED_SUFFIXES
+        from .io.insitu import insitu_companions
+
+        folder = Path(folder).expanduser().resolve()
+        if not folder.is_dir():
+            raise FileNotFoundError(folder)
+        paths = sorted(
+            p for p in folder.iterdir()
+            if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in SUPPORTED_SUFFIXES
+        )
+        companions = {c for p in paths if p.suffix.lower() == ".dm4" for c in insitu_companions(p)}
+        with self._lock:
+            experiment = next((x for x in self.experiments.values() if x.path == folder), None)
+            if experiment is None:
+                experiment = Experiment(id=_new_id(), path=folder)
+                self.experiments[experiment.id] = experiment
+        return experiment, [p for p in paths if p not in companions]
+
+    def _leave_experiment(self, entry: FileEntry) -> None:
+        experiment = self.experiments.get(entry.experiment_id) if entry.experiment_id else None
+        entry.experiment_id = None
+        if experiment is None:
+            return
+        experiment.file_ids = [f for f in experiment.file_ids if f != entry.id]
+        if not experiment.file_ids:
+            self.experiments.pop(experiment.id, None)
+
+    def _link_experiment(self, entry: FileEntry, experiment: Experiment) -> None:
+        """Link the EELS spectrum images of ``entry`` with those of the other
+        files of its experiment: a dual EELS pair (each names the other), or
+        else ones of the same scan (and DM spectrum imaging run when both say)."""
+        from .io.dm_experiment import dual_sibling_id, experiment_ids, unique_id
+        from .processing.eels import compatible, is_eels_si
+
+        def eels(file_id: str) -> list[Dataset]:
+            f = self.files.get(file_id)
+            ds = [self.datasets[d] for d in f.dataset_ids] if f else []
+            return [d for d in ds if d.origin == "file" and is_eels_si(d)]
+
+        def pairs(a: Dataset, b: Dataset) -> bool:
+            if not compatible(a, b):
+                return False
+            ia, ib = unique_id(a.signal), unique_id(b.signal)
+            if ia and ib and (dual_sibling_id(a.signal) == ib or dual_sibling_id(b.signal) == ia):
+                return True
+            ea, eb = set(experiment_ids(a.signal)), set(experiment_ids(b.signal))
+            return not (ea and eb) or bool(ea & eb)
+
+        mine = eels(entry.id)
+        others = [d for f in experiment.file_ids if f != entry.id for d in eels(f)]
+        for d in mine:
+            for o in others:
+                if d.eels_group is not None and d.eels_group == o.eels_group:
+                    continue
+                if pairs(d, o):
+                    try:
+                        self.set_eels_partner(d, o)
+                    except ValueError:
+                        pass  # e.g. two low losses: left for the user
 
     def open_example(self, example_id: str) -> FileEntry:
         """Open one of the bundled example datasets (see ``examples.py``)."""
@@ -332,6 +517,12 @@ class Session:
                 signal.metadata.General.title = (
                     path.stem if len(signals) == 1 else f"{path.stem} [{i}]"
                 )
+            # An in-situ series (far too big to load) is shown one frame at a
+            # time: its dataset holds the frame, as an ordinary spectrum image.
+            series = None
+            if is_insitu_series(signal):
+                series = InsituSeries(signal)
+                signal = series.placeholder()
             kind = classify(signal)
             is_map = _is_element_map(signal, kind)
             technique, source = detect_technique(signal)
@@ -346,6 +537,9 @@ class Session:
                     is_element_map=is_map,
                     element=signal.metadata.General.title if is_map else None,
                     technique_source=source,
+                    insitu=series,
+                    survey={"regions": survey_regions(signal)}
+                    if kind is DatasetKind.IMAGE and is_survey(signal) else None,
                 )
             )
         # Element maps stored by Velox are processed (quantified, often
@@ -526,10 +720,13 @@ class Session:
     def close_file(self, file_id: str) -> None:
         with self._lock:
             entry = self.files.pop(file_id)
+            self._leave_experiment(entry)
             for ds_id in entry.dataset_ids:
                 ds = self.datasets.get(ds_id)
                 if ds is not None:
                     self._leave(ds)
+                    if ds.insitu is not None:
+                        ds.insitu.close()
                 self.datasets.pop(ds_id, None)
 
     def get_dataset(self, dataset_id: str) -> Dataset:
@@ -663,13 +860,17 @@ class Session:
         m.window = {"lo": lo, "hi": hi, "units": units}
         return m
 
-    def _remake_window_maps(self, si: Dataset) -> None:
+    def _remake_window_maps(self, si: Dataset, keep_display: bool = False) -> None:
         """Recompute ``si``'s window maps after its data or processing changed
-        (a map whose window left the energy range is removed)."""
+        (a map whose window left the energy range is removed). ``keep_display``:
+        the maps keep their revision (and so their contrast), see
+        ``Dataset.refresh_data``."""
         for m in self.window_maps(si):
             signal = self._make_window_map(si, m.window["lo"], m.window["hi"], m.title)
             if signal is None:
                 self._remove(m)
+            elif keep_display:
+                m.refresh_data(signal)
             else:
                 m.replace_signal(signal)
 
@@ -732,11 +933,13 @@ class Session:
         from .processing.background import EnergyAxis, automatic_title
 
         signal, r = result
-        signal.metadata.General.title = automatic_title(options, EnergyAxis.of(signal))
+        # Made from one frame (or range) of an in-situ series: the title says which.
+        frame = None if src.insitu is None else src.insitu.view.label()
+        signal.metadata.General.title = automatic_title(options, EnergyAxis.of(signal)) + (f" ({frame})" if frame else "")
         ds = Dataset(
             id=_new_id(), file_id=src.file_id, signal=signal, kind=classify(signal),
             origin="background", parent_id=src.id, background=options.model_dump(),
-            technique_source="metadata",
+            technique_source="metadata", source_frame=frame,
         )
         with self._lock:
             self.datasets[ds.id] = ds
@@ -758,7 +961,13 @@ class Session:
         axis = EnergyAxis.of(signal)
         old = BackgroundOptions(**bg.background)
         automatic = {automatic_title(old, axis), f"{window_label(*old.signal, axis.units)}, bg removed"}
-        signal.metadata.General.title = automatic_title(options, axis) if bg.title in automatic else bg.title
+        if bg.source_frame:
+            automatic |= {f"{t} ({bg.source_frame})" for t in automatic}
+        src = self.datasets.get(bg.parent_id)
+        frame = None if src is None or src.insitu is None else src.insitu.view.label()
+        suffix = f" ({frame})" if frame else ""
+        signal.metadata.General.title = automatic_title(options, axis) + suffix if bg.title in automatic else bg.title
+        bg.source_frame = frame
         bg.replace_signal(signal)
         bg.background = options.model_dump()
         bg.rebinned = []
@@ -783,6 +992,103 @@ class Session:
                 self.rerun_background(bg)
             except ValueError:
                 self._remove_tree(bg)
+
+    # ---------- plural-scattering deconvolution (EELS) ----------
+
+    def deconvolution_low_loss(self, ds: Dataset) -> Dataset | None:
+        """The low loss ``ds`` is deconvolved with: its group's (itself if it
+        is one); for spectra made from another spectrum image (background
+        removed, deconvolved), the low loss of that one."""
+        seen = set()
+        with self._lock:
+            while ds.origin in ("background", "deconvolved") and ds.parent_id in self.datasets and ds.id not in seen:
+                seen.add(ds.id)
+                ds = self.datasets[ds.parent_id]
+        return self.low_loss_of(ds)
+
+    def deconvolution_inputs(self, ds: Dataset, options) -> Dataset:
+        """The low loss to deconvolve ``ds`` with by ``options``' method.
+        Raises ValueError (in plain English) when the method isn't for ``ds``."""
+        from .processing.eels import is_eels_si
+
+        if not is_eels_si(ds):
+            raise ValueError(f"{ds.title} is not an EELS spectrum image")
+        ll = self.deconvolution_low_loss(ds)
+        if ll is None:
+            raise ValueError("No low loss in its group")
+        if options.method == "fourier_log" and ds is not ll:
+            raise ValueError("Fourier-log is for the low loss")
+        if options.method == "fourier_ratio" and ds.origin != "background":
+            raise ValueError("Remove the background first")
+        if options.method == "richardson_lucy":
+            if ds.origin == "background":
+                raise ValueError("Richardson–Lucy is for spectra before background removal")
+            if options.psf == "low_loss" and ds is ll:
+                raise ValueError("The low loss can't be its own point-spread function: use its zero-loss peak")
+        return ll
+
+    def compute_deconvolution(self, ds: Dataset, options, report=lambda f, m=None: None):
+        """``ds``'s spectra deconvolved (see ``processing.deconvolution``).
+        Nothing is added to the session. Raises ValueError if they can't be."""
+        from .processing.deconvolution import deconvolve
+
+        ll = self.deconvolution_inputs(ds, options)
+        ds.materialise()
+        ll.materialise()
+        return deconvolve(ds.signal, ll.signal, options, report)
+
+    def deconvolved_sis(self, src: Dataset) -> list[Dataset]:
+        """The deconvolved spectra made from ``src``."""
+        with self._lock:
+            return [d for d in self.siblings(src) if d.origin == "deconvolved" and d.parent_id == src.id]
+
+    @staticmethod
+    def _deconvolved_title(src_title: str, options, frame: str | None) -> str:
+        from .processing.deconvolution import METHOD_NAMES
+
+        return f"{src_title} ({METHOD_NAMES[options.method]})" + (f" ({frame})" if frame else "")
+
+    def add_deconvolved(self, src: Dataset, options, signal) -> Dataset:
+        """Add ``signal`` (from ``compute_deconvolution``) as a spectrum image
+        under ``src``. It is made once: later changes to ``src`` leave it as
+        it is (re-run it to update)."""
+        frame = None if src.insitu is None else src.insitu.view.label()
+        signal.metadata.General.title = self._deconvolved_title(src.title, options, frame)
+        ll = self.deconvolution_low_loss(src)
+        ds = Dataset(
+            id=_new_id(), file_id=src.file_id, signal=signal, kind=classify(signal),
+            origin="deconvolved", parent_id=src.id,
+            deconvolution={**options.model_dump(), "low_loss_id": ll.id if ll else None},
+            technique_source="metadata", source_frame=frame,
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            self.files[src.file_id].dataset_ids.append(ds.id)
+        self._set_role(ds)
+        return ds
+
+    def replace_deconvolved(self, dd: Dataset, options, signal) -> Dataset:
+        """Replace a deconvolved dataset's data with ``signal`` made with new
+        ``options``: same dataset, new revision. An automatic title follows
+        the method."""
+        from .processing.deconvolution import DeconvolutionOptions
+
+        if dd.origin != "deconvolved" or dd.deconvolution is None:
+            raise ValueError(f"{dd.title} is not a deconvolved spectrum image")
+        src = self.datasets.get(dd.parent_id)
+        old = DeconvolutionOptions(**{k: v for k, v in dd.deconvolution.items() if k != "low_loss_id"})
+        frame = None if src is None or src.insitu is None else src.insitu.view.label()
+        automatic = src is not None and dd.title == self._deconvolved_title(src.title, old, dd.source_frame)
+        signal.metadata.General.title = (
+            self._deconvolved_title(src.title, options, frame) if automatic else dd.title
+        )
+        ll = None if src is None else self.deconvolution_low_loss(src)
+        dd.source_frame = frame
+        dd.replace_signal(signal)
+        dd.deconvolution = {**options.model_dump(), "low_loss_id": ll.id if ll else None}
+        dd.rebinned = []
+        self._remake_window_maps(dd)
+        return dd
 
     # ---------- thickness of a low loss (EELS) ----------
 
@@ -903,6 +1209,9 @@ class Session:
         if not is_eels_si(ll) or ll.eels_role != "low_loss":
             raise ValueError(f"{ll.title} is not an EELS low loss")
         datasets = [ll, *self.zlp_followers(ll)]
+        for d in datasets:
+            if d.insitu is not None:
+                raise ValueError(f"{d.title} is a frame of an in-situ series and can't be aligned: the next frame would undo it")
         for d in datasets:
             d.materialise()
         originals = [d.signal for d in datasets]
@@ -1037,7 +1346,8 @@ class Session:
 
     def delete_dataset(self, dataset: Dataset) -> None:
         """Delete an element map, a window map, a thickness or a
-        background-removed spectrum image (with everything made from it).
+        background-removed or deconvolved spectrum image (with everything made
+        from it).
 
         Deleting an element map also unticks its element in the map's spectrum image and in the
         file's other (non-image) EDS spectra, which removes that element's
@@ -1048,7 +1358,7 @@ class Session:
         if dataset.origin in ("window", "thickness", "zlp-shift"):
             self._remove(dataset)  # no element to untick
             return
-        if dataset.origin in ("background", "background-r"):
+        if dataset.origin in ("background", "background-r", "deconvolved"):
             self._remove_tree(dataset)
             return
         if not dataset.is_element_map:
@@ -1105,6 +1415,9 @@ class Session:
             raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images can (with their whole scan)")
         if si.is_line_scan:
             raise NotRebinnable(f"{si.title} is a line scan and can't be rebinned: rebinning needs a 2D scan")
+        for d in (si, *(self.linked_of(si) if with_linked else [])):
+            if d.insitu is not None:
+                raise NotRebinnable(f"{d.title} is a frame of an in-situ series and can't be rebinned: the next frame would undo it")
         am = si.signal.axes_manager
         axes = list(am._axes)
         if len(factors) != len(axes):
@@ -1191,7 +1504,11 @@ class Session:
         """
         from .processing.filters import Filters, check_applicable
 
-        if dataset.origin != "background" and dataset.parent_id is not None and dataset.parent_id in self.datasets:
+        if (
+            dataset.origin not in ("background", "deconvolved")
+            and dataset.parent_id is not None
+            and dataset.parent_id in self.datasets
+        ):
             parent = self.datasets[dataset.parent_id]
             raise ValueError(
                 f"{dataset.title} follows the processing of {parent.title}: filter the spectrum image instead"
@@ -1221,10 +1538,60 @@ class Session:
                 notes.append("Fitted maps were removed: fit every pixel again to fit the processed data")
         for other in self.linked_of(dataset) if with_linked else []:
             theirs = other.filter_spec
-            if (theirs.spatial, theirs.sigma, theirs.size) != (new.spatial, new.sigma, new.size):
-                same_spatial = {**theirs.model_dump(), "spatial": new.spatial, "sigma": new.sigma, "size": new.size}
+            if theirs.spatial_params() != new.spatial_params():
+                same_spatial = {**theirs.model_dump(), **new.spatial_params()}
                 notes += self.set_filters(other, same_spatial, with_linked=False)
         return notes
+
+    # ---------- in-situ series: the frame (or frame range) a dataset holds ----------
+
+    @staticmethod
+    def insitu_series(ds: Dataset) -> InsituSeries:
+        if ds.insitu is None:
+            raise ValueError(f"{ds.title} is not an in-situ series")
+        return ds.insitu
+
+    def show_insitu_frame(self, ds: Dataset, k: int) -> Dataset:
+        """Make ``ds`` hold frame ``k`` (0-based; one frame is read, or taken
+        from the cache) and read its neighbours ahead. Raises IndexError for a
+        frame outside the series."""
+        series = self.insitu_series(ds)
+        data = series.read(k)
+        self._set_insitu_view(ds, data, ViewState("frame", k, k))
+        series.schedule_ahead(k)
+        return ds
+
+    def apply_insitu_range(self, ds: Dataset, data: np.ndarray, mode: str, start: int, end: int) -> Dataset:
+        """Make ``ds`` hold ``data``, the mean or sum of frames ``start``…``end``
+        (from ``InsituSeries.reduce``)."""
+        series = self.insitu_series(ds)
+        self._set_insitu_view(ds, data, ViewState(mode if start != end else "frame", start, end))
+        if start == end:
+            series.schedule_ahead(start)
+        else:
+            series.cancel_ahead()
+        return ds
+
+    def _set_insitu_view(self, ds: Dataset, data: np.ndarray, state: ViewState) -> None:
+        """Swap ``data`` into ``ds`` (same dataset, same revision: the filters,
+        windows, cursor and contrast stay) and remake what follows the data:
+        energy-window maps and computed element maps. Results that are
+        snapshots of a frame (background removal, thickness, ZLP shift) are
+        kept as they are made; fits are removed."""
+        series = self.insitu_series(ds)
+        with ds._load_lock:
+            ds.refresh_data(series.fresh_signal(ds.signal, data))
+            series.view = state
+        if ds.kind is DatasetKind.SPECTRUM_IMAGE and not ds.is_line_scan:
+            for m in self.computed_maps(ds):
+                new_map = self._make_map(ds, m.element)
+                if new_map is None:
+                    self._remove(m)
+                else:
+                    m.refresh_data(new_map)
+            self._remake_window_maps(ds, keep_display=True)
+            for f in self._fit_maps(ds):
+                self._remove(f)  # made from another frame: fit again to update
 
     # ---------- drift correction of stacks ----------
 
@@ -1237,7 +1604,7 @@ class Session:
         derived arrays are remade."""
         ds.filter_rev += 1
         ds.thumbnails.clear()
-        ds.cache.clear()
+        ds.cache = {}
 
     def apply_alignment(self, stack: Dataset, applied: dict) -> Dataset:
         """Store a drift correction with ``stack`` and show it: its frames

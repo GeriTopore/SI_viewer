@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..insitu_series import ADF_SOURCE_ID, adf_stack
 from ..session import Dataset, DatasetKind, si_cube
 from .filters import filter_image, filter_spectrum
 
@@ -103,32 +104,48 @@ def navigator_sources(si: Dataset, siblings: list[Dataset]) -> list[dict]:
     """Images that can be shown as the navigator of a spectrum image.
 
     The companion ADF image comes first, then the total-counts map, then other
-    images of the same scan shape (e.g. Velox element maps).
+    images of the same scan shape (e.g. Velox element maps). An image sampling
+    the same field of view k times more finely (a Gatan "sub-scan" ADF) is
+    offered at its own resolution.
+
+    Each source is ``{"id", "label", "factor", "dataset_id"}``: ``factor`` is
+    k (1: the scan's own grid) and ``dataset_id`` the image dataset (its
+    calibration is the navigator's); the series' simultaneous ADF is
+    ``insitu-adf`` with the ADF stack as ``dataset_id``.
     """
+    from ..subscan import scan_factor_of
     from ..thumbnails import si_companion_image
 
     if si.kind is not DatasetKind.SPECTRUM_IMAGE:
         raise NotApplicable("Only spectrum images have navigators")
     if si.is_line_scan:
-        return [{"id": si.id, "label": "Line scan"}]
-    shape = tuple(si.signal.axes_manager.navigation_shape)
+        return [{"id": si.id, "label": "Line scan", "factor": 1, "dataset_id": si.id}]
     companion = si_companion_image(si, siblings)
-    others = [
-        d
-        for d in siblings
-        if d.kind is DatasetKind.IMAGE
-        and d is not companion
-        and tuple(d.signal.axes_manager.signal_shape) == shape
-    ]
+    others = []
+    for d in siblings:
+        if d.kind is DatasetKind.IMAGE and d is not companion:
+            k = scan_factor_of(si, d)
+            if k is not None:
+                others.append((d, k))
     sources = []
+    if si.insitu is not None:
+        # The simultaneous ADF of the frame (or range) the dataset holds.
+        found = adf_stack(si, siblings)
+        if found is not None:
+            adf, k = found
+            sources.append({"id": ADF_SOURCE_ID, "label": adf.title, "factor": k, "dataset_id": adf.id})
     if companion is not None:
-        sources.append({"id": companion.id, "label": companion.title})
-    sources.append({"id": si.id, "label": "Total counts"})
-    sources.extend({"id": d.id, "label": d.title} for d in others)
+        k = scan_factor_of(si, companion)
+        sources.append({"id": companion.id, "label": companion.title, "factor": k, "dataset_id": companion.id})
+    sources.append({"id": si.id, "label": "Total counts", "factor": 1, "dataset_id": si.id})
+    sources.extend({"id": d.id, "label": d.title, "factor": k, "dataset_id": d.id} for d, k in others)
     return sources
 
 
 def _cached(ds: Dataset, key: str, compute):
-    if key not in ds.cache:
-        ds.cache[key] = compute()
-    return ds.cache[key]
+    # ``ds.cache`` is replaced (not cleared) when the data changes: a result
+    # computed from the old data lands in the old dict and is never seen again.
+    cache = ds.cache
+    if key not in cache:
+        cache[key] = compute()
+    return cache[key]

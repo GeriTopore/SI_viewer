@@ -50,8 +50,8 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
       ["G", "Several images: merged or a grid of panels"],
       ["⌘/Ctrl S", "Save the image as shown as PNG"],
       ["Space + drag", "Pan with any tool (or middle-drag)"],
-      ["← / →", "Previous / next frame of a stack"],
-      ["Home / End", "First / last frame of a stack"],
+      ["← / →", "Previous / next frame of a stack or in-situ series (⇧: ten; in-situ: ⌥← / ⌥→ nudge the cursor)"],
+      ["Home / End", "First / last frame of a stack or in-situ series"],
     ],
   },
   {

@@ -1,5 +1,6 @@
 import type { DatasetSummary } from "../api/client";
-import { useDatasets } from "../state/datasets";
+import { allDatasets, useDatasets } from "../state/datasets";
+import { isInsituView } from "../format";
 import { lowLossOf, useZlp, useZlpOptions } from "../state/zlp";
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -17,6 +18,9 @@ export function ZlpSection({ d }: { d: DatasetSummary }) {
 
   const running = !!job && ACTIVE.has(job.status);
   const locked = !ll || running;
+  // A frame of an in-situ series would lose the alignment with the next frame.
+  const byId = new Map(allDatasets(files).map((x) => [x.id, x]));
+  const inSitu = !!ll && [ll, ...(ll.eels?.linked ?? []).map((id) => byId.get(id))].some((x) => x && isInsituView(x));
 
   return (
     <section className="q-form">
@@ -58,7 +62,12 @@ export function ZlpSection({ d }: { d: DatasetSummary }) {
           </div>
         </div>
       ) : (
-        <button className="primary" disabled={!ll} onClick={() => ll && run(ll)}>
+        <button
+          className="primary"
+          disabled={!ll || inSitu}
+          onClick={() => ll && run(ll)}
+          title={inSitu ? "Not for in-situ frames: the next frame would undo it" : undefined}
+        >
           Align
         </button>
       )}

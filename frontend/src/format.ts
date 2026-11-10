@@ -1,4 +1,4 @@
-import type { DatasetKind, DatasetSummary, Filters } from "./api/client";
+import type { DatasetKind, DatasetSummary, Filters, InsituInfo } from "./api/client";
 
 export const KIND_LABEL: Record<DatasetKind, string> = {
   image: "Image",
@@ -7,6 +7,27 @@ export const KIND_LABEL: Record<DatasetKind, string> = {
   spectrum_image: "SI",
   other: "Data",
 };
+
+/** The spectrum image of an in-situ series: it holds one frame, or a reduction of a frame range. */
+export const isInsituView = (d: DatasetSummary) => !!d.insitu?.view;
+
+/** e.g. "128.4 s". */
+export const frameTime = (t: number) => `${t.toFixed(1)} s`;
+
+/** What an in-situ series' spectrum image holds, e.g. "frame 37 · 128.4 s" or
+ * "mean of frames 5–20 · 74.0–220.3 s" (frames counted from 1). */
+export function insituViewLabel(info: InsituInfo): string {
+  const v = info.view;
+  if (!v) return "";
+  const times = info.frame_times_s ?? [];
+  if (v.mode === "frame" || v.start === v.end) {
+    return `frame ${v.start + 1}${times[v.start] !== undefined ? ` · ${frameTime(times[v.start])}` : ""}`;
+  }
+  const span = times[v.start] !== undefined && times[v.end] !== undefined
+    ? ` · ${times[v.start].toFixed(1)}–${frameTime(times[v.end])}`
+    : "";
+  return `${v.mode} of frames ${v.start + 1}–${v.end + 1}${span}`;
+}
 
 /** A spectrum image with a single navigation axis (positions × energy). */
 export const isLineScan = (d: DatasetSummary) => d.kind === "spectrum_image" && d.navigation_shape.length === 1;
@@ -21,6 +42,9 @@ export const isWindowMap = (d: DatasetSummary) => d.origin === "window";
 /** A spectrum image made by background removal. */
 export const isBackgroundRemoved = (d: DatasetSummary) => d.origin === "background";
 
+/** EELS spectra with plural scattering removed (or sharpened). */
+export const isDeconvolved = (d: DatasetSummary) => d.origin === "deconvolved";
+
 /** The thickness of a low loss (a map, or a profile along a line scan). */
 export const isThickness = (d: DatasetSummary) => d.origin === "thickness";
 
@@ -30,12 +54,15 @@ export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
 export function kindLabel(d: DatasetSummary): string {
   if (isWindowMap(d)) return "Window";
   if (isBackgroundRemoved(d)) return "BG sub";
+  if (isDeconvolved(d)) return "Deconv";
   if (isThickness(d)) return d.thickness?.output === "absolute" ? "nm" : "t/λ";
   if (isZlpShift(d)) return "eV";
+  if (d.survey) return "Survey";
   if (d.origin === "composition") return "at%";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.
   const role = d.eels ? (d.eels.role === "low_loss" ? "LL" : "HL") : null;
+  if (isInsituView(d)) return `IS ${role ?? t ?? "SI"}`;
   if (isLineScan(d)) return role ? `${role} line` : t ? `${t} line` : "Line";
   if (t) return d.kind === "spectrum" ? t : role ? `${t} ${role}` : `${t} SI`;
   return d.is_element_map ? "Map" : KIND_LABEL[d.kind];
@@ -46,7 +73,11 @@ export function kindName(d: DatasetSummary): string {
   const t = hasTechnique(d) && d.technique ? `${d.technique} ` : "";
   const name = isLineScan(d)
     ? "line scan"
-    : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", other: "data" } as const)[d.kind];
+    : isInsituView(d)
+      ? "in-situ spectrum image"
+      : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", other: "data" } as const)[
+          d.kind
+        ];
   return t ? t + name : name[0].toUpperCase() + name.slice(1);
 }
 
@@ -74,6 +105,18 @@ export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string 
       : "background removed";
     return `${base}\nBackground removed${parentTitle ? ` from ${parentTitle}` : ""}: ${what}`;
   }
+  if (isDeconvolved(d)) {
+    const c = d.deconvolution;
+    const how = !c
+      ? ""
+      : c.method === "fourier_log"
+        ? "Fourier-log"
+        : c.method === "fourier_ratio"
+          ? "Fourier-ratio"
+          : `Richardson–Lucy (${c.psf === "low_loss" ? "low loss" : "zero-loss peak"}, ${c.iterations} iterations)`;
+    return `${base}
+Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`;
+  }
   if (isThickness(d)) {
     const t = d.thickness;
     const threshold = !t ? "" : t.threshold === "auto" ? "threshold estimated" : `threshold ${formatValue(t.threshold)} ${t.units}`;
@@ -90,6 +133,7 @@ export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string 
   if (d.alignment?.active) {
     return `${base}\nDrift-corrected: ${d.alignment.frames.length} of ${d.alignment.loaded_frames} frames, cropped`;
   }
+  if (d.insitu?.view) return `${base}\nIn-situ series, showing ${insituViewLabel(d.insitu)}`;
   return base;
 }
 
@@ -111,6 +155,7 @@ export function filterLabel(f: Filters | undefined): string {
   if (f.spatial === "gaussian") parts.push(`Gaussian σ ${f.sigma} px`);
   else if (f.spatial === "median" || f.spatial === "mean")
     parts.push(`${f.spatial === "median" ? "Median" : "Mean"} ${f.size}×${f.size} px`);
+  else if (f.spatial === "bandpass") parts.push(`Bandpass ${f.small}–${f.large} px`);
   if (f.spectral === "gaussian") parts.push(`spectral Gaussian σ ${f.spectral_sigma} ch`);
   else if (f.spectral === "savgol") parts.push(`Savitzky–Golay ${f.window} ch, order ${f.order}`);
   return parts.join("; ");
@@ -118,6 +163,11 @@ export function filterLabel(f: Filters | undefined): string {
 
 /** Shape as HyperSpy prints it: navigation | signal. */
 export function shapeLabel(d: DatasetSummary): string {
+  // In-situ series: frames × frame (x×y) | channels, short for the dataset list, e.g. "208×100×100|3456".
+  if (d.insitu?.view) {
+    const [h, w] = d.insitu.frame_shape;
+    return `${d.insitu.frames}×${w}×${h}|${d.signal_shape.join("×")}`;
+  }
   const nav = d.navigation_shape.join("×");
   const sig = d.signal_shape.join("×");
   return nav ? `${nav} | ${sig}` : sig;
@@ -142,17 +192,21 @@ export function niceScaleBar(unitsPerPixel: number, units: string) {
   const pow = 10 ** Math.floor(Math.log10(target));
   const nice = [5, 2, 1].map((m) => m * pow).find((v) => v <= target) ?? pow;
   const pixels = nice / unitsPerPixel;
+  return { pixels, length: nice, label: scaleBarLabel(nice, units) };
+}
 
-  // Re-express lengths in the most readable unit (e.g. 2000 nm → 2 µm).
-  let value = nice;
+/** The label of a scale bar ``length`` long in ``units``, re-expressed in the
+ * most readable unit (e.g. 2000 nm → "2 µm"). */
+export function scaleBarLabel(length: number, units: string): string {
+  let value = length;
   let unit = units || "px";
   const factor = LENGTH_UNITS[units];
   if (factor !== undefined) {
-    const nm = nice * factor;
+    const nm = length * factor;
     unit = LENGTH_LADDER.reduce((best, u) => (nm >= LENGTH_UNITS[u] ? u : best), "pm");
     value = nm / LENGTH_UNITS[unit];
   }
-  return { pixels, label: `${Number(value.toPrecision(3))} ${unit}` };
+  return `${Number(value.toPrecision(3))} ${unit}`;
 }
 
 export function bytesLabel(n: number): string {

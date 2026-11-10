@@ -1,9 +1,9 @@
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { downloadBlob, safeFileName } from "../download";
+import { safeFileName } from "../download";
 import { useDisplay } from "../state/display";
-import { useLayers } from "../state/layers";
 import { isColour } from "../viewer/colormaps";
-import { gridPng } from "../viewer/snapshot";
+import type { SnapshotPanel } from "../viewer/snapshot";
+import { PngExportDialog } from "./PngExportDialog";
 import { ImageView, type AxisCal, type Interaction, type Transform, type ViewControls, type ViewLayer } from "./ImageView";
 
 /** One image of the grid: its layer, size and calibration, and the key under
@@ -32,6 +32,11 @@ interface Props {
    * panels that can't be removed. */
   onRemove?: (key: string) => (() => void) | null;
   empty?: string | null;
+  /** Panels over a navigator k times finer than the scan show the
+   * spectrum-image pixel under the pointer too. */
+  scanFactor?: number;
+  /** Key of the FFT boxes drawn on the panels (published with the image). */
+  fftView?: string;
 }
 
 const GAP = 6;
@@ -64,7 +69,9 @@ export function bestColumns(aspects: number[], w: number, h: number): number {
 
 /** One panel per image, in a grid; panels of the same pixel size share
  * pan and zoom. Clicking a panel makes it the one being edited. */
-export function ViewerGrid({ panels, active, onActivate, interaction, renderOverlay, onRemove, empty }: Props) {
+export function ViewerGrid({
+  panels, active, onActivate, interaction, renderOverlay, onRemove, empty, scanFactor, fftView,
+}: Props) {
   const areaRef = useRef<HTMLDivElement>(null);
   const [area, setArea] = useState({ w: 0, h: 0 });
   useLayoutEffect(() => {
@@ -99,23 +106,23 @@ export function ViewerGrid({ panels, active, onActivate, interaction, renderOver
   const first = panels[0];
   const zoom = useDisplay((s) => (first ? s.views[first.viewKey]?.zoom : undefined));
 
+  // The export dialog, opened on the panels shown at that moment.
+  const [exporting, setExporting] = useState<{ panels: SnapshotPanel[]; cols: number; name: string } | null>(null);
   const saveImage = () => {
     const shown = panels.filter((p) => p.layer.frame && p.layer.display);
     if (!shown.length) return;
-    const name = `${safeFileName(shown.map((p) => p.layer.label).join("+"))}.png`;
-    gridPng(
-      shown.map((p) => ({
+    setExporting({
+      name: `${safeFileName(shown.map((p) => p.layer.label).join("+"))}.png`,
+      cols: Math.min(cols, shown.length),
+      panels: shown.map((p) => ({
         label: p.layer.label,
         colour: isColour(p.layer.display!.colormap) ? p.layer.display!.colormap : undefined,
-        layer: { key: p.layer.key, frame: p.layer.frame!, display: p.layer.display!, opacity: 1 },
+        layers: [{ key: p.layer.key, frame: p.layer.frame!, display: p.layer.display!, opacity: 1 }],
         width: p.width,
         height: p.height,
         calX: p.calX,
       })),
-      Math.min(cols, shown.length),
-    )
-      .then((blob) => downloadBlob(blob, name))
-      .catch((e) => useLayers.getState().notify(`Could not save the image: ${(e as Error).message}`));
+    });
   };
   const save = useRef(saveImage);
   save.current = saveImage;
@@ -141,6 +148,8 @@ export function ViewerGrid({ panels, active, onActivate, interaction, renderOver
               controlRef={controlRef(p.viewKey)}
               onSave={onSave}
               onRemove={onRemove?.(p.layer.key) ?? null}
+              scanFactor={scanFactor}
+              fftView={fftView}
             />
           ))}
           {!panels.length && empty && <div className="image-message">{empty}</div>}
@@ -168,12 +177,21 @@ export function ViewerGrid({ panels, active, onActivate, interaction, renderOver
           </button>
         </span>
       </div>
+      {exporting && (
+        <PngExportDialog
+          panels={exporting.panels}
+          cols={exporting.cols}
+          grid
+          name={exporting.name}
+          onClose={() => setExporting(null)}
+        />
+      )}
     </div>
   );
 }
 
 function GridCell({
-  p, active, first, onActivate, interaction, renderOverlay, controlRef, onSave, onRemove,
+  p, active, first, onActivate, interaction, renderOverlay, controlRef, onSave, onRemove, scanFactor, fftView,
 }: {
   p: GridPanel;
   active: boolean;
@@ -184,6 +202,8 @@ function GridCell({
   controlRef: { current: ViewControls | null };
   onSave: () => void;
   onRemove: (() => void) | null;
+  scanFactor?: number;
+  fftView?: string;
 }) {
   const { layer } = p;
   const layers = useMemo(
@@ -207,9 +227,11 @@ function GridCell({
         renderOverlay={renderOverlay && ((t) => renderOverlay(t, p))}
         analysisKey={layer.key}
         publish={active}
+        fftView={fftView}
         scaleBar={first}
         readout={false}
         hoverChip
+        scanFactor={scanFactor}
         onSave={onSave}
         controlRef={controlRef}
       >

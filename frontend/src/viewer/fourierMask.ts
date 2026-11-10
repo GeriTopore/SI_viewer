@@ -52,6 +52,25 @@ export function maskCutoff(mask: MaskSettings): { r1: number; r2: number; angle:
   return { r1: 1 / (2 * mask.n), r2: 1 / (2 * mask.n2), angle };
 }
 
+/** A bandpass spatial filter: structures smaller / larger than these (px) are removed. */
+export interface Bandpass {
+  small: number;
+  large: number;
+}
+
+// The backend's constants (processing/filters.py): a period of ``small``
+// (``large``) px is at half power of the low-pass (high-pass) part.
+const C_LOW = 0.5 * Math.LN2;
+const C_HIGH = -Math.log(1 - Math.SQRT1_2);
+
+/** The bandpass's transfer function at ``f`` cycles per pixel (1 at zero, so
+ * the mean level is kept). */
+export function bandpassValue({ small, large }: Bandpass, f: number): number {
+  if (f === 0) return 1;
+  const f2 = f * f;
+  return Math.exp(-C_LOW * small * small * f2) * -Math.expm1(-C_HIGH * large * large * f2);
+}
+
 /** e.g. "hann, n = 6" or "elliptical, n1 = 12, n2 = 9.106, θ = 81.4°". */
 export function maskLabel(mask: MaskSettings): string {
   if (mask.type === "elliptical") {

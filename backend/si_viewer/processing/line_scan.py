@@ -1,7 +1,9 @@
 """A line scan cut from a spectrum image along a line (a line profile), at
 any angle: positions about one pixel apart along the line, each the mean of
 the spectra across the line's width, sampled as the viewer samples a
-profile (frontend ``viewer/profile.ts``)."""
+profile (frontend ``viewer/profile.ts``). And a time scan of an in-situ
+series: a line scan whose rows are the frames, each the mean spectrum of the
+same pixels (a block at the cursor, or a region) in that frame."""
 
 from __future__ import annotations
 
@@ -88,5 +90,27 @@ def line_scan_signal(signal, line: LineSpec, title: str):
     out = type(signal)(data, axes=[distance, energy], metadata=metadata)
     out.metadata.set_item(
         "Processing.si_viewer.line_scan", {**line.model_dump(), "positions": len(data)},
+    )
+    return out
+
+
+def time_scan_signal(signal, spectra: np.ndarray, times: np.ndarray, title: str, source: dict):
+    """A line scan of ``spectra`` (frames, channels) on the energy axis of the
+    spectrum image ``signal`` (one frame of the series), with a "Time" axis
+    from the first frame's time in steps of the median frame interval (the
+    frame times themselves are kept in the metadata, with ``source``: what
+    was averaged)."""
+    times = np.asarray(times, dtype=float)
+    step = float(np.median(np.diff(times))) if len(times) > 1 else 1.0
+    time = {
+        "name": "Time", "units": "s", "scale": step if step > 0 else 1.0, "offset": float(times[0]),
+        "size": len(spectra), "navigate": True,
+    }
+    energy = signal.axes_manager.signal_axes[0].get_axis_dictionary()
+    metadata = signal.metadata.deepcopy().as_dictionary()
+    metadata.setdefault("General", {})["title"] = title
+    out = type(signal)(np.asarray(spectra, np.float32), axes=[time, energy], metadata=metadata)
+    out.metadata.set_item(
+        "Processing.si_viewer.time_scan", {**source, "frame_times_s": [float(v) for v in times]},
     )
     return out

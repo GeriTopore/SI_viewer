@@ -14,6 +14,9 @@ router = APIRouter(tags=["zlp"])
 
 class ZlpBody(BaseModel):
     options: ZlpOptions = ZlpOptions()
+    # False: the aligned spectra become new datasets under their sources
+    # (linked as they are); the sources are left as they are.
+    in_place: bool = True
 
 
 @router.post("/api/datasets/{dataset_id}/zlp-alignment")
@@ -47,13 +50,14 @@ def post_zlp_alignment(dataset_id: str, body: ZlpBody, request: Request) -> dict
             ll, options, lambda f, m=None: job.report(0.02 + 0.93 * f, m)
         )
         job.report(0.96, "Remaking what was made from them")  # last chance to cancel
-        shift_map = session.apply_zlp_alignment(datasets, originals, result, options)
-        files = dict.fromkeys(d.file_id for d in datasets if d.file_id != ll.file_id)
+        shift_map = session.apply_zlp_alignment(datasets, originals, result, options, body.in_place)
+        aligned = datasets if body.in_place else [session.get_dataset(shift_map.parent_id), *session.linked_of(session.get_dataset(shift_map.parent_id))]
+        files = dict.fromkeys(d.file_id for d in aligned if d.file_id != ll.file_id)
         return {
             "file": session.file_of(ll).summary(session),
             "partner_files": [session.files[f].summary(session) for f in files],
             "dataset_id": shift_map.id,
-            "aligned": [d.id for d in datasets],
+            "aligned": [d.id for d in aligned],
             "shift": result.mean_shift,
         }
 

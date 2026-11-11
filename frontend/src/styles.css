@@ -485,7 +485,10 @@ button.primary:disabled {
 
 .badge {
   display: inline-block;
-  min-width: 52px;
+  /* As wide as the longest label ("LineScan"), so titles line up; never narrower than its text. */
+  width: max-content;
+  min-width: 58px;
+  white-space: nowrap;
   text-align: center;
   font-size: 10px;
   font-weight: 600;
@@ -2960,6 +2963,10 @@ button.primary.danger {
   border: 1px solid var(--border);
 }
 
+.rebin-in-place {
+  margin: 8px 0 4px;
+}
+
 .rebin-warning {
   margin-top: 12px;
   padding: 8px 10px;
@@ -3814,6 +3821,96 @@ button.primary.danger {
   font-size: 12px;
 }
 
+/* Exploded view: the colour scale from the first row (blue) to the last (red) */
+.exploded-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.plot3d {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.plot3d-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.exploded-scale {
+  position: relative;
+}
+
+.exploded-bar {
+  display: inline-block;
+  width: 56px;
+  height: 10px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.exploded-bar:hover {
+  border-color: var(--accent);
+}
+
+/* The colour maps, under the colour bar */
+.cmap-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.cmap-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cmap-menu button:hover,
+.cmap-menu button.active {
+  background: var(--hover);
+}
+
+.cmap-menu i {
+  display: inline-block;
+  width: 64px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.exploded-panel .profile-width input[type="range"] {
+  width: 90px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 .profile-spacer {
   flex: 1;
 }
@@ -4602,6 +4699,45 @@ kbd {
   touch-action: none;
   user-select: none;
   outline: none;
+}
+
+/* Lines and windows on the energy axis, from the exploded view */
+.linescan-emark,
+.linescan-ewindow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+
+/* Each in its own colour (as in the exploded view); the selected one bolder. */
+.linescan-emark {
+  margin-left: -1px;
+  border-left: 2px dashed var(--mark-color);
+}
+
+.linescan-ewindow {
+  border-left: 2px solid var(--mark-color);
+  border-right: 2px solid var(--mark-color);
+  background: color-mix(in srgb, var(--mark-color) 15%, transparent);
+}
+
+.linescan-emark.selected {
+  margin-left: -2px;
+  border-left-width: 4px;
+}
+
+.linescan-ewindow.selected {
+  border-left-width: 4px;
+  border-right-width: 4px;
+  background: color-mix(in srgb, var(--mark-color) 28%, transparent);
+}
+
+.linescan-zoom-box {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: rgba(76, 141, 255, 0.12);
+  pointer-events: none;
 }
 
 .linescan-wrap:focus-visible {

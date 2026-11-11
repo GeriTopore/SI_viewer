@@ -45,6 +45,15 @@ const ICONS: Record<string, () => ReactNode> = {
       <path d="M13 13L27 27M27 20V27H20" />
     </>
   ),
+  // Drifted frames brought onto one and added up.
+  "aligned-sum": () => (
+    <>
+      <rect x="4" y="4" width="18" height="18" rx="2" strokeDasharray="3 3" />
+      <rect x="9" y="9" width="18" height="18" rx="2" strokeDasharray="3 3" />
+      <rect x="22" y="22" width="20" height="20" rx="2" stroke={ACCENT} />
+      <path d="M37 27H28L33 32L28 37H37" stroke={ACCENT} />
+    </>
+  ),
   // A fine grid summed into a coarser one.
   rebin: () => (
     <>

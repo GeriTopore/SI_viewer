@@ -296,6 +296,27 @@ class InsituSeries:
             total /= count
         return total.astype(np.float32)
 
+    def read_recorded(self, j: int) -> np.ndarray:
+        """Recorded frame ``j`` (0 … n_raw - 1, not binned in time) binned in
+        y, x and E as the series is; not cached."""
+        if not 0 <= j < self.n_raw:
+            raise IndexError(f"Recorded frame {j + 1} out of range 1–{self.n_raw}")
+        raw = self._read_raw(j)
+        return raw if self.binning[1:] == (1, 1, 1) else self._binned([raw])
+
+    def spectra_over_time(
+        self, pick: Callable[[np.ndarray], np.ndarray], report: Callable[..., None] = lambda f, m=None: None
+    ) -> np.ndarray:
+        """``pick(frame)`` (a spectrum of the frame (y, x, E)) for every frame,
+        as float32 (frames, E). Reads every frame (the cached ones are not read
+        again; the others are not added to the cache) and reports progress as
+        :meth:`reduce` does."""
+        out = np.empty((self.n, self.frame_shape[-1]), np.float32)
+        for k in range(self.n):
+            report(k / self.n, f"Frame {k + 1} of {self.n}")
+            out[k] = pick(self.read(k, keep=False))
+        return out
+
     # ---------- summaries ----------
 
     def summary(self) -> dict:

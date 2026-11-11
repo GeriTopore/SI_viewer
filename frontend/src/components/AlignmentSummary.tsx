@@ -1,5 +1,5 @@
 import type { AppliedAlignment, DatasetSummary } from "../api/client";
-import { alignmentShiftsUrl } from "../api/client";
+import { alignmentNpyUrl, alignmentShiftsUrl } from "../api/client";
 import { downloadUrl } from "../download";
 import { formatValue } from "../format";
 import { maskLabel } from "../viewer/fourierMask";
@@ -58,6 +58,12 @@ export function AlignmentSummary({ ds, calX }: { ds: DatasetSummary; calX: AxisC
       <div className="align-save">
         <span className="muted small">Save</span>
         <button onClick={() => downloadUrl(alignmentShiftsUrl(ds.id))}>Shifts (CSV)</button>
+        <button
+          onClick={() => downloadUrl(alignmentNpyUrl(ds.id))}
+          title="(frames, 2): the x and y shift that aligns each frame, in this stack's pixels; NaN for frames left out"
+        >
+          Shifts (.npy)
+        </button>
       </div>
     </div>
   );

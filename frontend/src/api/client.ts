@@ -143,7 +143,7 @@ export interface DatasetSummary {
    * background); "fitted": from fitting every pixel. */
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
-    | "thickness" | "zlp-shift" | "deconvolved" | "line-scan";
+    | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -288,6 +288,9 @@ export interface BackgroundInfo extends BackgroundOptions {
 /** Fitted backgrounds of some spectra: per spectrum the values on channels
  * start … start + n - 1 (to the end of the signal window), and its power-law
  * exponent (null for other models). */
+/** What a time scan averages in every frame: a pixel block or a region. */
+export type TimeScanSource = { pixel: { x: number; y: number; size: number } } | { region: object };
+
 /** The block of pixels a previewed spectrum sums (for LBA). */
 export interface BackgroundPixel {
   x: number;
@@ -471,6 +474,33 @@ export const exportUrl = (id: string, format: string) =>
 export const registrationShiftsUrl = (id: string) => `/api/datasets/${id}/registration/shifts.csv`;
 export const registrationReportUrl = (id: string) => `/api/datasets/${id}/registration/report.pdf`;
 export const alignmentShiftsUrl = (id: string) => `/api/datasets/${id}/alignment/shifts.csv`;
+/** The applied alignment's shifts as a NumPy array (frames, 2): (x, y) that align each frame; NaN: left out. */
+export const alignmentNpyUrl = (id: string) => `/api/datasets/${id}/alignment/shifts.npy`;
+
+/** What the aligned sum of an in-situ series can use. */
+export interface AlignmentSource {
+  /** Recorded frames of the series. */
+  frames: number;
+  /** The simultaneous ADF stack (k: its pixels per scan pixel), if any. */
+  adf: { id: string; title: string; k: number; aligned: boolean; frames: number } | null;
+}
+
+/** Where the aligned sum's shifts come from: the ADF's alignment, or a .npy file (base64). */
+export interface ShiftsChoice {
+  source: "adf" | "npy";
+  npy?: string;
+  units?: "adf" | "scan";
+}
+
+/** Shifts checked against the series: frames summed and left out, the largest shift (scan px), the area kept. */
+export interface ShiftsCheck {
+  frames: number;
+  left_out: number;
+  largest: number;
+  width: number;
+  height: number;
+  source: string;
+}
 
 
 type Versioned = { revision: number; filter_rev: number; data_rev?: number; insitu?: { view?: { mode: string } | null } | null };
@@ -894,8 +924,11 @@ export const api = {
       body: JSON.stringify({ quantity }),
     }),
   /** ``time``: frames per binned frame of an in-situ series. */
-  rebin: (id: string, factors: number[], time = 1) =>
-    request<DatasetAndFile>(`/api/datasets/${id}/rebin`, { method: "POST", body: JSON.stringify({ factors, time }) }),
+  rebin: (id: string, factors: number[], time = 1, inPlace = true) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/rebin`, {
+      method: "POST",
+      body: JSON.stringify({ factors, time, in_place: inPlace }),
+    }),
   setFilters: (id: string, filters: Filters) =>
     request<DatasetAndFile & { notes: string[] }>(`/api/datasets/${id}/filters`, {
       method: "PUT",
@@ -944,8 +977,11 @@ export const api = {
     request<JobSummary>(`/api/datasets/${id}/thickness`, { method: "POST", body: JSON.stringify({ options }) }),
   /** Job: align the zero-loss peak of a low loss (or of the low loss a linked dataset belongs to)
    * and of its linked core losses, replacing their loaded data. */
-  alignZeroLoss: (id: string, options: ZlpOptions) =>
-    request<JobSummary>(`/api/datasets/${id}/zlp-alignment`, { method: "POST", body: JSON.stringify({ options }) }),
+  alignZeroLoss: (id: string, options: ZlpOptions, inPlace = true) =>
+    request<JobSummary>(`/api/datasets/${id}/zlp-alignment`, {
+      method: "POST",
+      body: JSON.stringify({ options, in_place: inPlace }),
+    }),
   startFitMaps: (id: string, options: FitOptions, quant: QuantSpec) =>
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),
   /** In-situ series: hold frame ``frame`` (0-based). Reads one frame; the file's window maps follow it. */
@@ -957,6 +993,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ mode, start, end }),
     }),
+  /** Job: a line scan over the frames of an in-situ series (row k: the mean
+   * spectrum of the pixel block or region in frame k), in scan pixels. */
+  timeScan: (id: string, source: TimeScanSource, name: string) =>
+    request<JobSummary>(`/api/datasets/${id}/insitu/time-scan`, {
+      method: "POST",
+      body: JSON.stringify({ ...source, name }),
+    }),
+  insituAlignment: (id: string) => request<AlignmentSource>(`/api/datasets/${id}/insitu/alignment`),
+  checkShifts: (id: string, choice: ShiftsChoice) =>
+    request<ShiftsCheck>(`/api/datasets/${id}/insitu/shifts-check`, { method: "POST", body: JSON.stringify(choice) }),
+  /** Job: every frame registered with the shifts and summed: a new spectrum image under the series. */
+  alignedSum: (id: string, choice: ShiftsChoice) =>
+    request<JobSummary>(`/api/datasets/${id}/insitu/aligned-sum`, { method: "POST", body: JSON.stringify(choice) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
   cancelJob: (id: string) => request<JobSummary>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   startRegistration: (id: string, first: number, last: number) =>
@@ -986,8 +1035,12 @@ export const api = {
   startShifts: (id: string) => request<JobSummary>(`/api/datasets/${id}/registration/shifts`, { method: "POST" }),
   registrationResult: (id: string) => request<RegistrationResult>(`/api/datasets/${id}/registration/result`),
   /** Store the result with the stack (shown aligned) and add the average. */
-  applyAlignment: (id: string) =>
-    request<DatasetAndFile & { average: DatasetSummary }>(`/api/datasets/${id}/registration/apply`, { method: "POST" }),
+  /** ``inPlace`` false: the aligned frames become a new stack (``aligned_id``) under it. */
+  applyAlignment: (id: string, inPlace = true) =>
+    request<DatasetAndFile & { average: DatasetSummary; aligned_id: string }>(`/api/datasets/${id}/registration/apply`, {
+      method: "POST",
+      body: JSON.stringify({ in_place: inPlace }),
+    }),
   showAlignment: (id: string, active: boolean) =>
     request<DatasetAndFile>(`/api/datasets/${id}/alignment`, { method: "PUT", body: JSON.stringify({ active }) }),
   removeAlignment: (id: string) => request<DatasetAndFile>(`/api/datasets/${id}/alignment`, { method: "DELETE" }),

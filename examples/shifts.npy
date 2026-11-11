@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SI Viewer</title>
+    <script>
+      // Set the theme before first paint: saved choice, else the system setting.
+      (function () {
+        var t = null;
+        try {
+          t = localStorage.getItem("si-viewer.theme");
+        } catch (e) {}
+        if (t !== "light" && t !== "dark") {
+          t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        document.documentElement.dataset.theme = t;
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-B3I1VEfy.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DMfxlvzT.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

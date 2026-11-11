@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import { api, type JobSummary } from "../api/client";
+import { api, type JobSummary, type ShiftsChoice, type TimeScanSource } from "../api/client";
 import { allDatasets, useDatasets } from "./datasets";
+import { useLayers } from "./layers";
 
 const ACTIVE = new Set(["queued", "running"]);
 
@@ -16,6 +17,12 @@ interface InsituStore {
   showFrame: (id: string, k: number) => void;
   /** Mean or sum of frames start…end (0-based): a job whose result becomes the view. */
   reduce: (id: string, mode: "mean" | "sum", start: number, end: number) => Promise<void>;
+  /** A line scan over time (a job; its progress is the frame bar's), added
+   * under the series and selected. */
+  timeScan: (id: string, source: TimeScanSource, name: string) => Promise<void>;
+  /** The drift-corrected sum (a job; its progress is the frame bar's), added
+   * under the series and selected. */
+  alignedSum: (id: string, choice: ShiftsChoice) => Promise<void>;
   cancel: (id: string) => Promise<void>;
 }
 
@@ -85,6 +92,62 @@ export const useInsitu = create<InsituStore>((set, get) => {
         setJob(id, job);
       } catch (e) {
         setError(id, (e as Error).message);
+      }
+    },
+
+    timeScan: async (id, source, name) => {
+      setError(id, null);
+      const { notify } = useLayers.getState();
+      try {
+        let job = await api.timeScan(id, source, name);
+        setJob(id, job);
+        while (ACTIVE.has(job.status)) {
+          await new Promise((r) => setTimeout(r, 300));
+          try {
+            job = await api.getJob(job.id);
+            if (ACTIVE.has(job.status)) setJob(id, job);
+          } catch {
+            /* backend busy or restarted: try again */
+          }
+        }
+        setJob(id, job);
+        if (job.status === "done" && job.result) {
+          const { replaceFile, select } = useDatasets.getState();
+          replaceFile(job.result.file);
+          const partners = (job.result as { partner_files?: Parameters<typeof replaceFile>[0][] }).partner_files ?? [];
+          partners.forEach(replaceFile);
+          if (job.result.dataset_id) select(job.result.dataset_id);
+          notify("LineScan added to the dataset pane.");
+        } else if (job.status === "failed") notify(`Could not make the LineScan: ${job.error}`);
+      } catch (e) {
+        notify(`Could not make the LineScan: ${(e as Error).message}`);
+      }
+    },
+
+    alignedSum: async (id, choice) => {
+      setError(id, null);
+      const { notify } = useLayers.getState();
+      try {
+        let job = await api.alignedSum(id, choice);
+        setJob(id, job);
+        while (ACTIVE.has(job.status)) {
+          await new Promise((r) => setTimeout(r, 300));
+          try {
+            job = await api.getJob(job.id);
+            if (ACTIVE.has(job.status)) setJob(id, job);
+          } catch {
+            /* backend busy or restarted: try again */
+          }
+        }
+        setJob(id, job);
+        if (job.status === "done" && job.result) {
+          const { replaceFile, select } = useDatasets.getState();
+          replaceFile(job.result.file);
+          if (job.result.dataset_id) select(job.result.dataset_id);
+          notify("Aligned sum added to the dataset pane.");
+        } else if (job.status === "failed") notify(`Could not make the aligned sum: ${job.error}`);
+      } catch (e) {
+        notify(`Could not make the aligned sum: ${(e as Error).message}`);
       }
     },
 

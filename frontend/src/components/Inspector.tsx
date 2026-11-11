@@ -24,7 +24,7 @@ export function Inspector() {
             ? d.kind === "spectrum" ? "Thickness profile" : "Thickness map"
             : isZlpShift(d)
               ? d.kind === "spectrum" ? "ZLP shift profile" : "ZLP shift map"
-              : isLineScan(d) ? "Line scan" : d.kind === "spectrum_image" ? "Spectrum image" : d.kind === "spectrum" ? "Spectrum" : kindLabel(d)}
+              : isLineScan(d) ? "LineScan" : d.kind === "spectrum_image" ? "Spectrum image" : d.kind === "spectrum" ? "Spectrum" : kindLabel(d)}
         </dd>
         {hasTechnique(d) && (
           <>

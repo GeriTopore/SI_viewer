@@ -542,3 +542,29 @@ def test_matches_the_detailed_walkthrough():
     np.testing.assert_allclose(drift["x"], -ref.shifts_y, atol=1e-4)
     np.testing.assert_allclose(drift["y"], -ref.shifts_x, atol=1e-4)
     assert s.correction["edits"] == edits.model_dump()
+
+
+def test_apply_as_a_new_stack(stack):
+    client, ds = stack
+    url = f"/api/datasets/{ds['id']}/registration"
+    client.post(url, json={})
+    client.put(url, json={"mask": {"type": "hann", "n": 4}})
+    assert _wait(client, client.post(f"{url}/shifts").json())["status"] == "done"
+    client.post(f"{url}/correct", json={"outliers": {"method": "none", "off_diagonal": 2}, "bad_frames": [3]})
+    aligned3 = _array(client.get(f"{url}/aligned", params={"i": 4}))
+
+    r = client.post(f"{url}/apply", json={"in_place": False}).json()
+    # The stack is as loaded; the aligned frames are a new stack under it, the average under that.
+    assert r["dataset"]["alignment"] is None and r["dataset"]["navigation_shape"] == [6]
+    datasets = {d["id"]: d for d in r["file"]["datasets"]}
+    new = datasets[r["aligned_id"]]
+    assert new["origin"] == "aligned" and new["parent_id"] == ds["id"] and new["kind"] == "stack"
+    assert new["navigation_shape"] == [5] and new["title"] == "drift (aligned)"
+    assert r["average"]["parent_id"] == new["id"]
+    np.testing.assert_allclose(_array(client.get(f"/api/datasets/{new['id']}/frame", params={"index": 3})), aligned3)
+    session = client.app.state.session
+    assert session.get_dataset(new["id"]).ops[-1]["op"] == "align"
+    assert session.get_dataset(ds["id"]).ops == []
+    # Deleting it takes its average with it.
+    assert client.delete(f"/api/datasets/{new['id']}").status_code == 200
+    assert [session.datasets[i].title for i in session.files[ds["file_id"]].dataset_ids] == ["drift"]

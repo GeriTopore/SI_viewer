@@ -11,7 +11,7 @@ import { imageGeometry, type ImageGeometry } from "../views/geometry";
 import { autoContrast, useImageDisplay } from "../views/useImageDisplay";
 import { useOverlayFrames } from "../views/useOverlayFrames";
 import { ContrastControls } from "./ContrastControls";
-import { ImageView, type Interaction, type Transform, type ViewLayer } from "./ImageView";
+import { ImageView, type Interaction, type Pt, type Transform, type ViewLayer } from "./ImageView";
 import { LayersPanel } from "./LayersPanel";
 import { LineOverlay } from "./LineOverlay";
 import { FftBoxOverlay } from "./FftBoxOverlay";
@@ -21,7 +21,7 @@ import { HistogramPanel } from "./HistogramPanel";
 import { ProfilePanel } from "./ProfilePanel";
 import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from "../state/profiles";
 import { lineAt, useLineTool } from "../views/useLineTool";
-import { ContextMenu } from "./ContextMenu";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { AnnotationsToggle } from "./AnnotationsToggle";
 import { lineMenuItems } from "./ProfilePanel";
 import { useFftBoxTool } from "../views/useFftBoxTool";
@@ -78,6 +78,9 @@ interface Props {
   profilePick?: boolean;
   /** Cuts a line scan along a profile line (spectrum images). */
   onLineScan?: (line: ProfileLine) => void;
+  /** Entries of the menu of a right-click on the image (``p`` in image
+   * pixels) away from a profile line; none: no menu. */
+  imageMenu?: (p: Pt) => MenuItem[];
   /** Shown right under the image (e.g. a stack's frame slider). */
   footer?: ReactNode;
   /** Tabs of the pane under the image besides "Line profile" (e.g. the
@@ -107,7 +110,7 @@ export const BASE_LAYER = BASE;
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
   viewKey, base, images, geometry, loading, error, children, empty, interaction, renderOverlay,
-  lineTool, fftTool, profilePick, onLineScan, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
+  lineTool, fftTool, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
   scanFactor = 1,
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
@@ -253,15 +256,17 @@ export function LayeredViewer({
   useEffect(() => {
     if (drawingLines || drawingBoxes) useUi.getState().setAnnotationsHidden(viewKey, false);
   }, [drawingLines, drawingBoxes, viewKey]);
-  // Right-clicking a profile line (with any tool) opens its menu.
-  const [lineMenu, setLineMenu] = useState<{ x: number; y: number; line: ProfileLine } | null>(null);
-  const toolInteraction: Interaction | undefined = onLineScan
+  // Right-clicking a profile line (with any tool) opens its menu; elsewhere
+  // on the image, the view's own menu (if it has entries there).
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const toolInteraction: Interaction | undefined = onLineScan || imageMenu
     ? {
         ...activeInteraction,
         onContextMenu: (p, e, t) => {
-          const line = annotationsHidden ? undefined : lineAt(viewKey, p, t.zoom);
-          if (!line) return activeInteraction?.onContextMenu?.(p, e, t) ?? false;
-          setLineMenu({ x: e.clientX, y: e.clientY, line });
+          const line = annotationsHidden || !onLineScan ? undefined : lineAt(viewKey, p, t.zoom);
+          const items = line ? lineMenuItems(line, onLineScan!) : (imageMenu?.(p) ?? []);
+          if (!items.length) return activeInteraction?.onContextMenu?.(p, e, t) ?? false;
+          setMenu({ x: e.clientX, y: e.clientY, items });
           return true;
         },
       }
@@ -511,14 +516,7 @@ export function LayeredViewer({
       {tabs.length > 0 && (
         <BottomPane tabs={tabs} viewerRef={viewerRef} resizeLabel="Resize the image and the pane below it" />
       )}
-      {lineMenu && onLineScan && (
-        <ContextMenu
-          x={lineMenu.x}
-          y={lineMenu.y}
-          onClose={() => setLineMenu(null)}
-          items={lineMenuItems(lineMenu.line, onLineScan)}
-        />
-      )}
+      {menu && <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={menu.items} />}
     </div>
   );
 }

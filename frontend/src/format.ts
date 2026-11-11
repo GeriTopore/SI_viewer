@@ -63,7 +63,7 @@ export function kindLabel(d: DatasetSummary): string {
   // EELS spectrum images say whether they are low loss or core loss.
   const role = d.eels ? (d.eels.role === "low_loss" ? "LL" : "HL") : null;
   if (isInsituView(d)) return `IS ${role ?? t ?? "SI"}`;
-  if (isLineScan(d)) return role ? `${role} line` : t ? `${t} line` : "Line";
+  if (isLineScan(d)) return "LineScan";
   if (t) return d.kind === "spectrum" ? t : role ? `${t} ${role}` : `${t} SI`;
   return d.is_element_map ? "Map" : KIND_LABEL[d.kind];
 }
@@ -72,7 +72,7 @@ export function kindLabel(d: DatasetSummary): string {
 export function kindName(d: DatasetSummary): string {
   const t = hasTechnique(d) && d.technique ? `${d.technique} ` : "";
   const name = isLineScan(d)
-    ? "line scan"
+    ? "LineScan"
     : isInsituView(d)
       ? "in-situ spectrum image"
       : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", other: "data" } as const)[
@@ -87,7 +87,7 @@ export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string 
   const t = hasTechnique(d) && d.technique ? d.technique : "";
   const role = d.eels ? ` (${d.eels.role === "low_loss" ? "low loss" : "core loss"})` : "";
   const scan = isLineScan(d)
-    ? `\n${t ? `${t} line scan` : "Line scan"}${role}, ${d.navigation_shape[0]} points × ${d.signal_shape.join("×")} channels`
+    ? `\n${t ? `${t} LineScan` : "LineScan"}${role}, ${d.navigation_shape[0]} points × ${d.signal_shape.join("×")} channels`
     : t && !d.is_element_map
       ? `\n${kindName(d)}${role}, ${d.navigation_shape.concat(d.signal_shape).join(" × ")}`
       : "";
@@ -105,7 +105,10 @@ export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string 
       : "background removed";
     return `${base}\nBackground removed${parentTitle ? ` from ${parentTitle}` : ""}: ${what}`;
   }
-  if (d.origin === "line-scan") return `${base}\nLine scan cut along a line${parentTitle ? ` of ${parentTitle}` : ""}`;
+  if (d.origin === "line-scan") {
+    const overTime = d.axes.find((a) => a.navigate)?.name === "Time";
+    return `${base}\nLineScan ${overTime ? "over the frames" : "along a line"}${parentTitle ? ` of ${parentTitle}` : ""}`;
+  }
   if (isDeconvolved(d)) {
     const c = d.deconvolution;
     const how = !c

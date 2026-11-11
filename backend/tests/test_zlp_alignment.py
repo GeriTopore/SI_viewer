@@ -496,3 +496,26 @@ def test_dual_eels_example(client, eels_dm4_ll, eels_dm4_hl):
     (made,) = _children(client, ll, "zlp-shift")
     shifts = np.asarray(_dataset(client, made).signal.data)
     assert shifts.shape == (25, 6) and np.isfinite(shifts).all()
+
+
+def test_alignment_as_new_datasets(client, tmp_path):
+    c, ll, hl = _open_pair(client, tmp_path)
+    before_ll = np.array(_dataset(client, ll).signal.data)
+    r = client.post(f"/api/datasets/{ll['id']}/zlp-alignment", json={"options": {}, "in_place": False})
+    assert r.status_code == 200, r.text
+    job = _wait(client, r.json())
+    assert job["status"] == "done", job
+    new_ll, new_hl = (_dataset(client, i) for i in job["result"]["aligned"])
+    # The sources are as they were; the aligned ones are new, linked to each other.
+    np.testing.assert_array_equal(_dataset(client, ll).signal.data, before_ll)
+    assert _dataset(client, ll).ops == [] and _dataset(client, ll).zlp_aligned == []
+    assert (new_ll.origin, new_ll.parent_id, new_ll.eels_role) == ("zlp-aligned", ll["id"], "low_loss")
+    assert (new_hl.origin, new_hl.parent_id, new_hl.eels_role) == ("zlp-aligned", hl["id"], "core_loss")
+    assert new_ll.eels_linked == [new_hl.id] and new_ll.ops[-1]["op"] == "zlp-align"
+    # The shift map is under the new low loss.
+    assert _dataset(client, job["result"]["dataset_id"]).parent_id == new_ll.id
+    # Its peaks are at 0.
+    s = new_ll.signal
+    ax = s.axes_manager.signal_axes[0]
+    peak = ax.offset + ax.scale * np.asarray(s.data).argmax(axis=-1)
+    assert np.abs(peak).max() <= ax.scale

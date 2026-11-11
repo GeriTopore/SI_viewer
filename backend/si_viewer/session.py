@@ -84,6 +84,7 @@ def _rebin_in_place(dataset: Dataset, scale: list[int]) -> None:
     dataset.replace_signal(signal)  # frees the unbinned data
     dataset.kind = classify(signal)
     dataset.rebinned.append(label)
+    dataset.ops.append({"op": "rebin", "scale": [int(f) for f in scale]})
 
 
 def _new_id() -> str:
@@ -115,8 +116,11 @@ class Dataset:
     # (the power-law exponent map of one), "thickness" (the thickness of an
     # EELS low loss: a map, or a profile for a line scan), "zlp-shift" (the
     # energy shift zero-loss alignment applied at every pixel of a low loss)
-    # "deconvolved" (EELS spectra with plural scattering removed) or
-    # "line-scan" (spectra along a line of a spectrum image).
+    # "deconvolved" (EELS spectra with plural scattering removed),
+    # "line-scan" (spectra along a line of a spectrum image), "aligned-sum"
+    # (the frames of an in-situ series registered and summed), or the result
+    # of an operation run as a new dataset: "rebinned", "zlp-aligned" (with
+    # its linked ones) or "aligned" (a stack's frames registered).
     origin: str = "file"
     # Element symbol of an element map (Velox maps: their title).
     element: str | None = None
@@ -161,6 +165,14 @@ class Dataset:
     # Zero-loss alignment applied to the loaded data, e.g. ["sub-pixel, cropped"]
     # (oldest first).
     zlp_aligned: list[str] = field(default_factory=list)
+    # The operations that changed the loaded data, oldest first, as records
+    # ({"op": "rebin", "scale": [...]}, {"op": "zlp-align", "options": {...}},
+    # {"op": "align", ...}): what a saved project replays on the raw data.
+    # ``rebinned`` / ``zlp_aligned`` are their labels.
+    ops: list[dict] = field(default_factory=list)
+    # A copy made by an operation run as a new dataset: how many of its
+    # source's ``ops`` the source had then (its own ``ops`` follow).
+    copied_at: int | None = None
     # Non-destructive filters applied when the data is read (see
     # processing/filters.py); filter_rev is bumped whenever they change.
     filters: dict = field(default_factory=dict)
@@ -1145,6 +1157,204 @@ class Session:
             self._join(made)
         return made
 
+    # ---------- operations run as a new dataset ----------
+
+    def copy_as(self, src: Dataset, origin: str, title: str, signal=None) -> Dataset:
+        """A new dataset under ``src`` holding a copy of its loaded data (or
+        ``signal``), as the starting point of an operation run as a new dataset
+        (``origin``). It keeps ``src``'s calibration, technique, EELS role and
+        filters; it is not linked to anything."""
+        import copy
+
+        if signal is None:
+            src.materialise()
+            signal = src.loaded_signal.deepcopy()
+        signal.metadata.General.title = title
+        ds = Dataset(
+            id=_new_id(), file_id=src.file_id, signal=signal, kind=classify(signal), origin=origin,
+            parent_id=src.id, technique_source=src.technique_source, eels_role=src.eels_role,
+            eels_role_source=src.eels_role_source, filters=copy.deepcopy(src.filters),
+            map_options=copy.deepcopy(src.map_options), rebinned=list(src.rebinned),
+            zlp_aligned=list(src.zlp_aligned), copied_at=len(src.ops),
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[src.file_id].dataset_ids
+            ids.insert(ids.index(src.id) + 1, ds.id)
+        return ds
+
+    # ---------- drift-corrected sum of an in-situ series ----------
+
+    def alignment_source(self, ds: Dataset) -> dict:
+        """What the aligned sum of the series ``ds`` can use: its frames, and
+        its simultaneous ADF (sub-scan factor k: ADF pixels per scan pixel)
+        with its applied alignment, if any."""
+        from .insitu_series import adf_stack
+
+        series = self.insitu_series(ds)
+        found = adf_stack(ds, self.siblings(ds))
+        adf = None
+        if found is not None:
+            stack, k = found
+            a = stack.alignment
+            adf = {
+                "id": stack.id, "title": stack.title, "k": k, "aligned": a is not None,
+                "frames": len(a["drift"]["frames"]) if a else 0,
+            }
+        return {"frames": series.n_raw, "adf": adf}
+
+    def aligned_sum_shifts(
+        self, ds: Dataset, source: str, raw: bytes | None = None, units: str = "adf",
+    ) -> tuple[list[int], np.ndarray, str]:
+        """(frames to sum, shifts (frames, 2): the (x, y) shift that aligns each
+        recorded frame in pixels of the scan, a description). ``source``
+        "adf": the alignment applied to the simultaneous ADF stack (its drift,
+        divided by the sub-scan factor). "npy": the ``.npy`` file ``raw``,
+        shifts in pixels of the ADF (``units`` "adf") or of the scan ("scan");
+        frames whose shift is NaN are left out. ValueError (plain English)
+        when they can't be used."""
+        from .insitu_series import adf_stack
+        from .processing.insitu_align import parse_shifts
+
+        series = self.insitu_series(ds)
+        n = series.n_raw
+        found = adf_stack(ds, self.siblings(ds))
+        if source == "adf":
+            if found is None:
+                raise ValueError(f"{ds.title} has no simultaneous ADF stack on its scan")
+            stack, k = found
+            a = stack.alignment
+            if a is None:
+                raise ValueError(f"Align {stack.title} first (Process tab, Align frames)")
+            shifts = np.full((n, 2), np.nan)
+            for f, x, y in zip(a["drift"]["frames"], a["drift"]["x"], a["drift"]["y"]):
+                if 0 <= f < n:
+                    shifts[f] = (-x / k, -y / k)  # the shift that aligns = minus the drift
+            how = f"alignment of {stack.title} (÷{k}, its sub-scan)" if k > 1 else f"alignment of {stack.title}"
+        elif source == "npy":
+            if raw is None:
+                raise ValueError("Choose a .npy file of shifts")
+            shifts = parse_shifts(raw, n)
+            k = 1
+            if units == "adf":
+                if found is None:
+                    raise ValueError("There is no ADF stack to take the pixel size from: give the shifts in scan pixels")
+                k = found[1]
+                shifts = shifts / k
+            how = f"imported shifts ({'ADF' if units == 'adf' else 'scan'} pixels{f', ÷{k}' if k > 1 else ''})"
+        else:
+            raise ValueError(f"Unknown source of shifts: {source}")
+        frames = [int(f) for f in np.flatnonzero(~np.isnan(shifts).any(axis=1))]
+        if len(frames) < 2:
+            raise ValueError("At least two frames need a shift")
+        h, w = series.frame_shape[:2]
+        if np.abs(shifts[frames]).max() >= min(h, w):
+            raise ValueError("A shift is as large as the scan: the shifts don't fit this series")
+        return frames, shifts, how
+
+    def compute_aligned_sum(self, ds: Dataset, frames: list[int], shifts: np.ndarray, report=lambda f, m=None: None):
+        """(sum, crop): see ``processing.insitu_align.aligned_sum``; the
+        recorded frames are read one at a time, binned in y, x and E as the
+        series is."""
+        from .processing.insitu_align import aligned_sum
+
+        series = self.insitu_series(ds)
+        return aligned_sum(series.read_recorded, frames, shifts, report)
+
+    def add_aligned_sum(self, ds: Dataset, data: np.ndarray, crop, frames: list[int], how: str) -> Dataset:
+        """Add the aligned sum ``data`` (from ``compute_aligned_sum``) of the
+        series ``ds`` as a spectrum image under it: the scan cropped to
+        ``crop`` (r0, r1, c0, c1), calibrated as the series."""
+        r0, r1, c0, c1 = crop
+        ds.materialise()
+        signal = ds.signal.inav[c0:c1, r0:r1].deepcopy()  # natural order: x, y
+        signal.data = data
+        title = f"{ds.title} (aligned sum, {len(frames)} frames)"
+        signal.metadata.General.title = title
+        signal.metadata.set_item("Processing.si_viewer.aligned_sum", {
+            "frames": [f + 1 for f in frames], "shifts": how, "crop_rows": [r0, r1], "crop_columns": [c0, c1],
+        })
+        out = Dataset(
+            id=_new_id(), file_id=ds.file_id, signal=signal, kind=classify(signal), origin="aligned-sum",
+            parent_id=ds.id, technique_source=ds.technique_source, eels_role=ds.eels_role,
+            eels_role_source=ds.eels_role_source,
+        )
+        with self._lock:
+            self.datasets[out.id] = out
+            self.files[ds.file_id].dataset_ids.append(out.id)
+        return out
+
+    # ---------- time scans of an in-situ series ----------
+
+    def time_scan_sources(self, ds: Dataset, with_linked: bool = True) -> list[Dataset]:
+        """The in-situ series a time scan of ``ds`` is cut from: ``ds``, and the
+        series linked to it on the same scan with the same frames."""
+        series = self.insitu_series(ds)
+        if ds.kind is not DatasetKind.SPECTRUM_IMAGE or ds.is_line_scan:
+            raise ValueError(f"{ds.title} is not a series of 2D spectrum images")
+        scan = series.frame_shape[:2]
+        others = [
+            d for d in (self.linked_of(ds) if with_linked else [])
+            if d.insitu is not None and d.insitu.n == series.n and d.insitu.frame_shape[:2] == scan
+        ]
+        for d in (ds, *others):
+            d.materialise()  # one frame: the time scan takes its axes and metadata
+        return [ds, *others]
+
+    @staticmethod
+    def time_scan_pick(src: Dataset, pixel: tuple[int, int, int] | None, region):
+        """The function taking a frame of ``src``'s series to the mean spectrum
+        of the ``pixel`` block (x, y, size) or the ``region`` (a ``Region``),
+        in scan pixels. ValueError if they hold no pixel of the scan."""
+        from .processing.regions import pixel_spectrum, region_mask, region_spectrum
+
+        h, w = src.insitu.frame_shape[:2]
+        if pixel is not None:
+            x, y, size = pixel
+            if not (0 <= x < w and 0 <= y < h):
+                raise ValueError(f"Pixel ({x}, {y}) is outside the {w}×{h} scan")
+
+            def pick(frame):
+                total, n = pixel_spectrum(frame, x, y, size)
+                return total / n
+        else:
+            if not region_mask((h, w), region)[2].any():
+                raise ValueError("The region holds no pixel of the scan")
+
+            def pick(frame):
+                total, n = region_spectrum(frame, region)
+                return total / n
+        return pick
+
+    def time_scan_spectra(self, src: Dataset, pixel, region, report=lambda f, m=None: None) -> np.ndarray:
+        """The mean spectrum of the same pixels in every frame of ``src``'s
+        series (frames, channels); see ``time_scan_pick``."""
+        return src.insitu.spectra_over_time(self.time_scan_pick(src, pixel, region), report)
+
+    def add_time_scans(self, made: list[tuple[Dataset, np.ndarray]], name: str, source: dict) -> list[Dataset]:
+        """Add a line scan over time under each series of ``made`` ((series,
+        spectra) from ``time_scan_spectra``), titled "<series> · <name>"; more
+        than one are linked as their series are. Returns the new datasets."""
+        from .processing.line_scan import time_scan_signal
+
+        out = []
+        for src, spectra in made:
+            if src.id not in self.datasets:
+                raise ValueError(f"{src.title} was closed while its frames were read")
+            signal = time_scan_signal(src.signal, spectra, src.insitu.times, f"{src.title} · {name}", source)
+            ds = Dataset(
+                id=_new_id(), file_id=src.file_id, signal=signal, kind=classify(signal),
+                origin="line-scan", parent_id=src.id, technique_source=src.technique_source,
+                eels_role=src.eels_role, eels_role_source=src.eels_role_source,
+            )
+            with self._lock:
+                self.datasets[ds.id] = ds
+                self.files[src.file_id].dataset_ids.append(ds.id)
+            out.append(ds)
+        if len(out) > 1:
+            self._join(out)
+        return out
+
     def replace_deconvolved(self, dd: Dataset, options, signal) -> Dataset:
         """Replace a deconvolved dataset's data with ``signal`` made with new
         ``options``: same dataset, new revision. An automatic title follows
@@ -1296,7 +1506,7 @@ class Session:
         result = align_zero_loss_peak(originals[0], originals[1:], options, report)
         return datasets, originals, result
 
-    def apply_zlp_alignment(self, datasets: list[Dataset], originals: list, result, options) -> Dataset:
+    def apply_zlp_alignment(self, datasets: list[Dataset], originals: list, result, options, in_place: bool = True) -> Dataset:
         """Replace the loaded data of ``datasets`` (from ``compute_zlp_alignment``)
         with the aligned ``result``, like a rebin: the file on disk is not
         changed. What was made from them is remade: energy windows, thickness
@@ -1309,11 +1519,24 @@ class Session:
         for d, signal in zip(datasets, originals):
             if self.datasets.get(d.id) is not d or d.signal is not signal:
                 raise ValueError(f"{d.title} changed while its zero-loss peak was aligned")
+        if not in_place:
+            # The aligned spectra as new datasets under their sources, linked
+            # as the sources are; the sources are left as they are.
+            made = []
+            for d, signal in zip(datasets, result.signals):
+                new = self.copy_as(d, "zlp-aligned", f"{d.title} (ZLP aligned)", signal=signal)
+                new.zlp_aligned.append(options.label)
+                new.ops.append({"op": "zlp-align", "options": options.model_dump()})
+                made.append(new)
+            if len(made) > 1:
+                self._join(made)
+            return self.set_zlp_shift(made[0], result.shifts)
         shift = result.mean_shift
         for d, signal in zip(datasets, result.signals):
             d.replace_signal(signal)
             d.kind = classify(signal)
             d.zlp_aligned.append(options.label)
+            d.ops.append({"op": "zlp-align", "options": options.model_dump()})
         for d in datasets:
             self._remake_after_zlp(d, shift)
         if ll.eels_group is not None:
@@ -1459,7 +1682,7 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan"):
+        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned"):
             entry["restore"] = self._tree_places(dataset)
             self._remove_tree(dataset)
             return self._keep_undoable(entry)
@@ -1563,7 +1786,10 @@ class Session:
                 d.quantity = quantity
                 d.replace_signal(d.quantities[quantity])
 
-    def rebin(self, si: Dataset, factors: list[int], with_linked: bool = True, time: int = 1) -> list[Dataset]:
+    def rebin(
+        self, si: Dataset, factors: list[int], with_linked: bool = True, time: int = 1, in_place: bool = True,
+        with_scan: bool = True,
+    ) -> list[Dataset]:
         """Rebin a spectrum image and everything recorded on its scan, in place.
 
         Only spectrum images can be rebinned, and always as a whole: the
@@ -1582,12 +1808,35 @@ class Session:
         linked ones and their images.
 
         An in-situ series is rebinned as a series (see ``_rebin_series``), and
-        can also be binned along ``time`` (frames per binned frame).
+        can also be binned along ``time`` (frames per binned frame). A line
+        scan (positions or times × energy) is rebinned along both its axes,
+        with the line scans linked to it. A stack is rebinned on its own (see
+        ``_rebin_stack``).
+
+        Not ``in_place``: ``si`` is left as it is and a copy of it is rebinned
+        instead, a new dataset under it (``origin`` "rebinned"), on its own
+        (without the linked ones or the images on its scan); in-situ series
+        are rebinned in place only. ``with_scan``: the images on the scan
+        are binned too (in place only).
         """
+        if not in_place:
+            if si.insitu is not None:
+                raise ValueError(f"{si.title} is an in-situ series: it can only be rebinned in place")
+            if si.kind not in (DatasetKind.SPECTRUM_IMAGE, DatasetKind.STACK):
+                raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images and stacks can")
+            self._check_factors(si, factors)
+            copy = self.copy_as(si, "rebinned", f"{si.title} (rebinned)")
+            try:
+                return self.rebin(copy, factors, with_linked=False, time=time, with_scan=False)
+            except Exception:
+                self._remove(copy)
+                raise
+        if si.kind is DatasetKind.STACK:
+            if time != 1:
+                raise ValueError(f"{si.title} has no time axis to rebin: only in-situ series do")
+            return self._rebin_stack(si, factors)
         if si.kind is not DatasetKind.SPECTRUM_IMAGE:
-            raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images can (with their whole scan)")
-        if si.is_line_scan:
-            raise NotRebinnable(f"{si.title} is a line scan and can't be rebinned: rebinning needs a 2D scan")
+            raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images and stacks can")
         linked_all = self.linked_of(si) if with_linked else []
         if si.insitu is None:
             if time != 1:
@@ -1612,11 +1861,10 @@ class Session:
         # HyperSpy's scale is in natural order (x, y | energy).
         natural = am._get_axes_in_natural_order()
         scale = [factors[next(i for i, a in enumerate(axes) if a is ax)] for ax in natural]
-        fx, fy = scale[0], scale[1]
         scan = tuple(am.navigation_shape)
         linked = [
             d for d in (self.linked_of(si) if with_linked else [])
-            if d.kind is DatasetKind.SPECTRUM_IMAGE and not d.is_line_scan
+            if d.kind is DatasetKind.SPECTRUM_IMAGE and d.is_line_scan == si.is_line_scan
             and tuple(d.signal.axes_manager.navigation_shape) == scan  # else no longer the same scan
         ]
         for d in linked:
@@ -1630,7 +1878,7 @@ class Session:
                     )
             if d.insitu is not None and time > d.insitu.n:
                 raise ValueError(f"Factor for Time must be at most {d.insitu.n} for {d.title} (linked)")
-        on_scan = [
+        on_scan = [] if si.is_line_scan or not with_scan else [
             d for d in self.siblings_in_file(si.file_id)
             if d.origin == "file" and d.kind in (DatasetKind.IMAGE, DatasetKind.STACK)
             and tuple(d.loaded_signal.axes_manager.signal_shape) == scan
@@ -1645,7 +1893,7 @@ class Session:
             _rebin_in_place(si, scale)
         for d in on_scan:
             # Natural order: (frames |) x, y.
-            _rebin_in_place(d, [1] * d.signal.axes_manager.navigation_dimension + [fx, fy])
+            _rebin_in_place(d, [1] * d.signal.axes_manager.navigation_dimension + scale[:2])
 
         for d in [*self._fit_maps(si), *self.zlp_shift_maps(si)]:
             self._remove(d)  # made at the old size: refit or align again to update
@@ -1666,6 +1914,47 @@ class Session:
         for d in linked:
             rebinned += self.rebin(d, factors, with_linked=False, time=time)
         return rebinned
+
+    @staticmethod
+    def _check_factors(ds: Dataset, factors: list[int]) -> None:
+        """ValueError unless ``factors`` has one factor per axis of ``ds``, each
+        1…its size, one above 1."""
+        axes = list(ds.loaded_signal.axes_manager._axes)
+        if len(factors) != len(axes):
+            raise ValueError(f"Expected {len(axes)} factors, got {len(factors)}")
+        for f, ax in zip(factors, axes):
+            if not 1 <= f <= ax.size:
+                raise ValueError(f"Factor for {ax.name or 'axis'} must be between 1 and {ax.size}")
+        if all(f == 1 for f in factors):
+            raise ValueError("Choose a factor above 1 for at least one axis")
+
+    def _rebin_stack(self, stack: Dataset, factors: list[int]) -> list[Dataset]:
+        """Rebin a stack along its frames, y and x (``factors`` in the
+        summary's axis order: frames, y, x) in place; sizes that don't divide
+        are cropped. A drift correction (in pixels of the old size) is dropped
+        with its average. The simultaneous ADF of an in-situ series keeps its
+        frames, one per frame of the series."""
+        am = stack.loaded_signal.axes_manager
+        axes = list(am._axes)
+        if len(factors) != len(axes):
+            raise ValueError(f"Expected {len(axes)} factors, got {len(factors)}")
+        for f, ax in zip(factors, axes):
+            if not 1 <= f <= ax.size:
+                raise ValueError(f"Factor for {ax.name or 'axis'} must be between 1 and {ax.size}")
+        if all(f == 1 for f in factors):
+            raise ValueError("Choose a factor above 1 for at least one axis")
+        natural = am._get_axes_in_natural_order()
+        scale = [factors[next(i for i, a in enumerate(axes) if a is ax)] for ax in natural]
+        insitu_adf = stack.loaded_signal.metadata.get_item("Insitu.frames") is not None
+        if insitu_adf and any(f > 1 for f, ax in zip(scale, natural) if ax.navigate):
+            raise ValueError(
+                f"{stack.title} is the simultaneous ADF of an in-situ series: its frames follow the series "
+                "(rebin the series in time instead); x and y can be rebinned"
+            )
+        self.remove_alignment(stack)
+        stack.materialise()
+        _rebin_in_place(stack, scale)
+        return [stack]
 
     @staticmethod
     def _rebin_series(ds: Dataset, scale: list[int], time: int) -> None:
@@ -1691,6 +1980,7 @@ class Session:
             + [f"{_defined(ax.name) or f'axis {i}'}×{f}" for i, (ax, f) in enumerate(zip(natural, scale)) if f > 1]
         )
         ds.rebinned.append(label)
+        ds.ops.append({"op": "rebin-series", "scale": [int(f) for f in scale], "time": int(time)})
         series.schedule_ahead(k)
 
     def set_map_options(self, si: Dataset, options: dict) -> None:
@@ -1819,13 +2109,32 @@ class Session:
         ds.thumbnails.clear()
         ds.cache = {}
 
-    def apply_alignment(self, stack: Dataset, applied: dict) -> Dataset:
+    def apply_alignment(self, stack: Dataset, applied: dict, in_place: bool = True) -> Dataset:
         """Store a drift correction with ``stack`` and show it: its frames
         are then the aligned ones (bad frames left out, cropped to the square
         inside every frame); the loaded frames are kept, to switch back.
         ``applied`` is ``RegistrationSession.applied()``. The average is added
-        to the file as an image (replacing an earlier one) and returned."""
+        to the file as an image (replacing an earlier one) and returned.
+        Not ``in_place``: the aligned frames become a new stack under
+        ``stack`` (``origin`` "aligned"), with the average under it; ``stack``
+        is left as it is."""
         from .processing.registration import aligned_signals
+
+        if not in_place:
+            aligned, mean = aligned_signals(
+                stack.loaded_signal, applied["stack"], applied["average"], applied["info"]["square"],
+            )
+            new = self.copy_as(stack, "aligned", f"{stack.title} (aligned)", signal=aligned)
+            new.ops.append({"op": "align", "info": applied["info"]})
+            avg = Dataset(
+                id=_new_id(), file_id=stack.file_id, signal=mean, kind=DatasetKind.IMAGE,
+                origin="aligned-average", derived_from=new.id, parent_id=new.id,
+            )
+            with self._lock:
+                self.datasets[avg.id] = avg
+                ids = self.files[stack.file_id].dataset_ids
+                ids.insert(ids.index(new.id) + 1, avg.id)
+            return avg
 
         original = stack.loaded_signal
         aligned, mean = aligned_signals(original, applied["stack"], applied["average"], applied["info"]["square"])
@@ -1833,6 +2142,7 @@ class Session:
         stack.aligned_signal = aligned
         stack.alignment = applied["info"]
         stack.signal = aligned
+        stack.ops.append({"op": "align", "info": applied["info"]})
         self._view_changed(stack)
         for d in self._averages(stack):
             self._remove(d)
@@ -1861,6 +2171,7 @@ class Session:
             return
         stack.signal = stack.original_signal
         stack.alignment = stack.aligned_signal = stack.original_signal = None
+        stack.ops.append({"op": "unalign"})
         self._view_changed(stack)
         for d in self._averages(stack):
             self._remove(d)

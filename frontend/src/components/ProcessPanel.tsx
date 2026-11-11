@@ -4,7 +4,8 @@ import { allDatasets, useDatasets } from "../state/datasets";
 import { applyFilters } from "../state/filters";
 import { useAlignment } from "../state/alignment";
 import { useUi } from "../state/ui";
-import { filterLabel, isLineScan } from "../format";
+import { filterLabel, isInsituView, isLineScan } from "../format";
+import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { AlignSection } from "./AlignSection";
 import { BackgroundSection } from "./BackgroundSection";
@@ -239,6 +240,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
           Rebin…
         </button>
       ),
+    },
+    isInsituView(d) && d.kind === "spectrum_image" && !isLineScan(d) && {
+      id: "aligned-sum", title: "Aligned sum",
+      tip: "Register every frame with the measured drift and sum them; makes a new spectrum image",
+      body: <InsituAlignSection d={d} />,
     },
     canEstimateThickness(d) && {
       id: "zlp", title: "Zero-loss alignment",

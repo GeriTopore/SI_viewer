@@ -13,7 +13,10 @@ import { SpectrumPlot, type EnergyRange, type Marker, type PlotWindow, type Spec
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import { baseLayerKey, useLayers } from "../state/layers";
-import { CURSOR_COLOR, getSiState, scaleShape, shapeToRegion, useSi, useSiState, type Reduce, type Tool } from "../state/si";
+import { CURSOR_COLOR, containsPoint, getSiState, scaleShape, shapeToRegion, useSi, useSiState, type Reduce, type Tool } from "../state/si";
+import { reducing, useInsitu } from "../state/insitu";
+import type { MenuItem } from "../components/ContextMenu";
+import type { Pt } from "../components/ImageView";
 import { autoRange, sortedSample } from "../viewer/contrast";
 import { isColour } from "../viewer/colormaps";
 import { bytesLabel, formatValue, insituViewLabel } from "../format";
@@ -274,8 +277,37 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       }
       useLayers.getState().notify(`${r.dataset.title} added to the dataset pane.`);
     } catch (e) {
-      useLayers.getState().notify(`Could not make the line scan: ${(e as Error).message}`);
+      useLayers.getState().notify(`Could not make the LineScan: ${(e as Error).message}`);
     }
+  };
+
+  // In-situ series: right-clicking the image offers time scans (line scans
+  // over the frames) at the cursor and of the regions under the pointer.
+  const insituJob = useInsitu((s) => s.jobs[ds.id]);
+  const timeScanMenu = (p: Pt): MenuItem[] => {
+    const s = getSiState(ds.id);
+    const at = { x: p.x / scanK, y: p.y / scanK }; // scan pixels
+    const busy = reducing(insituJob);
+    const title = busy ? "Wait for the frames being read" : "A LineScan over the frames: in each, the mean spectrum of these pixels";
+    const scan = (source: Parameters<typeof api.timeScan>[1], name: string) =>
+      void useInsitu.getState().timeScan(ds.id, source, name);
+    const items: MenuItem[] = [];
+    if (s.cursor && s.showCursor) {
+      const { x, y } = s.cursor;
+      const size = cursorSize;
+      items.push({
+        label: `Generate LineScan over time at the cursor (${x}, ${y}${size > 1 ? `, ${size}×${size}` : ""})`,
+        title, disabled: busy,
+        onSelect: () => scan({ pixel: { x, y, size } }, `cursor (${x}, ${y})`),
+      });
+    }
+    for (const r of s.rois.filter((r) => r.visible && containsPoint(r.shape, at.x, at.y))) {
+      items.push({
+        label: `Generate LineScan over time of ${r.name}`, title, disabled: busy,
+        onSelect: () => scan({ region: shapeToRegion(r.shape) }, r.name),
+      });
+    }
+    return items;
   };
 
   // ---------- spectra ----------
@@ -578,6 +610,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           fftTool={tool === "fft"}
           profilePick
           onLineScan={cutLineScan}
+          imageMenu={ds.insitu?.view ? timeScanMenu : undefined}
           gridContext="si"
           base={
             sourceId === NONE

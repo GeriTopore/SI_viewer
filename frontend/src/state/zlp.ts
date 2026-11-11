@@ -20,7 +20,8 @@ interface ZlpStore {
   startError: Record<string, string | null>;
   patch: (ll: DatasetSummary, patch: Partial<ZlpOptions>) => void;
   /** Start the alignment of the low loss ``ll`` (and its linked core losses) and follow it. */
-  run: (ll: DatasetSummary) => Promise<void>;
+  /** ``inPlace`` false: the aligned spectra become new datasets, the low loss's selected. */
+  run: (ll: DatasetSummary, inPlace?: boolean) => Promise<void>;
   cancel: (id: string) => Promise<void>;
 }
 
@@ -65,11 +66,11 @@ export const useZlp = create<ZlpStore>((set, get) => {
     startError: {},
     patch: (ll, patch) => set((s) => ({ byId: { ...s.byId, [ll.id]: { ...(s.byId[ll.id] ?? DEFAULTS), ...patch } } })),
 
-    run: async (ll) => {
+    run: async (ll, inPlace = true) => {
       const options = get().byId[ll.id] ?? DEFAULTS;
       setStartError(ll.id, null);
       try {
-        let job = await api.alignZeroLoss(ll.id, options);
+        let job = await api.alignZeroLoss(ll.id, options, inPlace);
         setJob(ll.id, job);
         // Polled here, not in the Process tab, so it finishes if the tab is closed.
         while (ACTIVE.has(job.status)) {
@@ -86,8 +87,14 @@ export const useZlp = create<ZlpStore>((set, get) => {
           const { replaceFile } = useDatasets.getState();
           replaceFile(job.result.file);
           (job.result.partner_files ?? []).forEach((f) => replaceFile(f));
-          followAxis(job.result.aligned ?? [], job.result.shift ?? 0);
-          useLayers.getState().notify("Zero-loss peak aligned.");
+          if (inPlace) {
+            followAxis(job.result.aligned ?? [], job.result.shift ?? 0);
+            useLayers.getState().notify("Zero-loss peak aligned.");
+          } else {
+            const first = job.result.aligned?.[0];
+            if (first) useDatasets.getState().select(first);
+            useLayers.getState().notify("Aligned spectrum images added to the dataset pane.");
+          }
         }
       } catch (e) {
         setStartError(ll.id, (e as Error).message);

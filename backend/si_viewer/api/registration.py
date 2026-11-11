@@ -205,15 +205,26 @@ def get_average(dataset_id: str, request: Request, crop: bool = True) -> Respons
     return array_response(_frame_error(s.average, crop))
 
 
+class ApplyBody(BaseModel):
+    # False: the aligned frames become a new stack under this one.
+    in_place: bool = True
+
+
 @router.post("/api/datasets/{dataset_id}/registration/apply")
-def post_apply(dataset_id: str, request: Request) -> dict:
+def post_apply(dataset_id: str, request: Request, body: ApplyBody | None = None) -> dict:
     """Store the result with the stack (shown aligned from now on, the
-    loaded frames kept) and add the average to the file as an image."""
+    loaded frames kept) and add the average to the file as an image. Not
+    ``in_place``: the aligned frames become a new stack under it
+    (``aligned_id``), with the average under that; the stack is unchanged."""
     ds = _stack(request, dataset_id)
     s = _session(request, dataset_id)
     session = request.app.state.session
-    avg = session.apply_alignment(ds, _frame_error(s.applied))
-    return {"dataset": ds.summary(), "average": avg.summary(), "file": session.file_of(ds).summary(session)}
+    in_place = body is None or body.in_place
+    avg = session.apply_alignment(ds, _frame_error(s.applied), in_place)
+    return {
+        "dataset": ds.summary(), "average": avg.summary(), "file": session.file_of(ds).summary(session),
+        "aligned_id": ds.id if in_place else avg.derived_from,
+    }
 
 
 class AlignmentView(BaseModel):
@@ -300,3 +311,26 @@ def get_alignment_csv(dataset_id: str, request: Request) -> Response:
         raise HTTPException(404, f"{ds.title} has no applied alignment")
     text = shifts_csv(ds.alignment, ds.title, *_image_scale(ds))
     return download(text.encode("utf-8"), f"{safe_name(ds.title)}_shifts.csv")
+
+
+@router.get("/api/datasets/{dataset_id}/alignment/shifts.npy")
+def get_alignment_npy(dataset_id: str, request: Request) -> Response:
+    """The alignment applied to the stack as a NumPy array (frames, 2): the
+    (x, y) shift that aligns each frame, in the stack's pixels (minus its
+    drift); NaN for frames it left out. The aligned sum of an in-situ series
+    imports this."""
+    import io
+
+    import numpy as np
+
+    ds = _stack(request, dataset_id)
+    if ds.alignment is None:
+        raise HTTPException(404, f"{ds.title} has no applied alignment")
+    n = ds.loaded_signal.axes_manager.navigation_size
+    shifts = np.full((n, 2), np.nan)
+    d = ds.alignment["drift"]
+    for f, x, y in zip(d["frames"], d["x"], d["y"]):
+        shifts[f] = (-x, -y)
+    buf = io.BytesIO()
+    np.save(buf, shifts)
+    return download(buf.getvalue(), f"{safe_name(ds.title)}_shifts.npy")

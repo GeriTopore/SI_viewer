@@ -193,7 +193,7 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
 export const lineMenuItems = (line: ProfileLine, onLineScan: (line: ProfileLine) => void): MenuItem[] => [
   {
     label: "Generate LineScan",
-    title: "A line scan along the line, each spectrum the mean across its width",
+    title: "A LineScan along the line, each spectrum the mean across its width",
     onSelect: () => onLineScan(line),
   },
 ];

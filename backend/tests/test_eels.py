@@ -161,8 +161,9 @@ def test_linescan_refuses_2d_operations(line_scans):
     si, data = scans["core"]
     base = f"/api/datasets/{si['id']}"
 
-    r = client.post(f"{base}/rebin", json={"factors": [2, 1]})
-    assert r.status_code == 400 and "line scan" in r.json()["detail"]
+    # Rebinning is along its own axes (see test_line_scan.py): no factor beyond them.
+    r = client.post(f"{base}/rebin", json={"factors": [10_000, 1]})
+    assert r.status_code == 422
 
     for spatial in ({"spatial": "gaussian"}, {"spatial": "mean", "size": 3}):
         r = client.put(f"{base}/filters", json=spatial)

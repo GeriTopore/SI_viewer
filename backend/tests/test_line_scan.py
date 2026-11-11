@@ -105,3 +105,35 @@ def test_linked_spectrum_images_are_cut_and_linked(client, tmp_path):
     data = client.app.state.session.get_dataset(partners[0]["id"]).signal.data
     src = client.app.state.session.get_dataset(ll["id"]).signal.data
     assert data.shape[-1] == 50 and src.min() <= data.min() and data.max() <= src.max()
+
+
+# ---------- rebinning a line scan ----------
+
+
+def test_a_line_scan_is_rebinned_along_both_axes(client, tmp_path):
+    ll = _si(_open(client, _eels(tmp_path, "ll", -10)))
+    hl = _si(_open(client, _eels(tmp_path, "hl", 400)))
+    _role(client, ll, "low_loss")
+    _link(client, hl, ll)
+    r = client.post(f"/api/datasets/{hl['id']}/line-scan", json={"line": {"x0": 0.5, "y0": 2.5, "x1": 7.5, "y1": 2.5}})
+    ls, partner = r.json()["dataset"], r.json()["partners"][0]
+    session = client.app.state.session
+    before = np.asarray(session.get_dataset(ls["id"]).signal.data, np.float64)
+    axes = {a["navigate"]: a for a in ls["axes"]}
+    assert before.shape == (8, 50)
+
+    r = client.post(f"/api/datasets/{ls['id']}/rebin", json={"factors": [2, 5]})
+    assert r.status_code == 200, r.text
+    now = r.json()["dataset"]
+    assert now["navigation_shape"] == [4] and now["signal_shape"] == [10] and now["line_scan"]
+    new = {a["navigate"]: a for a in now["axes"]}
+    assert new[True]["scale"] == pytest.approx(2 * axes[True]["scale"])
+    assert new[False]["scale"] == pytest.approx(5 * axes[False]["scale"])
+    np.testing.assert_allclose(
+        session.get_dataset(ls["id"]).signal.data, before.reshape(4, 2, 10, 5).sum(axis=(1, 3)), rtol=1e-5,
+    )
+    assert session.get_dataset(ls["id"]).rebinned[-1].startswith("Distance×2, ")
+    # The linked line scan is binned with it.
+    assert session.get_dataset(partner["id"]).signal.data.shape == (4, 10)
+    # Factors outside the axes are refused.
+    assert client.post(f"/api/datasets/{ls['id']}/rebin", json={"factors": [5, 1]}).status_code == 422

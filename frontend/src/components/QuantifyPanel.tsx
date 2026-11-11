@@ -39,7 +39,7 @@ export function QuantifyPanel() {
   const { ds, lineScan, other, eels } = useEdsTarget();
   if (eels) return <EelsFitPanel key={datasetKey(eels)} ds={eels} />;
   if (!ds && lineScan) {
-    return <p className="muted">Fitting and quantification need a 2D spectrum image or a spectrum; line scans can't be quantified yet.</p>;
+    return <p className="muted">Fitting and quantification need a 2D spectrum image or a spectrum; LineScans can't be quantified yet.</p>;
   }
   if (!ds && other && !other.technique) {
     return <p className="muted">Set the signal type to EDS in the Info tab to fit and quantify this data.</p>;

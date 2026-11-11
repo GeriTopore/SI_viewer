@@ -4,6 +4,7 @@ signal, opening through the session, and the real ``examples/InSitu (3)``."""
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -1062,3 +1063,238 @@ def test_only_series_have_a_time_axis_to_rebin(eels_cuzn):
               if d.kind is DatasetKind.SPECTRUM_IMAGE)
     with pytest.raises(ValueError, match="time axis"):
         session.rebin(si, [1, 1, 1], time=2)
+
+
+# ---------- time scans ----------
+
+
+def test_time_scan_at_a_pixel_and_over_a_region(tmp_path, fake_dm4):
+    from si_viewer.processing.regions import Region
+
+    session, si, _, frames, _ = binnable_pair(tmp_path, fake_dm4)
+    si.materialise()
+    stack = np.stack(frames)  # (frames, y, x, E)
+
+    # A 3 × 3 block at (2, 1): its mean spectrum in every frame.
+    spectra = session.time_scan_spectra(si, (2, 1, 3), None)
+    np.testing.assert_allclose(spectra, stack[:, 0:3, 1:4].mean(axis=(1, 2)), rtol=1e-6)
+    # A region: the pixels whose centres are inside.
+    region = Region(kind="rect", x0=0, y0=0, x1=2, y1=4)
+    np.testing.assert_allclose(
+        session.time_scan_spectra(si, None, region), stack[:, :, 0:2].mean(axis=(1, 2)), rtol=1e-6,
+    )
+    with pytest.raises(ValueError, match="outside"):
+        session.time_scan_pick(si, (6, 0, 1), None)
+    with pytest.raises(ValueError, match="no pixel"):
+        session.time_scan_pick(si, None, Region(kind="rect", x0=10, y0=10, x1=12, y1=12))
+
+    (ts,) = session.add_time_scans([(si, spectra)], "cursor (2, 1)", {"pixel": {"x": 2, "y": 1, "size": 3}})
+    assert ts.is_line_scan and ts.origin == "line-scan" and ts.parent_id == si.id
+    assert ts.title == "STEM SI_EELS Spectrum Image · cursor (2, 1)"
+    t_axis, energy = ts.signal.axes_manager.navigation_axes[0], ts.signal.axes_manager.signal_axes[0]
+    assert (t_axis.name, t_axis.units, t_axis.size) == ("Time", "s", 6)
+    assert t_axis.offset == pytest.approx(1.0) and t_axis.scale == pytest.approx(1.0)
+    assert energy.size == 4 and energy.scale == si.signal.axes_manager.signal_axes[0].scale
+    md = ts.signal.metadata.Processing.si_viewer.time_scan
+    assert md.frame_times_s == pytest.approx([1, 2, 3, 4, 5, 6]) and md.pixel["size"] == 3
+
+    # A time scan is a line scan: it can be rebinned along time and energy.
+    session.rebin(ts, [2, 2])
+    np.testing.assert_allclose(ts.signal.data, spectra.reshape(3, 2, 2, 2).sum(axis=(1, 3)), rtol=1e-6)
+    assert ts.signal.axes_manager.navigation_axes[0].scale == pytest.approx(2.0)
+
+
+def test_time_scan_of_a_time_binned_series(tmp_path, fake_dm4):
+    session, si, _, frames, _ = binnable_pair(tmp_path, fake_dm4)
+    si.materialise()
+    session.rebin(si, [1, 1, 1], time=3)
+    spectra = session.time_scan_spectra(si, (0, 0, 1), None)
+    stack = np.stack(frames)
+    np.testing.assert_allclose(spectra, stack[:, 0, 0].reshape(2, 3, 4).sum(axis=1), rtol=1e-6)
+    (ts,) = session.add_time_scans([(si, spectra)], "cursor", {})
+    assert ts.signal.axes_manager.navigation_axes[0].offset == pytest.approx(2.0)  # mean of 1, 2 and 3 s
+    assert ts.signal.axes_manager.navigation_axes[0].scale == pytest.approx(3.0)
+
+
+def test_time_scan_api(tmp_path, fake_dm4):
+    from fastapi.testclient import TestClient
+
+    from si_viewer.app import create_app
+
+    session, si, _, frames, _ = binnable_pair(tmp_path, fake_dm4)
+    client = TestClient(create_app(session))
+    url = f"/api/datasets/{si.id}/insitu/time-scan"
+    assert client.post(url, json={"name": "x"}).status_code == 422  # neither a pixel nor a region
+    assert client.post(url, json={"pixel": {"x": 9, "y": 0}}).status_code == 422
+    r = client.post(url, json={"region": {"kind": "rect", "x0": 0, "y0": 0, "x1": 3, "y1": 2}, "name": "Region 1"})
+    assert r.status_code == 200, r.text
+    job = r.json()
+    for _ in range(500):
+        if job["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.01)
+        job = client.get(f"/api/jobs/{job['id']}").json()
+    assert job["status"] == "done", job
+    ts = next(d for d in job["result"]["file"]["datasets"] if d["id"] == job["result"]["dataset_id"])
+    assert ts["line_scan"] and ts["title"].endswith("· Region 1")
+    assert ts["navigation_shape"] == [6] and ts["signal_shape"] == [4]
+    np.testing.assert_allclose(
+        session.get_dataset(ts["id"]).signal.data, np.stack(frames)[:, 0:2, 0:3].mean(axis=(1, 2)), rtol=1e-6,
+    )
+    # A dataset that is not a series has none.
+    adf = next(d for d in job["result"]["file"]["datasets"] if d["kind"] == "stack")
+    assert client.post(f"/api/datasets/{adf['id']}/insitu/time-scan", json={"pixel": {"x": 0, "y": 0}}).status_code == 400
+
+
+def test_the_simultaneous_adf_keeps_its_frames(tmp_path, fake_dm4):
+    session, si, adf, _, adf_frames = binnable_pair(tmp_path, fake_dm4)
+    with pytest.raises(ValueError, match="in-situ"):
+        session.rebin(adf, [2, 1, 1])
+    session.rebin(adf, [1, 2, 2])  # x and y only
+    np.testing.assert_allclose(adf.signal.data[3], adf_frames[3].reshape(8, 2, 12, 2).sum(axis=(1, 3)))
+
+
+# ---------- drift-corrected sum ----------
+
+
+def _align_adf(adf, drift_scan_px, k=4):
+    """Give the ADF stack an applied alignment whose drift is ``drift_scan_px``
+    ((x, y) per frame, in scan pixels; None: frame left out), in ADF pixels."""
+    frames = [f for f, d in enumerate(drift_scan_px) if d is not None]
+    adf.alignment = {
+        "frames": frames, "square": [0, 0, 8, 8],
+        "drift": {"frames": frames, "x": [drift_scan_px[f][0] * k for f in frames], "y": [drift_scan_px[f][1] * k for f in frames]},
+    }
+
+
+def _expected_sum(frames, drift, use):
+    """Each frame rolled back by its drift (scan px), summed, cropped to the area every frame covers."""
+    total = sum(np.roll(frames[f], (-drift[f][1], -drift[f][0]), axis=(0, 1)) for f in use)
+    rows = [-drift[f][1] for f in use]
+    cols = [-drift[f][0] for f in use]
+    h, w = frames[0].shape[:2]
+    r0, r1 = max(max(rows), 0), min(h + min(rows), h)
+    c0, c1 = max(max(cols), 0), min(w + min(cols), w)
+    return total[r0:r1, c0:c1], (r0, r1, c0, c1)
+
+
+def test_the_package_shift_and_ours_agree():
+    from rigidregistration.utils import generateShiftedImage
+
+    from si_viewer.processing.insitu_align import shift_frame
+
+    im = np.random.default_rng(0).uniform(1, 2, (12, 17))  # not square
+    for r, c in [(2, 0), (0, 3), (-3, 5)]:
+        np.testing.assert_allclose(shift_frame(im, r, c), generateShiftedImage(im, r, c), atol=1e-12)
+    cube = np.random.default_rng(1).uniform(1, 2, (12, 17, 5))
+    moved = shift_frame(cube, 1.5, -2.25)
+    for e in range(5):  # every channel moves as the image does
+        np.testing.assert_allclose(moved[..., e], shift_frame(cube[..., e], 1.5, -2.25), atol=1e-12)
+
+
+def test_aligned_sum_from_the_adf(tmp_path, fake_dm4):
+    session, si, adf, frames, _ = binnable_pair(tmp_path, fake_dm4)
+    drift = [(0, 0), (1, 0), (1, 1), None, (0, -1), (-1, 0)]  # frame 4 was a bad frame
+    _align_adf(adf, drift)
+    src = session.alignment_source(si)
+    assert src["frames"] == 6 and src["adf"]["k"] == 4 and src["adf"]["aligned"] and src["adf"]["frames"] == 5
+
+    use, shifts, how = session.aligned_sum_shifts(si, "adf")
+    assert use == [0, 1, 2, 4, 5] and np.isnan(shifts[3]).all() and "÷4" in how
+    np.testing.assert_allclose(shifts[2], (-1, -1))  # minus the drift, in scan pixels
+    data, crop = session.compute_aligned_sum(si, use, shifts)
+    expected, crop_expected = _expected_sum(frames, drift, use)
+    assert crop == crop_expected
+    np.testing.assert_allclose(data, expected, rtol=1e-5, atol=1e-3)  # a sum, not a mean
+
+    out = session.add_aligned_sum(si, data, crop, use, how)
+    assert out.origin == "aligned-sum" and out.parent_id == si.id and out.kind is DatasetKind.SPECTRUM_IMAGE
+    assert out.insitu is None and out.title.endswith("(aligned sum, 5 frames)")
+    r0, r1, c0, c1 = crop
+    ax_x, ax_y = out.signal.axes_manager.navigation_axes
+    sx, sy = si.signal.axes_manager.navigation_axes
+    assert (ax_x.size, ax_y.size) == (c1 - c0, r1 - r0)
+    assert ax_x.offset == pytest.approx(sx.offset + c0 * sx.scale) and ax_y.offset == pytest.approx(sy.offset + r0 * sy.scale)
+    assert session.delete_dataset(out) is not None and out.id not in session.datasets
+
+
+def test_aligned_sum_needs_an_aligned_adf(tmp_path, fake_dm4):
+    session, si, adf, _, _ = binnable_pair(tmp_path, fake_dm4)
+    with pytest.raises(ValueError, match="Align"):
+        session.aligned_sum_shifts(si, "adf")
+
+
+def test_imported_shifts_are_checked(tmp_path, fake_dm4):
+    import io
+
+    session, si, _, frames, _ = binnable_pair(tmp_path, fake_dm4)
+
+    def npy(a):
+        buf = io.BytesIO()
+        np.save(buf, np.asarray(a))
+        return buf.getvalue()
+
+    drift = [(0, 0), (1, 0), (1, 1), (0, 0), (0, -1), (-1, 0)]
+    shifts = np.array([(-x, -y) for x, y in drift], float)
+    # In scan pixels, as (frames, 2) or (2, frames); NaN leaves a frame out.
+    shifts[3] = np.nan
+    for a in (shifts, shifts.T):
+        use, s, _ = session.aligned_sum_shifts(si, "npy", npy(a), "scan")
+        assert use == [0, 1, 2, 4, 5]
+    data, _ = session.compute_aligned_sum(si, use, s)
+    np.testing.assert_allclose(data, _expected_sum(frames, drift, use)[0], rtol=1e-5, atol=1e-3)
+    # In ADF pixels: divided by the sub-scan factor (4).
+    _, s4, _ = session.aligned_sum_shifts(si, "npy", npy(shifts * 4), "adf")
+    np.testing.assert_allclose(s4[~np.isnan(s4)], shifts[~np.isnan(shifts)])
+    for bad, why in [
+        (np.zeros((5, 2)), "6 frames"),
+        (np.zeros((6, 3)), "Expected"),
+        (np.full((6, 2), np.nan), "left out"),
+        (np.full((6, 2), 50.0), "as large as the scan"),
+        (np.array(["a"] * 12).reshape(6, 2), "numbers"),
+    ]:
+        with pytest.raises(ValueError, match=why):
+            session.aligned_sum_shifts(si, "npy", npy(bad), "scan")
+    with pytest.raises(ValueError, match="NumPy"):
+        session.aligned_sum_shifts(si, "npy", b"not an npy file", "scan")
+
+
+def test_aligned_sum_api(tmp_path, fake_dm4):
+    import base64
+    import io
+
+    from fastapi.testclient import TestClient
+
+    from si_viewer.app import create_app
+
+    session, si, adf, frames, _ = binnable_pair(tmp_path, fake_dm4)
+    drift = [(0, 0), (1, 0), (1, 1), (0, 1), (0, -1), (-1, 0)]
+    _align_adf(adf, drift)
+    client = TestClient(create_app(session))
+    assert client.get(f"/api/datasets/{si.id}/insitu/alignment").json()["adf"]["aligned"] is True
+    check = client.post(f"/api/datasets/{si.id}/insitu/shifts-check", json={"source": "adf"}).json()
+    assert check["frames"] == 6 and check["left_out"] == 0 and check["largest"] == 1
+    assert (check["width"], check["height"]) == (4, 2)
+
+    # The ADF's shifts as .npy round-trip into the import.
+    r = client.get(f"/api/datasets/{adf.id}/alignment/shifts.npy")
+    assert r.status_code == 200
+    exported = np.load(io.BytesIO(r.content))
+    np.testing.assert_allclose(exported, [(-4 * x, -4 * y) for x, y in drift])
+    body = {"source": "npy", "units": "adf", "npy": base64.b64encode(r.content).decode()}
+    assert client.post(f"/api/datasets/{si.id}/insitu/shifts-check", json=body).json()["frames"] == 6
+
+    job = client.post(f"/api/datasets/{si.id}/insitu/aligned-sum", json=body).json()
+    for _ in range(500):
+        if job["status"] not in ("queued", "running"):
+            break
+        time.sleep(0.01)
+        job = client.get(f"/api/jobs/{job['id']}").json()
+    assert job["status"] == "done", job
+    new = next(d for d in job["result"]["file"]["datasets"] if d["id"] == job["result"]["dataset_id"])
+    assert new["origin"] == "aligned-sum" and new["kind"] == "spectrum_image" and new["navigation_shape"] == [4, 2]
+    np.testing.assert_allclose(
+        session.get_dataset(new["id"]).signal.data, _expected_sum(frames, drift, range(6))[0], rtol=1e-5, atol=1e-3,
+    )
+    bad = {"source": "npy", "units": "scan", "npy": base64.b64encode(b"nope").decode()}
+    assert client.post(f"/api/datasets/{si.id}/insitu/aligned-sum", json=bad).status_code == 422

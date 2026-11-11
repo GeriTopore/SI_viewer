@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Frame } from "../api/arrays";
-import { ContextMenu } from "./ContextMenu";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { markCursor, markPartAt, movedMark, type EnergyMark, type MarkPart } from "./ExplodedPanel";
 import { formatValue } from "../format";
 import { colormapLut } from "../viewer/colormaps";
 import type { DisplayParams } from "../viewer/renderer";
@@ -26,11 +27,15 @@ export interface ScanRange {
 /** What is under the pointer, in hit-test priority. */
 type Hit =
   | { kind: "cursor" }
+  | { kind: "mark"; hit: MarkPart }
   | { kind: "edge"; id: string; edge: "lo" | "hi" }
   | { kind: "range"; id: string };
 
-/** What a drag in progress is doing (edges are in row-boundary coordinates). */
+/** What a drag in progress is doing (edges are in row-boundary coordinates;
+ * a zoom box in fractions of the panel). */
 type Drag =
+  | { kind: "zoom"; fx: number; fy: number }
+  | { kind: "mark"; hit: MarkPart; m0: EnergyMark; e0: number }
   | { kind: "cursor" }
   | { kind: "create"; id: string; anchor: number }
   | { kind: "edge"; id: string; anchor: number }
@@ -38,6 +43,28 @@ type Drag =
 
 /** Screen distance within which the cursor line or a range edge is grabbed. */
 const GRAB_PX = 5;
+/** A zoom box thinner than this (screen px) along an axis leaves that axis as it is. */
+const ZOOM_MIN_PX = 6;
+
+/** The part of the image shown: rows r0…r1 and columns c0…c1 (end exclusive). */
+interface View {
+  r0: number;
+  r1: number;
+  c0: number;
+  c1: number;
+}
+
+/** ``a`` restricted to its indices i0…i1 (end exclusive), for the ticks. */
+const subAxis = (a: ScanAxis, i0: number, i1: number): ScanAxis => ({ ...a, offset: a.offset + i0 * a.scale, size: i1 - i0 });
+
+/** The rows r0…r1 and columns c0…c1 of ``frame`` (end exclusive). */
+function crop(frame: Frame, v: View): Frame {
+  if (v.r0 === 0 && v.c0 === 0 && v.r1 === frame.height && v.c1 === frame.width) return frame;
+  const w = v.c1 - v.c0;
+  const data = new Float32Array(w * (v.r1 - v.r0));
+  for (let r = v.r0; r < v.r1; r++) data.set(frame.data.subarray(r * frame.width + v.c0, r * frame.width + v.c1), (r - v.r0) * w);
+  return { ...frame, data, width: w, height: v.r1 - v.r0 };
+}
 
 interface Props {
   /** The image as drawn (possibly log-scaled); rows are positions, columns energy channels. */
@@ -64,6 +91,14 @@ interface Props {
   onSelect: (id: string) => void;
   onRangeRemove: (id: string) => void;
   onRangesClear: () => void;
+  /** Entries of the menu of a right-click away from the ranges. */
+  menuItems?: MenuItem[];
+  /** Lines (lo = hi) and windows on the energy axis (from the exploded
+   * view), drawn over the image in their colours; dragged to move them. */
+  energyMarks?: EnergyMark[];
+  selectedMark?: string | null;
+  onMarkSelect?: (id: string | null) => void;
+  onMarkChange?: (mark: EnergyMark) => void;
 }
 
 /** 1/2/5 × 10ⁿ tick values inside [lo, hi], about ``count`` of them. */
@@ -144,12 +179,16 @@ const TICK_COL_PX = 84;
  * elsewhere does nothing; the arrow keys nudge it). Shift+drag makes a range
  * of positions to average; dragging a range's edge changes that limit,
  * dragging its inside moves it, and pressing on it selects it. Right-click a
- * range to delete it.
+ * range to delete it. Dragging anywhere else draws a box to zoom into (a thin
+ * one zooms one axis); double-click or *Reset zoom* shows it all again.
  */
 export function LineScanImage({
   frame, values, display, rows, cols, cursor, cursorColor, ranges, loading, error,
-  onCursor, onRangeAdd, onRangeChange, onSelect, onRangeRemove, onRangesClear,
+  onCursor, onRangeAdd, onRangeChange, onSelect, onRangeRemove, onRangesClear, menuItems = [], energyMarks = [],
+  selectedMark = null, onMarkSelect, onMarkChange,
 }: Props) {
+  // A time scan's rows are frames.
+  const rowsWord = rows.label === "Time" ? "frames" : "positions";
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -157,8 +196,17 @@ export function LineScanImage({
   const [hit, setHit] = useState<Hit | null>(null);
   const [dragging, setDragging] = useState<Drag["kind"] | null>(null);
   const [shift, setShift] = useState(false);
-  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  // A range's menu (``id``), or the image's own.
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string | null } | null>(null);
   const drag = useRef<Drag | null>(null);
+  // The part shown; all of it again when the image changes size (e.g. rebinned).
+  const full: View = { r0: 0, r1: rows.size, c0: 0, c1: cols.size };
+  const [zoom, setZoom] = useState<View | null>(null);
+  useEffect(() => setZoom(null), [rows.size, cols.size]);
+  const v = zoom ?? full;
+  const nr = v.r1 - v.r0;
+  const nc = v.c1 - v.c0;
+  const [box, setBox] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
   useLayoutEffect(() => {
     const el = wrapRef.current!;
@@ -171,8 +219,8 @@ export function LineScanImage({
     const canvas = canvasRef.current;
     if (!canvas || !frame || !display || !size.w) return;
     const dpr = window.devicePixelRatio || 1;
-    paint(canvas, frame, display, Math.round(size.w * dpr), Math.round(size.h * dpr));
-  }, [frame, display, size]);
+    paint(canvas, crop(frame, v), display, Math.round(size.w * dpr), Math.round(size.h * dpr));
+  }, [frame, display, size, v.r0, v.r1, v.c0, v.c1]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track Shift so the crosshair pointer follows it without moving the mouse.
   useEffect(() => {
@@ -188,21 +236,29 @@ export function LineScanImage({
     };
   }, []);
 
-  /** Row and column of the data under a pointer (clamped to the image). */
-  const cellAt = (e: React.PointerEvent | React.MouseEvent) => {
+  /** Where a pointer is, as fractions (0…1) of the panel's width and height. */
+  const fracAt = (e: React.PointerEvent | React.MouseEvent) => {
     const r = wrapRef.current!.getBoundingClientRect();
-    const clamp = (v: number, n: number) => Math.min(n - 1, Math.max(0, Math.floor(v)));
+    const f = (x: number) => Math.min(1, Math.max(0, x));
+    return { fx: f((e.clientX - r.left) / r.width), fy: f((e.clientY - r.top) / r.height) };
+  };
+
+  /** Row and column of the data under a pointer (clamped to the part shown). */
+  const cellAt = (e: React.PointerEvent | React.MouseEvent) => {
+    const { fx, fy } = fracAt(e);
     return {
-      row: clamp(((e.clientY - r.top) / r.height) * rows.size, rows.size),
-      col: clamp(((e.clientX - r.left) / r.width) * cols.size, cols.size),
+      row: Math.min(v.r1 - 1, v.r0 + Math.floor(fy * nr)),
+      col: Math.min(v.c1 - 1, v.c0 + Math.floor(fx * nc)),
     };
   };
 
-  /** Position of a pointer in row units, 0…rows.size (fractional). */
-  const rowAt = (e: React.PointerEvent | React.MouseEvent) => {
-    const r = wrapRef.current!.getBoundingClientRect();
-    return Math.min(rows.size, Math.max(0, ((e.clientY - r.top) / r.height) * rows.size));
-  };
+  /** Where energy ``e`` is across the part shown, in % (a channel is centred on its value). */
+  const energyPct = (e: number) => (((e - cols.offset) / cols.scale + 0.5 - v.c0) / nc) * 100;
+  /** The energy under a pointer. */
+  const energyAt = (e: React.PointerEvent | React.MouseEvent) => cols.offset + (v.c0 + fracAt(e).fx * nc - 0.5) * cols.scale;
+
+  /** Position of a pointer in row units (fractional, within the part shown). */
+  const rowAt = (e: React.PointerEvent | React.MouseEvent) => v.r0 + fracAt(e).fy * nr;
 
   // Selected range last: drawn on top, and the first to be hit.
   const drawn = [...ranges.filter((r) => !r.selected), ...ranges.filter((r) => r.selected)];
@@ -211,8 +267,11 @@ export function LineScanImage({
   const hitAt = (e: React.PointerEvent | React.MouseEvent, withCursor = true): Hit | null => {
     const rect = wrapRef.current!.getBoundingClientRect();
     const y = e.clientY - rect.top;
-    const px = (row: number) => (row / rows.size) * rect.height;
+    const px = (row: number) => ((row - v.r0) / nr) * rect.height;
     if (withCursor && cursor !== null && Math.abs(y - px(cursor + 0.5)) <= GRAB_PX) return { kind: "cursor" };
+    // Marks run across the rows: their lines and edges, then the ranges, then a window's inside.
+    const mark = markPartAt(e.clientX - rect.left, energyMarks, (en) => (energyPct(en) / 100) * rect.width, GRAB_PX);
+    if (mark && mark.part !== "in") return { kind: "mark", hit: mark };
     const top = [...drawn].reverse();
     for (const r of top) {
       const yLo = px(r.lo);
@@ -223,7 +282,7 @@ export function LineScanImage({
       if (Math.min(dLo, dHi) <= tol) return { kind: "edge", id: r.id, edge: dLo <= dHi ? "lo" : "hi" };
     }
     for (const r of top) if (y >= px(r.lo) && y <= px(r.hi + 1)) return { kind: "range", id: r.id };
-    return null;
+    return mark ? { kind: "mark", hit: mark } : null;
   };
 
   const setHitIfChanged = (h: Hit | null) =>
@@ -247,7 +306,12 @@ export function LineScanImage({
       d = { kind: "create", id: onRangeAdd(row, row), anchor: row };
     } else {
       const h = hitAt(e);
+      if (h?.kind !== "mark") onMarkSelect?.(null);
       if (h?.kind === "cursor") d = { kind: "cursor" };
+      else if (h?.kind === "mark") {
+        onMarkSelect?.(h.hit.id);
+        d = { kind: "mark", hit: h.hit, m0: energyMarks.find((m) => m.id === h.hit.id)!, e0: energyAt(e) };
+      }
       else if (h?.kind === "edge") {
         const r = ranges.find((x) => x.id === h.id)!;
         onSelect(h.id);
@@ -256,6 +320,8 @@ export function LineScanImage({
         const r = ranges.find((x) => x.id === h.id)!;
         onSelect(h.id);
         d = { kind: "move", id: h.id, lo: r.lo, hi: r.hi, startF: rowAt(e) };
+      } else {
+        d = { kind: "zoom", ...fracAt(e) };
       }
     }
     if (!d) return;
@@ -270,7 +336,11 @@ export function LineScanImage({
     setShift(e.shiftKey);
     const d = drag.current;
     if (!d) return setHitIfChanged(hitAt(e));
-    if (d.kind === "cursor") onCursor(c.row);
+    if (d.kind === "mark") onMarkChange?.(movedMark(d.m0, d.hit.part, energyAt(e) - d.e0));
+    else if (d.kind === "zoom") {
+      const { fx, fy } = fracAt(e);
+      setBox({ x0: Math.min(d.fx, fx), x1: Math.max(d.fx, fx), y0: Math.min(d.fy, fy), y1: Math.max(d.fy, fy) });
+    } else if (d.kind === "cursor") onCursor(c.row);
     else if (d.kind === "create") onRangeChange(d.id, Math.min(d.anchor, c.row), Math.max(d.anchor, c.row));
     else if (d.kind === "edge") onRangeChange(d.id, ...fromEdge(d.anchor, rowAt(e)));
     else {
@@ -281,13 +351,32 @@ export function LineScanImage({
   };
 
   const endDrag = () => {
+    const d = drag.current;
     drag.current = null;
     setDragging(null);
+    setBox(null);
+    if (d?.kind !== "zoom" || !box) return;
+    // Zoom to the whole rows and columns the box touches, along each axis it spans.
+    const { w, h } = size;
+    const along = (f0: number, f1: number, i0: number, n: number, px: number): [number, number] | null => {
+      if ((f1 - f0) * px < ZOOM_MIN_PX) return null;
+      const a = i0 + Math.floor(f0 * n);
+      return [a, Math.max(a + 1, i0 + Math.ceil(f1 * n))];
+    };
+    const r = along(box.y0, box.y1, v.r0, nr, h);
+    const c = along(box.x0, box.x1, v.c0, nc, w);
+    if (!r && !c) return;
+    setZoom({ r0: r?.[0] ?? v.r0, r1: r?.[1] ?? v.r1, c0: c?.[0] ?? v.c0, c1: c?.[1] ?? v.c1 });
   };
 
   const onContextMenu = (e: React.MouseEvent) => {
     const h = hitAt(e, false);
-    if (!h || h.kind === "cursor") return;
+    if (!h || h.kind === "cursor" || h.kind === "mark") {
+      if (!menuItems.length) return;
+      e.preventDefault();
+      setMenu({ x: e.clientX, y: e.clientY, id: null });
+      return;
+    }
     e.preventDefault();
     onSelect(h.id);
     setMenu({ x: e.clientX, y: e.clientY, id: h.id });
@@ -301,10 +390,14 @@ export function LineScanImage({
   };
 
   const pointer = dragging
-    ? { cursor: "row-resize", edge: "ns-resize", move: "grabbing", create: "crosshair" }[dragging]
+    ? dragging === "mark"
+      ? markCursor(drag.current?.kind === "mark" ? drag.current.hit.part : "line", true)
+      : { cursor: "row-resize", edge: "ns-resize", move: "grabbing", create: "crosshair", zoom: "crosshair" }[dragging]
     : shift
       ? "crosshair"
-      : hit?.kind === "cursor"
+      : hit?.kind === "mark"
+        ? markCursor(hit.hit.part)
+        : hit?.kind === "cursor"
         ? "row-resize"
         : hit?.kind === "edge"
           ? "ns-resize"
@@ -312,10 +405,11 @@ export function LineScanImage({
             ? "grab"
             : "default";
 
-  const yTicks = axisTicks(rows, size.h, TICK_ROW_PX);
-  const xTicks = axisTicks(cols, size.w, TICK_COL_PX);
+  const yTicks = axisTicks(subAxis(rows, v.r0, v.r1), size.h, TICK_ROW_PX);
+  const xTicks = axisTicks(subAxis(cols, v.c0, v.c1), size.w, TICK_COL_PX);
   const axisTitle = (a: ScanAxis) => (a.units ? `${a.label} (${a.units})` : a.label);
-  const rowPct = (r: number) => (r / rows.size) * 100;
+  const rowPct = (r: number) => ((r - v.r0) / nr) * 100;
+
 
   return (
     <div className="linescan">
@@ -343,6 +437,7 @@ export function LineScanImage({
           }}
           onContextMenu={onContextMenu}
           onKeyDown={onKeyDown}
+          onDoubleClick={() => setZoom(null)}
         >
           <canvas ref={canvasRef} />
           {drawn.map((r) => (
@@ -356,10 +451,28 @@ export function LineScanImage({
               }}
             />
           ))}
+          {energyMarks.map((m) => {
+            const cls = `${m.lo === m.hi ? "linescan-emark" : "linescan-ewindow"}${m.id === selectedMark ? " selected" : ""}`;
+            const style = { ["--mark-color" as string]: m.color, left: `${energyPct(m.lo)}%` };
+            return m.lo === m.hi ? (
+              <div key={m.id} className={cls} style={style} />
+            ) : (
+              <div key={m.id} className={cls} style={{ ...style, width: `${energyPct(m.hi) - energyPct(m.lo)}%` }} />
+            );
+          })}
           {cursor !== null && (
             <div
               className="linescan-cursor"
               style={{ top: `${rowPct(cursor + 0.5)}%`, borderColor: cursorColor }}
+            />
+          )}
+          {box && (
+            <div
+              className="linescan-zoom-box"
+              style={{
+                left: `${box.x0 * 100}%`, width: `${(box.x1 - box.x0) * 100}%`,
+                top: `${box.y0 * 100}%`, height: `${(box.y1 - box.y0) * 100}%`,
+              }}
             />
           )}
           {(loading || error) && (
@@ -396,11 +509,16 @@ export function LineScanImage({
             </>
           ) : (
             <span className="muted">
-              {rows.size} positions × {cols.size} channels · drag the cursor line · Shift+drag to select positions to average
+              {rows.size} {rowsWord} × {cols.size} channels · drag to zoom · drag the cursor line · Shift+drag to select {rowsWord} to average
             </span>
           )}
         </span>
         <span className="readout-zoom">
+          {zoom && (
+            <button className="link-button" onClick={() => setZoom(null)} title="Show the whole LineScan (or double-click)">
+              Reset zoom
+            </button>
+          )}
           {ranges.length > 0 && (
             <button className="link-button" onClick={onRangesClear} title="Delete every range">
               Clear ranges
@@ -413,10 +531,14 @@ export function LineScanImage({
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
-          items={[
-            { label: "Delete range", danger: true, onSelect: () => onRangeRemove(menu.id) },
-            ...(ranges.length > 1 ? [{ label: "Delete all ranges", danger: true, onSelect: onRangesClear }] : []),
-          ]}
+          items={
+            menu.id === null
+              ? menuItems
+              : [
+                  { label: "Delete range", danger: true, onSelect: () => onRangeRemove(menu.id!) },
+                  ...(ranges.length > 1 ? [{ label: "Delete all ranges", danger: true, onSelect: onRangesClear }] : []),
+                ]
+          }
         />
       )}
     </div>

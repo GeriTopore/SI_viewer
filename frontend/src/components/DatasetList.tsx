@@ -36,7 +36,7 @@ const badgeClass = (d: DatasetSummary) =>
 
 const deleteTitle = (d: DatasetSummary) =>
   isBackgroundRemoved(d) || isDeconvolved(d) || d.origin === "line-scan"
-    ? `Delete this ${isLineScan(d) ? "line scan" : "spectrum image"} (and what was made from it)`
+    ? `Delete this ${isLineScan(d) ? "LineScan" : "spectrum image"} (and what was made from it)`
     : d.origin === "fitted" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
       ? "Delete this map"
       : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +

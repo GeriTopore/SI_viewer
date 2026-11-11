@@ -6,6 +6,7 @@ import { ElementsPicker } from "../components/ElementsPicker";
 import { LineScanImage, type ScanAxis } from "../components/LineScanImage";
 import { BottomPane } from "../components/BottomPane";
 import { HistogramPanel } from "../components/HistogramPanel";
+import { ExplodedPanel, marksKey, type EnergyMark } from "../components/ExplodedPanel";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
@@ -265,7 +266,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
       onEditWindow={(id, range, final) => zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
       xLabel={axis.label}
       xUnits={axis.units}
-      loading={whole.data ? null : ready ? "Summing spectra…" : "Loading line scan into memory…"}
+      loading={whole.data ? null : ready ? "Summing spectra…" : "Loading LineScan into memory…"}
       error={whole.error ?? loadError}
       toolbar={
         <>
@@ -278,10 +279,62 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   );
 
   // A linked group has a tab for each member (T cycles them).
+  // The exploded view (right-click the image): the spectra of the image shown, as a cascade.
+  const [exploded, setExploded] = useState(false);
+  // Lines and windows on the energy axis made in the exploded view (also drawn on the image).
+  const [marks, setMarks] = useState<EnergyMark[]>([]);
+  const [markSel, setMarkSel] = useState<string | null>(null);
+  useEffect(() => {
+    setExploded(false);
+    setMarks([]);
+    setMarkSel(null);
+  }, [ds.id]);
+  const changeMark = (m: EnergyMark) => setMarks((ms) => ms.map((x) => (x.id === m.id ? m : x)));
+  const marksHidden = useUi((s) => !!s.annotationsHidden[marksKey(ds.id)]);
+  // Delete removes the selected mark, Esc deselects it (a selected range goes first).
+  const deleteMark = () => {
+    if (!markSel) return false;
+    setMarks((ms) => ms.filter((m) => m.id !== markSel));
+    setMarkSel(null);
+  };
+  useShortcuts({
+    Delete: deleteMark,
+    Backspace: deleteMark,
+    Escape: () => (markSel ? setMarkSel(null) : false),
+  });
+  const setBottomTab = useUi((s) => s.setBottomTab);
+  const openExploded = () => {
+    setExploded(true);
+    setBottomTab("exploded");
+  };
   const tabs = [
     ...memberTabs(ds, group, spectrumPlot, st, true, legend),
     // The values of the image shown (log-scaled when it is shown in Log).
     { id: "histogram" as const, label: "Histogram", content: <HistogramPanel frame={drawn} label={imgDs.title} display={display.display} /> },
+    ...(exploded
+      ? [{
+          id: "exploded" as const,
+          label: "Exploded",
+          content: (
+            <ExplodedPanel
+              frame={shown?.frame ?? null}
+              rows={rows}
+              cols={cols}
+              label={imgDs.title}
+              marksView={marksKey(ds.id)}
+              marks={marks}
+              onMarksChange={setMarks}
+              selected={markSel}
+              onSelect={setMarkSel}
+              onClose={() => {
+                setExploded(false);
+                setMarks([]);
+                setBottomTab(linked ? eelsTab(ds.id) : "spectrum");
+              }}
+            />
+          ),
+        }]
+      : []),
   ];
 
   // Image above, spectrum below, with the same draggable split as the other views.
@@ -320,7 +373,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
               ranges={ranges
                 .filter((r) => r.roi.visible)
                 .map((r) => ({ id: r.roi.id, lo: r.lo, hi: r.hi, color: r.roi.color, selected: st.selected === r.roi.id }))}
-              loading={drawn ? null : imgReady ? "Loading line scan…" : "Loading line scan into memory…"}
+              loading={drawn ? null : imgReady ? "Loading LineScan…" : "Loading LineScan into memory…"}
               error={(other ? otherError : frameError) ?? loadError}
               onCursor={setCursor}
               onRangeAdd={addRange}
@@ -328,6 +381,17 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
               onSelect={(id) => patch(ds.id, { selected: id })}
               onRangeRemove={removeRange}
               onRangesClear={clearRanges}
+              energyMarks={marksHidden ? [] : marks}
+              selectedMark={markSel}
+              onMarkSelect={setMarkSel}
+              onMarkChange={changeMark}
+              menuItems={[
+                {
+                  label: "Exploded view",
+                  title: "The spectra as a cascade, coloured blue to red from the first row to the last",
+                  onSelect: openExploded,
+                },
+              ]}
             />
           </div>
           <BottomPane tabs={tabs} viewerRef={viewerRef} resizeLabel="Resize the image and the spectrum below it" />

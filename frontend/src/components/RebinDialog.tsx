@@ -2,31 +2,38 @@ import { useEffect, useState } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, groupOf, planeSize, useDatasets } from "../state/datasets";
 import { formatValue, isLineScan } from "../format";
+import { InPlaceChoice, useInPlace } from "./InPlaceChoice";
 
-/** Only spectrum images are rebinned, together with everything on their scan
- * (not line scans: they have no 2D scan). */
-export const canRebin = (d: DatasetSummary) => d.kind === "spectrum_image" && !isLineScan(d);
+/** Spectrum images are rebinned (a 2D one with everything on its scan, a
+ * line scan along its positions or times and energy), and stacks (along
+ * their frames, y and x). */
+export const canRebin = (d: DatasetSummary) => d.kind === "spectrum_image" || d.kind === "stack";
 
-/** Indices (in ``d.axes``) of the scan's y and x axes. */
+/** Indices (in ``d.axes``) of the y and x axes: a scan's, or a stack's frame. */
 function planeAxes(d: DatasetSummary): [number, number] | null {
-  const idx = d.axes.map((a, i) => [a, i] as const).filter(([a]) => a.navigate).map(([, i]) => i);
+  const inPlane = (a: DatasetSummary["axes"][number]) => (d.kind === "stack" ? !a.navigate : a.navigate);
+  const idx = d.axes.map((a, i) => [a, i] as const).filter(([a]) => inPlane(a)).map(([, i]) => i);
   return idx.length >= 2 ? [idx[idx.length - 2], idx[idx.length - 1]] : null;
 }
 
-const axisName = (d: DatasetSummary, i: number) => d.axes[i].name || `axis ${i}`;
+/** An axis' name; a stack's unnamed frame axis is "Frames". */
+const axisName = (d: DatasetSummary, i: number) =>
+  d.axes[i].name || (d.kind === "stack" && d.axes[i].navigate ? "Frames" : `axis ${i}`);
 
 /** Dialog choosing an integer binning factor per axis of a spectrum image
  * (HyperSpy rebin). Images on the same scan are binned with it. An in-situ
  * series also has its time axis: each new frame sums that many frames. */
 export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => void }) {
   const plane = planeAxes(d);
-  // Start with 2 × 2 on the scan.
-  const [factors, setFactors] = useState<number[]>(() => d.axes.map((_, i) => (plane?.includes(i) ? 2 : 1)));
+  // Start with 2 × 2 on the scan (a line scan: 2 along it).
+  const [factors, setFactors] = useState<number[]>(() => d.axes.map((a, i) => (plane ? plane.includes(i) : a.navigate) ? 2 : 1));
   // Loaded images and stacks of the same scan, binned with it (maps are remade).
   const files = useDatasets((s) => s.files);
   const [sw, sh] = planeSize(d);
   const onScan = allDatasets(files).filter(
     (x) =>
+      d.kind === "spectrum_image" &&
+      !isLineScan(d) &&
       x.file_id === d.file_id &&
       x.origin === "file" &&
       (x.kind === "image" || x.kind === "stack") &&
@@ -39,6 +46,9 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
   const [linked, setLinked] = useState(true);
   const series = d.insitu?.view ? d.insitu : null;
   const [time, setTime] = useState(1);
+  // A series is binned as it is read: in place only.
+  const [inPlaceChoice, setInPlace] = useInPlace("rebin");
+  const inPlace = series ? true : inPlaceChoice;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,7 +70,7 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
     setBusy(true);
     setError(null);
     try {
-      await useDatasets.getState().rebin(d, factors, time);
+      await useDatasets.getState().rebin(d, factors, time, inPlace);
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -145,15 +155,20 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
             Same factor for x and y
           </label>
         )}
-        {group.length + onScan.length > 0 && (
+        {!series && (
+          <div className="rebin-in-place">
+            <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={busy} what={d.title} />
+          </div>
+        )}
+        {inPlace && group.length + onScan.length > 0 && (
           <p className="muted small rebin-also">
             Also binned: {[...group.map((x) => `${x.title} (linked)`), ...onScan.map((x) => x.title)].join(", ")}
           </p>
         )}
-        <div className="rebin-warning" role="note">
+        <div className="rebin-warning" role="note" hidden={!inPlace}>
           {series
             ? `Every frame is binned from now on${series.view?.mode !== "frame" ? "; the frame range becomes one frame" : ""}; the files are unchanged.`
-            : "Overwrites the loaded data; the file is unchanged."}
+            : `Overwrites the loaded data${d.alignment ? " and removes its drift correction" : ""}; the file is unchanged.`}
         </div>
         {error && <p className="field-error">{error}</p>}
         <div className="rebin-actions">

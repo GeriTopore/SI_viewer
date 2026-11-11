@@ -66,7 +66,8 @@ interface DatasetsState {
   /** Delete an element or window map (the backend also unticks an element). */
   deleteDataset: (d: DatasetSummary) => Promise<void>;
   /** Rebin the loaded data in place (one factor per axis). */
-  rebin: (d: DatasetSummary, factors: number[], time?: number) => Promise<void>;
+  /** ``inPlace`` false: a copy is rebinned, a new dataset under ``d``, and selected. */
+  rebin: (d: DatasetSummary, factors: number[], time?: number, inPlace?: boolean) => Promise<void>;
   /** Show only this dataset. */
   select: (datasetId: string) => void;
   /** Plain click in the dataset pane: images toggle in and out of the view;
@@ -340,7 +341,7 @@ function combineError(current: DatasetSummary[], d: DatasetSummary): string | nu
   const images = all.filter((x) => x.kind === "image");
   const primary = primaries[0];
   if (!primary) return null;
-  if (isLineScan(primary) && images.length) return "Images can't be shown with a line scan.";
+  if (isLineScan(primary) && images.length) return "Images can't be shown with a LineScan.";
   if (primary.kind !== "spectrum_image" && images.length) return `Images can't be shown with a ${primary.kind}.`;
   const [w, h] = planeSize(primary);
   for (const im of images) {
@@ -587,9 +588,13 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       }
     },
 
-    rebin: async (d, factors, time = 1) => {
-      const r = await api.rebin(d.id, factors, time);
+    rebin: async (d, factors, time = 1, inPlace = true) => {
+      const r = await api.rebin(d.id, factors, time, inPlace);
       get().replaceFile(r.file);
+      if (!inPlace) {
+        get().select(r.dataset.id);
+        return;
+      }
       // The datasets linked to it are rebinned with it.
       if (d.eels?.linked.length || r.dataset.eels?.linked.length) await get().syncFiles();
     },
@@ -711,7 +716,8 @@ export const useDatasets = create<DatasetsState>((set, get) => {
  * background-removed SIs (with their r maps), deconvolved SIs and line scans cut from SIs. */
 export const canDelete = (d: DatasetSummary) =>
   d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r" ||
-  d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan";
+  d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan" ||
+  d.origin === "aligned-sum" || d.origin === "rebinned" || d.origin === "zlp-aligned" || d.origin === "aligned";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);

@@ -13,9 +13,10 @@ export type GridContext = "si" | "images";
 /** Tabs of the pane under the image; a linked EELS spectrum image has one per
  * member of its group, ``eels:<dataset id>`` (ids last for one session only:
  * a stored one that is not shown falls back, see BottomPane). */
-export type BottomTab = "spectrum" | "profile" | "histogram" | "alignment" | `eels:${string}`;
+export type BottomTab = "spectrum" | "profile" | "histogram" | "exploded" | "alignment" | `eels:${string}`;
 const isBottomTab = (t: string | undefined): t is BottomTab =>
-  t === "spectrum" || t === "profile" || t === "histogram" || t === "alignment" || (!!t && t.startsWith("eels:") && t.length > 5);
+  t === "spectrum" || t === "profile" || t === "histogram" || t === "exploded" || t === "alignment" ||
+  (!!t && t.startsWith("eels:") && t.length > 5);
 export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
 /** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */
 export type BottomSplit = [BottomTab, BottomTab];

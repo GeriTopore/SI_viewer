@@ -1109,20 +1109,38 @@ the ADF frame at the same time as navigator.
 - *Not done.* Thickness / ZLP-shift titles don't name their frame; a
   background-removed result is not remade when the frame changes.
 
-**M12c — Time series job.** One pass, chosen outputs: total-counts image per
-frame (a navigator stack), sum spectrum per frame (a spectrum-vs-time
-image), maps of chosen energy windows per frame (a stack), spectra of chosen
-regions per frame. Cached on disk (`~/.cache/si-viewer`, keyed by path and
-modification time).
+**M12c — Time scans.** Done. Right-click the image of a series: *Time scan
+at the cursor (x, y[, n×n])* and *Time scan of <region>* for each region under
+the pointer. A job (progress in the frame bar's ring, cancel by clicking it)
+reads every frame (of the current time binning) and makes a line scan under
+the series: row k is the mean spectrum of the cursor's block or the region in
+frame k, on a "Time" axis (s; first frame's time, median interval; the frame
+times are kept in the metadata). Linked series on the same scan get one too,
+linked in turn. `POST …/insitu/time-scan {pixel | region, name}`.
+Line scans (from profiles or over time) can be rebinned along both axes.
 
-**M12d — Time tab.** Next to Spectrum: the spectrum-vs-time image with the
-energy windows as bands; window intensity against time for the cursor or a
-region.
+(The earlier M12c time-series job and M12d Time tab were dropped.)
 
-**M12e — Sum frames.** A frame range summed into an in-memory spectrum image
-(all EELS tools apply), optionally drift-corrected with the ADF stack's
-alignment, shifts scaled to the SI's pixels (sub-pixel Fourier shift, or
-whole pixels).
+**M12e — Aligned sum.** Done for series with a simultaneous ADF (and for
+imported shifts). Process tab *Aligned sum* on an in-situ SI:
+- *Shifts:* the alignment applied to the ADF stack (Align frames), taken
+  automatically: each frame's shift is minus its drift, divided by the
+  sub-scan factor k (ADF px per scan px); or a `.npy` file (frames, 2): the
+  (x, y) shift that aligns each frame, in ADF or scan pixels, NaN leaving a
+  frame out (shape, frame count, finiteness and size are checked; the check
+  shows frames used, the largest shift and the area kept). Aligned stacks
+  export their shifts in this format (*Shifts (.npy)*).
+- *Applying them:* rigidregistration's `generateShiftedImage` is 2D only
+  and keeps the modulus, so `processing/insitu_align.py` does the same
+  Fourier shift for a whole frame (every energy channel), keeping the real
+  part (integer shifts give the package's result exactly). The package is
+  not changed.
+- *The job:* every recorded frame read once (binned in y, x, E as the series
+  is; not in time), shifted, **summed** (counts, not a mean), cropped to the
+  area every frame covers (the package's `crop_image`). Progress in the
+  section and the frame bar's ring; the result is a new SI under the series
+  (`origin "aligned-sum"`, deletable), calibrated and offset to the crop.
+- *Next:* series without an ADF: align a stack of virtual images instead.
 
 **Later:** in-situ low-/core-loss pairs; an optional local copy or
 spectrum-major conversion for fast spectra over time; `.dm5`; in-situ
@@ -1313,6 +1331,102 @@ undone ("Deleted Fe Kα · ⌘/Ctrl Z to undo"), and undoing says what came back
 - `state/undo.ts`, `deleteRois` / `deleteLine` / `deleteBox`; tests in
   `tests/test_undo.py`.
 
+### 4.20 Saving an analysis as a project (M18, planned)
+
+An analysis (the dataset tree, how each result was made, and what the views
+showed) saved as one HDF5 project file that the app reopens and that HyperSpy
+reads in a notebook.
+
+**Decisions.**
+- *Raw data is referenced by default; embedding is an option* (Save as…:
+  "Embed raw data", for files that fit; in-situ series are always
+  referenced). A reference keeps the path absolute and relative to the
+  project, and a fingerprint (size, modification time, hash of the first
+  MBs).
+- *Opens in HyperSpy:* every stored signal is an `.hspy`-style group (written
+  with rosettasciio), so `h5py`/`hs.load` can read them; the app's own
+  information is in attributes and JSON next to them.
+- *Changed raw data* (fingerprint mismatch: expected only after an
+  accidental overwrite): the project opens with a warning naming the files;
+  stored arrays are kept as saved; results rebuilt from settings are rebuilt
+  from the current file and marked "made from changed data".
+
+**What is saved.**
+- *Recipes for everything:* each node of the tree with its parent, origin and
+  settings (window, filters, background options, line spec, thickness
+  options, …). Cheap ones are rebuilt on load: window and element maps,
+  filters, LineScans, background removal, thickness, time scans.
+- *Arrays where rebuilding is slow or impossible:* per-pixel fits, aligned
+  sums, deconvolution, drift correction (shifts and average), anything made
+  from imported shifts; stored compressed and used while the fingerprint
+  matches.
+- *Operations that change loaded data:* an ordered, structured log per
+  dataset (rebin factors, ZLP alignment options, in-situ binning, stack
+  rebin, applied alignment), replayed on the raw data at load. Today these
+  are labels (`rebinned`); they become records.
+- *The views:* regions, profile lines, energy marks, FFT boxes, contrast and
+  colour maps, layers, each dataset's workspace (M16), the selection. Not
+  undo history.
+- *Format details:* `schema_version` and app/library versions on the root;
+  written to a temporary file and renamed (HDF5 does not reclaim rewritten
+  space); no pickles.
+
+```
+analysis.siv (HDF5)
+├─ attrs: schema_version, versions, saved
+├─ raw/<file_id>     attrs: paths, fingerprint     [data only if embedded]
+├─ datasets/<id>     attrs: origin, parent_id, title, recipe (JSON), ops (JSON)
+│   └─ signal/       .hspy group (stored arrays only)
+└─ ui/               JSON: regions, lines, marks, display, layers, workspaces
+```
+
+**Sharing (Save as… levels).**
+
+| Save as… | Contains | For |
+|---|---|---|
+| Link raw data | recipes, operation log, views; small arrays | yourself, with the data |
+| Include results | the above + every dataset's current data stored | sharing without the raw data |
+| Include raw data | the above + the raw files embedded | a full handover |
+
+"Include results" lets the datasets to store be ticked (all by default) and
+shows the size; an in-situ series stores what was made from it (the frame or
+range shown, aligned sums, time scans), never the series. Opened without the
+raw data, everything stored works and can be built on; what needs the raw
+files (undoing an in-place step, frame browsing) is marked "raw data not
+included" and its actions disabled, until the raw data is found next to the
+project (then relinked).
+
+**Opening.** Raw files are found by the relative path, then the absolute
+one, then a *Locate…* dialog (finding one also searches its folder for the
+others); fingerprints are checked; operations replayed; recipes rebuilt;
+stored arrays loaded; the views restored.
+
+**In place or as a new dataset (M18a, done).** Built as below: an *In
+place | New dataset* switch (remembered per operation in the browser) in the
+Rebin dialog (not for in-situ series, which are binned as they are read),
+Zero-loss alignment and Align frames' Apply. New datasets: origins
+"rebinned", "zlp-aligned" (linked as their sources are; the ZLP shift map
+under the new low loss), "aligned" (its average under it); deletable.
+Operations are recorded on ``Dataset.ops`` ({"op": "rebin" | "rebin-series"
+| "zlp-align" | "align" | "unalign", …}); copies carry ``copied_at``.
+
+Originally planned: Every operation that changes
+loaded data gets the choice: *Rebin*, *Zero-loss alignment*, *Align frames*
+(Apply), stack and in-situ *Rebin*. "In place" works as now; "New dataset"
+leaves the source as it is and adds the result under it (`origin` e.g.
+"rebinned", "zlp-aligned", "aligned", with its recipe), so it is an ordinary
+node of the tree, saved and deleted like the others. The default is in place
+(as now); the choice is remembered per operation.
+
+**Phases.**
+1. M18a: in place / new dataset; operations recorded as structured data.
+2. M18b: save and open: referenced raw data, recipes, the operation log, the
+   views; HyperSpy-readable groups.
+3. M18c: stored arrays for slow or unrebuildable results; fingerprint checks
+   and the changed-data warning.
+4. M18d: embedding raw data; the *Locate…* dialog.
+5. Later: autosave / recovery; export as a folder of `.hspy` files.
+
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
@@ -1342,12 +1456,13 @@ undone ("Deleted Fe Kα · ⌘/Ctrl Z to undo"), and undoing says what came back
 | M9 | Drift correction of image stacks with rigidregistration, as a guided workflow in the viewer: Frames + Fourier mask (M9a, done), Peak finding + Shift matrices (M9b, done), Result + Apply (M9c, done), extras (M9d) | In progress |
 | M10 | EELS: line scans and `.dm5` (M10a), EDS or EELS detection (M10b), low-/core-loss pairs (M10c), ZLP alignment, thickness and deconvolution (M10d), background removal and edge maps (M10e) | In progress (M10a–c done; M10d: thickness, ZLP alignment and deconvolution built) |
 | M11 | Grid / Merged views for images and maps (M11a, done), split pane under the image (M11b, done) | Done |
-| M12 | In-situ EELS series from `.dm4` + `.raw`: reader (M12a), frame browsing (M12b), time-series job (M12c), Time tab (M12d), sum frames with drift correction (M12e) | In progress (M12a, M12b done) |
+| M12 | In-situ EELS series from `.dm4` + `.raw`: reader (M12a), frame browsing (M12b), time scans (M12c), sum frames with drift correction (M12e) | In progress (M12a–c done) |
 | M13 | EELS element maps by fitting edges with cross-sections: edges in the periodic table (M13a), fit one spectrum (M13b), per-pixel maps (M13c) | In progress |
 | M14 | Dataset pane as a tree of datasets and their results (M14a); one list of fitted maps with a Counts / at% switch (M14b) | Done |
 | M15 | Grid panels arranged by hand: drag by the top edge into a row or a new row; PNG export follows | Done |
 | M16 | One workspace per loaded dataset: entering one brings back what it showed | Done |
 | M17 | Undo a deletion (⌘/Ctrl Z): datasets, regions, line profiles, FFT boxes | Done |
+| M18 | Save and open an analysis (HDF5 project, HyperSpy-readable): in place / new dataset for operations (M18a), save and open (M18b), stored arrays and checks (M18c), embedding and relinking (M18d) | In progress (M18a done) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

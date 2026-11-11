@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { InPlaceChoice, useInPlace } from "./InPlaceChoice";
 import {
   api, registrationReportUrl, registrationShiftsUrl, type CorrelationType, type DatasetSummary, type MaskSettings, type MaskType, type OutlierSettings,
   type PeakMethod, type PeakSettings,
@@ -103,11 +104,14 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   const replaceFile = useDatasets((s) => s.replaceFile);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inPlace, setInPlace] = useInPlace("align");
   const apply = async () => {
     setBusy(true);
     setError(null);
     try {
-      replaceFile((await api.applyAlignment(d.id)).file);
+      const r = await api.applyAlignment(d.id, inPlace);
+      replaceFile(r.file);
+      if (!inPlace) useDatasets.getState().select(r.aligned_id);
       close();
     } catch (e) {
       setError((e as Error).message);
@@ -120,7 +124,8 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
     <section className="q-form">
       <h4 className="process-heading">Step 4 · Result</h4>
       <BadFrames d={d} a={a} hint="Mark bad under the frame" />
-      {d.alignment && <p className="muted small process-note">Replaces the current alignment.</p>}
+      <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={busy} what={d.title} />
+      {inPlace && d.alignment && <p className="muted small process-note">Replaces the current alignment.</p>}
       <div className="align-save">
         <span className="muted small">Save</span>
         <button onClick={() => downloadUrl(registrationShiftsUrl(d.id))} disabled={!a.session?.shifts}>

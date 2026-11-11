@@ -2,18 +2,21 @@ import type { DatasetSummary } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { isInsituView } from "../format";
 import { lowLossOf, useZlp, useZlpOptions } from "../state/zlp";
+import { InPlaceChoice, useInPlace } from "./InPlaceChoice";
 
 const ACTIVE = new Set(["queued", "running"]);
 
 /** Process tab, EELS spectrum images and line scans: aligns the zero-loss peak of
  * the low loss (of the shown one, or of its group) to 0 eV. Its linked core
- * losses get the same shifts. The loaded data is overwritten, like a rebin. */
+ * losses get the same shifts. In place, the loaded data is overwritten (like
+ * a rebin); as a new dataset, the aligned ones are added under them. */
 export function ZlpSection({ d }: { d: DatasetSummary }) {
   const files = useDatasets((s) => s.files);
   const ll = lowLossOf(d, files);
   const options = useZlpOptions(ll);
   const job = useZlp((s) => (ll ? s.jobs[ll.id] : undefined));
   const startError = useZlp((s) => (ll ? s.startError[ll.id] : null));
+  const [inPlace, setInPlace] = useInPlace("zlp");
   const { patch, run, cancel } = useZlp.getState();
 
   const running = !!job && ACTIVE.has(job.status);
@@ -43,9 +46,12 @@ export function ZlpSection({ d }: { d: DatasetSummary }) {
         />
         Crop
       </label>
-      <div className="rebin-warning" role="note">
-        Overwrites the loaded data; the file is unchanged.
-      </div>
+      <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={locked} what="the low loss and its core losses" />
+      {inPlace && (
+        <div className="rebin-warning" role="note">
+          Overwrites the loaded data; the file is unchanged.
+        </div>
+      )}
       {startError && <p className="field-error">{startError}</p>}
       {running ? (
         <div className="q-job">
@@ -65,7 +71,7 @@ export function ZlpSection({ d }: { d: DatasetSummary }) {
         <button
           className="primary"
           disabled={!ll || inSitu}
-          onClick={() => ll && run(ll)}
+          onClick={() => ll && run(ll, inPlace)}
           title={inSitu ? "Not for in-situ frames: the next frame would undo it" : undefined}
         >
           Align

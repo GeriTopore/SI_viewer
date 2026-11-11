@@ -209,25 +209,30 @@ class RebinBody(BaseModel):
     factors: list[int]
     # In-situ series: frames per binned frame.
     time: int = 1
+    # False: rebin a copy, a new dataset under it (not in-situ series).
+    in_place: bool = True
 
 
 @router.post("/api/datasets/{dataset_id}/rebin")
 def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
-    """Rebin a spectrum image's loaded data in place (HyperSpy rebin), with
+    """Rebin a spectrum image's (or a stack's) loaded data in place (HyperSpy rebin), with
     the images on its scan (same x/y factors); its maps are recomputed.
     The EELS spectrum images linked to it are rebinned by the same factors,
     energy included (with the images on their scans). An in-situ series is
     rebinned as a series, and can be binned along ``time`` too (each frame then
     sums that many recorded frames). Returns the spectrum image and
     its file, and the linked ones and their files (``partners``,
-    ``partner_files``; empty without any)."""
+    ``partner_files``; empty without any). Not ``in_place``: a copy is
+    rebinned instead, and ``dataset`` is that new dataset."""
     ds = _dataset(request, dataset_id)
     try:
-        request.app.state.session.rebin(ds, body.factors, time=body.time)
+        made = request.app.state.session.rebin(ds, body.factors, time=body.time, in_place=body.in_place)
     except NotRebinnable as e:
         raise HTTPException(400, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if not body.in_place:
+        return _with_linked(request, made[0], [])
     return _with_linked(request, ds, request.app.state.session.linked_of(ds))
 
 

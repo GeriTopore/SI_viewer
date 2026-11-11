@@ -46,7 +46,7 @@ export function LineDeleteDialog() {
       <div className="modal confirm-dialog" role="alertdialog" aria-label={`Delete ${line.name}`}>
         <h2>Delete {line.name}?</h2>
         <div className="rebin-warning" role="note">
-          {scans.length > 1 ? "These line scans are deleted too:" : "This line scan is deleted too:"}
+          {scans.length > 1 ? "These LineScans are deleted too:" : "This LineScan is deleted too:"}
           <ul>
             {scans.map((d) => (
               <li key={d.id}>{d.title}</li>

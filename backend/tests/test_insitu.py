@@ -763,17 +763,13 @@ def test_reduce_job_can_be_cancelled(tmp_path, fake_dm4, monkeypatch):
     assert client.get(f"/api/datasets/{si['id']}").json()["insitu"]["view"]["mode"] == "frame"  # unchanged
 
 
-def test_rebin_and_zlp_alignment_are_refused_for_a_frame(tmp_path, fake_dm4):
+def test_zlp_alignment_is_refused_for_a_frame(tmp_path, fake_dm4):
     from fastapi.testclient import TestClient
 
     from si_viewer.app import create_app
-    from si_viewer.session import NotRebinnable
 
     session, si, _, _, _ = open_pair(tmp_path, fake_dm4)
-    with pytest.raises(NotRebinnable):
-        session.rebin(si, [1, 1, 2])
     client = TestClient(create_app(session))
-    assert client.post(f"/api/datasets/{si.id}/rebin", json={"factors": [1, 1, 2]}).status_code == 400
     session.set_eels_role(si, "low_loss")
     r = client.post(f"/api/datasets/{si.id}/zlp-alignment", json={"options": {}})
     assert r.status_code == 422 and "in-situ" in r.json()["detail"]
@@ -966,3 +962,103 @@ def test_real_mean_of_two_frames(real_session):
     np.testing.assert_allclose(mean, expected, rtol=1e-6)
     session.apply_insitu_range(si, mean, "mean", 1, 2)
     assert si.insitu.view.label() == "mean of frames 2–3"
+
+
+# ---------- rebinning a series ----------
+
+
+def binnable_pair(tmp_path, fake_dm4, n=6):
+    """(session, SI, ADF, SI frames (y, x, E) as float64, ADF frames) of a
+    6 × 4 scan with 4 channels and its 4 × finer ADF, ``n`` frames 1 s apart."""
+    times = [10**9 * (k + 1) for k in range(n)]
+    si_path, _ = make_series(tmp_path, fake_dm4, "STEM SI_EELS Spectrum Image", [6, 4, 4], 2, "<f4", n, times_ns=times)
+    _, adf_frames = make_series(
+        tmp_path, fake_dm4, "STEM SI_ADF Image", [24, 16], 2, "<f4", n, times_ns=times, scale=(0.125, 0.375)
+    )
+    session = Session()
+    entry = session.open_file(si_path)
+    si, adf = (session.datasets[i] for i in entry.dataset_ids)
+    frames = [frame_array(k, [6, 4, 4], "<f4").transpose(1, 2, 0).astype(np.float64) for k in range(n)]
+    return session, si, adf, frames, adf_frames
+
+
+def binned(frame, fy, fx, fe):
+    y, x, e = (s // f for s, f in zip(frame.shape, (fy, fx, fe)))
+    return frame[: y * fy, : x * fx, : e * fe].reshape(y, fy, x, fx, e, fe).sum(axis=(1, 3, 5))
+
+
+def test_rebinning_a_series_bins_every_frame_and_the_time_axis(tmp_path, fake_dm4):
+    from si_viewer.insitu_series import adf_image, adf_stack
+
+    session, si, adf, frames, adf_frames = binnable_pair(tmp_path, fake_dm4)
+    si.materialise()
+    session.show_insitu_frame(si, 3)
+    scales = [ax.scale for ax in si.signal.axes_manager._axes]
+    rev = si.revision
+    session.rebin(si, [2, 2, 2], time=2)  # y, x, E and frames in pairs
+
+    series = si.insitu
+    assert series.n == 3 and series.frame_shape == (2, 3, 2)
+    np.testing.assert_allclose(series.times, [1.5, 3.5, 5.5])
+    # It holds the binned frame that frame 4 (index 3) went into: frames 3 and 4 summed.
+    assert series.view.as_dict() == {"mode": "frame", "start": 1, "end": 1}
+    np.testing.assert_allclose(si.signal.data, binned(frames[2] + frames[3], 2, 2, 2))
+    assert [ax.scale for ax in si.signal.axes_manager._axes] == pytest.approx([2 * f for f in scales])
+    assert si.revision == rev + 1 and si.rebinned == ["Time×2, x×2, y×2, Energy loss×2"]
+    s = si.summary()
+    assert s["navigation_shape"] == [3, 2] and s["signal_shape"] == [2]
+    assert s["insitu"]["frames"] == 3 and s["insitu"]["time_binning"] == 2 and s["insitu"]["frame_shape"] == [2, 3, 2]
+
+    # Every frame read from now on is binned; a range sums binned frames.
+    session.show_insitu_frame(si, 2)
+    np.testing.assert_allclose(si.signal.data, binned(frames[4] + frames[5], 2, 2, 2))
+    np.testing.assert_allclose(series.reduce("sum", 0, 2), binned(sum(frames), 2, 2, 2), rtol=1e-6)
+    with pytest.raises(IndexError):
+        series.read(3)
+
+    # The ADF follows: the same field of view, now 8 × finer, its frames in the same pairs.
+    assert adf_stack(si, session.siblings(si)) == (adf, 8)
+    np.testing.assert_allclose(adf_image(si, session.siblings(si)), adf_frames[4] + adf_frames[5])
+
+    # Binning again bins the binned series.
+    session.rebin(si, [1, 1, 1], time=3)
+    assert series.n == 1 and series.binning == (6, 2, 2, 2) and si.rebinned[-1] == "Time×3"
+    np.testing.assert_allclose(si.signal.data, binned(sum(frames), 2, 2, 2), rtol=1e-6)
+
+
+def test_rebinning_a_series_keeps_integer_counts(tmp_path, fake_dm4):
+    times = [10**9 * (k + 1) for k in range(4)]
+    path, raw = make_series(tmp_path, fake_dm4, "SI", [4, 2, 4], 10, "<u2", 4, times_ns=times)
+    session = Session()
+    si = session.datasets[session.open_file(path).dataset_ids[0]]
+    si.materialise()
+    session.rebin(si, [1, 2, 1], time=2)
+    frames = [f.transpose(1, 2, 0).astype(np.int64) for f in raw]
+    assert si.signal.data.dtype == np.uint32
+    np.testing.assert_array_equal(si.signal.data, binned(frames[0] + frames[1], 1, 2, 1))
+
+
+def test_rebin_api_for_a_series(tmp_path, fake_dm4):
+    from fastapi.testclient import TestClient
+
+    from si_viewer.app import create_app
+
+    session, si, _, _, _ = binnable_pair(tmp_path, fake_dm4)
+    client = TestClient(create_app(session))
+    url = f"/api/datasets/{si.id}/rebin"
+    assert client.post(url, json={"factors": [1, 1, 1], "time": 7}).status_code == 422  # 6 frames
+    assert client.post(url, json={"factors": [1, 1, 1], "time": 1}).status_code == 422  # nothing to do
+    r = client.post(url, json={"factors": [1, 1, 1], "time": 2})
+    assert r.status_code == 200, r.text
+    assert r.json()["dataset"]["insitu"]["frames"] == 3
+    # A frame of the binned series, then a range job over binned frames.
+    assert client.put(f"/api/datasets/{si.id}/insitu/frame", json={"frame": 2}).status_code == 200
+    assert client.put(f"/api/datasets/{si.id}/insitu/frame", json={"frame": 3}).status_code == 416
+
+
+def test_only_series_have_a_time_axis_to_rebin(eels_cuzn):
+    session = Session()
+    si = next(d for d in (session.datasets[i] for i in session.open_file(eels_cuzn).dataset_ids)
+              if d.kind is DatasetKind.SPECTRUM_IMAGE)
+    with pytest.raises(ValueError, match="time axis"):
+        session.rebin(si, [1, 1, 1], time=2)

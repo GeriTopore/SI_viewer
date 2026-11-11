@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 import numpy as np
@@ -267,13 +268,25 @@ def fit_spectrum(spec, options: EelsFitOptions, low_loss=None) -> dict:
     }
 
 
+@dataclass
+class PixelFits:
+    """The fit of every pixel of a spectrum image (``fit_maps``), kept to show
+    the fit at any pixel (``pixel_fit``)."""
+
+    built: EelsModel
+    failed: np.ndarray  # (height, width): pixels whose fit failed
+    options: EelsFitOptions
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+
 def fit_maps(
     signal, options: EelsFitOptions, low_loss=None, report: Callable[[float], None] = lambda f: None,
-) -> tuple[dict[str, np.ndarray], list[str]]:
+) -> tuple[dict[str, np.ndarray], list[str], PixelFits]:
     """Fit every spectrum of the spectrum image ``signal`` (exSpy's smart fit
     at each pixel) and return each element's intensity at every pixel
-    (navigation shape; NaN where the fit failed), and the elements skipped.
-    ``report`` gets the fraction done after each chunk (and may raise to stop)."""
+    (navigation shape; NaN where the fit failed), the elements skipped and
+    the fits themselves. ``report`` gets the fraction done after each chunk
+    (and may raise to stop)."""
     built = build_model(signal, options, low_loss)
     m = built.model
     nav = tuple(signal.data.shape[:-1])
@@ -302,7 +315,77 @@ def fit_maps(
         values = np.array(c.intensity.map["values"], np.float32).reshape(n)
         values[failed | ~np.isfinite(values)] = np.nan
         maps[el] = values.reshape(nav)
-    return maps, built.skipped
+    return maps, built.skipped, PixelFits(built, failed.reshape(nav), options)
+
+
+def pixel_fit(fits: PixelFits, x: int, y: int, size: int = 1) -> dict:
+    """The fit of every pixel at the ``size`` × ``size`` block at (x, y) (as
+    the cursor's: its top-left ``(size - 1) // 2`` before it), added up: the
+    curves and intensities of ``fit_spectrum`` for the pixels whose fit
+    worked, with their number in ``pixels``. ValueError if none did."""
+    built = fits.built
+    m, s = built.model, built.signal
+    h, w = fits.failed.shape
+    half = (size - 1) // 2
+    x0, y0 = max(0, x - half), max(0, y - half)
+    block = [
+        (i, j) for j in range(y0, min(h, y0 + size)) for i in range(x0, min(w, x0 + size)) if not fits.failed[j, i]
+    ]
+    if not block:
+        raise ValueError("The fit failed here")
+    edges = {el: [c for c in m if hasattr(c, "onset_energy") and c.element == el] for el in built.masters}
+    background_parts = [c for c in m if not hasattr(c, "onset_energy")]
+    n = s.axes_manager.signal_axes[0].size
+    data, background = np.zeros(n), np.zeros(n)
+    curves = {el: np.zeros(n) for el in edges}
+    intensity = dict.fromkeys(built.masters, 0.0)
+    exponents = []
+    with fits.lock:  # the model is moved from pixel to pixel
+        for i, j in block:
+            m.axes_manager.indices = (i, j)
+            m.fetch_stored_values()
+            data += np.asarray(s.data[j, i], float)
+            background += m._get_current_data(component_list=background_parts, ignore_channel_switches=True)
+            for el, parts in edges.items():
+                curves[el] += m._get_current_data(component_list=parts, ignore_channel_switches=True)
+            for el, c in built.masters.items():
+                intensity[el] += float(c.intensity.value)
+            exponents += [float(c.r.value) for c in m if hasattr(c, "r")]
+        onsets = {el: float(c.onset_energy.value) for el, c in built.masters.items()}
+        names = {el: c.name for el, c in built.masters.items()}
+        single_std = {el: c.intensity.std for el, c in built.masters.items()} if len(block) == 1 else {}
+    model = background + sum(curves.values())
+    total = sum(max(v, 0.0) for v in intensity.values())
+    rows = sorted(
+        (
+            {
+                "element": el,
+                "edge": names[el],
+                "onset": onsets[el],
+                "intensity": value,
+                "std": float(single_std[el]) if single_std.get(el) is not None and math.isfinite(single_std[el]) else None,
+                "atomic_percent": 100 * max(value, 0.0) / total if total > 0 else None,
+                "fine_structure_width": fits.options.fine_structure_width if fits.options.fine_structure else None,
+            }
+            for el, value in intensity.items()
+        ),
+        key=lambda r: r["onset"],
+    )
+    resid = data - model
+    return {
+        "x": s.axes_manager.signal_axes[0].axis.tolist(),
+        "data": data.tolist(),
+        "model": np.nan_to_num(model).tolist(),
+        "background": np.nan_to_num(background).tolist(),
+        "elements": {el: np.nan_to_num(curve).tolist() for el, curve in curves.items()},
+        "rows": rows,
+        "background_r": float(np.mean(exponents)) if exponents else None,
+        "residual_ratio": float(resid.std() / data.std()) if data.std() else None,
+        "convolved": built.convolved,
+        "gos": fits.options.gos,
+        "skipped": built.skipped,
+        "pixels": len(block),
+    }
 
 
 def atomic_percent_maps(maps: dict[str, np.ndarray]) -> dict[str, np.ndarray]:

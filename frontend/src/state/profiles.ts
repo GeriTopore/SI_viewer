@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { putBack, useUndo } from "./undo";
 
 /** A profile line in data pixel coordinates (pixel i spans [i, i+1)). */
 export interface ProfileLine {
@@ -12,6 +13,8 @@ export interface ProfileLine {
   y1: number;
   /** Width integrated across the line, in pixels. */
   width: number;
+  /** Line scans generated along it (dataset ids): deleted with it. */
+  lineScans?: string[];
 }
 
 export type LineGeometry = Pick<ProfileLine, "x0" | "y0" | "x1" | "y1">;
@@ -51,13 +54,18 @@ interface ProfilesStore {
   addLine: (view: string, geometry: LineGeometry) => string;
   updateLine: (view: string, id: string, patch: Partial<ProfileLine>) => void;
   removeLine: (view: string, id: string) => void;
+  /** The user deletes a line: it can be undone. */
+  deleteLine: (view: string, id: string) => void;
   /** Forget the lines of views whose key starts with one of ``ids`` (e.g. rebinned data). */
   reset: (ids: string[]) => void;
+  /** A line whose deletion waits for the user to confirm (it has line scans). */
+  confirming: { view: string; id: string } | null;
+  setConfirming: (c: { view: string; id: string } | null) => void;
 }
 
 let nextId = 1;
 
-export const useProfiles = create<ProfilesStore>((set) => {
+export const useProfiles = create<ProfilesStore>((set, get) => {
   const update = (view: string, fn: (s: ViewProfiles) => Partial<ViewProfiles>) =>
     set((st) => {
       const cur = st.byView[view] ?? EMPTY;
@@ -88,6 +96,16 @@ export const useProfiles = create<ProfilesStore>((set) => {
         selected: s.selected === id ? null : s.selected,
         pick: s.pick?.line === id ? null : s.pick,
       })),
+    confirming: null,
+    setConfirming: (confirming) => set({ confirming }),
+    deleteLine: (view, id) => {
+      const lines = get().byView[view]?.lines ?? [];
+      const i = lines.findIndex((l) => l.id === id);
+      if (i < 0) return;
+      const line = lines[i];
+      get().removeLine(view, id);
+      useUndo.getState().push(line.name, () => update(view, (s) => ({ lines: putBack(s.lines, line, i) })));
+    },
     reset: (ids) =>
       set((st) => ({
         byView: Object.fromEntries(

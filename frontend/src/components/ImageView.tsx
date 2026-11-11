@@ -43,6 +43,8 @@ export interface Interaction {
   onDoubleClick?: (p: Pt) => boolean;
   /** Keys while the image has focus; return true if handled. */
   onKeyDown?: (e: React.KeyboardEvent) => boolean;
+  /** Right-click; return true to take it (no browser menu). */
+  onContextMenu?: (p: Pt, e: React.MouseEvent, t: Transform) => boolean;
 }
 
 /** One image layer. The first is the base; later ones are added on top. */
@@ -421,6 +423,9 @@ export function ImageView({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onContextMenu={(e) => {
+          if (view && interaction?.onContextMenu?.(toData(e.clientX, e.clientY, view), e, transform!)) e.preventDefault();
+        }}
         onPointerEnter={() => {
           hoveredView = owner;
         }}

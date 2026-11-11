@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type Health } from "./api/client";
+import { useUndo } from "./state/undo";
 import { DatasetList, DatasetListHeader } from "./components/DatasetList";
 import { DropZone } from "./components/DropZone";
 import { FileBrowser } from "./components/FileBrowser";
@@ -14,6 +15,7 @@ import { Splitter } from "./components/Splitter";
 import { ShortcutsHelp } from "./components/ShortcutsHelp";
 import { MainView } from "./views/MainView";
 import { isTyping, useShortcuts } from "./keyboard";
+import { LineDeleteDialog } from "./components/LineDeleteDialog";
 
 // Width of a folded side pane.
 const COLLAPSED = 34;
@@ -52,6 +54,18 @@ export function App() {
     document.title = focused ? `${focused.title} — SI Viewer` : "SI Viewer";
   }, [focused?.title]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ⌘/Ctrl Z undoes the last deletion (not while typing, nor in a dialog).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== "z") return;
+      if (isTyping(e) || document.querySelector(".modal-backdrop")) return;
+      e.preventDefault();
+      useUndo.getState().undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Up/down arrows switch datasets, unless typing in a field or a dialog is open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -80,6 +94,7 @@ export function App() {
         <ShortcutsHelp />
         <ThemeToggle />
       </header>
+      <LineDeleteDialog />
 
       {errors.length > 0 && (
         <div className="error-banner" role="alert">

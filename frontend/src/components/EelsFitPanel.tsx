@@ -50,8 +50,12 @@ function OptionalEnergy({ value, placeholder, label, onCommit, disabled }: {
 export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
   const key = datasetKey(ds);
   const options = useEelsFit((s) => s.options[ds.id]) ?? EELS_FIT_DEFAULTS;
-  const fit = useEelsFit((s) => s.fits[key]);
-  const { setOptions, setFit } = useEelsFit.getState();
+  const fits = useEelsFit((s) => s.fits[key]);
+  const chosen = useEelsFit((s) => s.sources[key]);
+  const { setOptions, setFits, setSources } = useEelsFit.getState();
+  // The fit whose numbers are listed (its source).
+  const [listed, setListed] = useState<SourceChoice | null>(null);
+  const fit = fits?.find((f) => f.source === listed) ?? fits?.[0];
   const q = useQuant();
   const si = useSiState(ds.id);
   const cursorSize = useSi((s) => s.cursorSize);
@@ -60,7 +64,12 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
   const [error, setError] = useState<string | null>(null);
   const isSi = ds.kind === "spectrum_image";
   const lineScan = isLineScan(ds);
-  const choice: SourceChoice = q.source[key] ?? "all";
+  // The spectra to fit (regions that are gone are dropped).
+  const choices = (isSi ? (chosen ?? ["all"]) : ["all"]).filter(
+    (c) => c === "all" || c === "cursor" || si.rois.some((r) => r.id === c),
+  );
+  const toggleChoice = (c: SourceChoice, on: boolean) =>
+    setSources(key, on ? [...choices.filter((x) => x !== c), c] : choices.filter((x) => x !== c));
   const elements = ds.edges?.elements ?? [];
   const axis = ds.axes.find((a) => !a.navigate);
   const e0 = axis ? axis.offset : 0;
@@ -83,22 +92,31 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
     return roi ? { source: { type: "region", region: shapeToRegion(roi.shape) }, label: roi.name } : null;
   };
 
+  // Fits every chosen spectrum; the ones that fail are named in the error.
   const runFit = async (patch: Partial<typeof options> = {}) => {
-    const src = sourceFor(choice);
-    if (!src) {
-      setError("That spectrum source no longer exists.");
+    const srcs = choices.flatMap((c) => {
+      const src = sourceFor(c);
+      return src ? [{ choice: c, ...src }] : [];
+    });
+    if (!srcs.length) {
+      setError("Choose a spectrum to fit.");
       return;
     }
     const used = { ...options, ...patch };
     setBusy(true);
     setError(null);
-    try {
-      setFit(key, { label: src.label, result: await api.eelsFit(ds.id, src.source, used) });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    const done = await Promise.allSettled(srcs.map((s) => api.eelsFit(ds.id, s.source, used)));
+    const ok = srcs.flatMap((s, i) => {
+      const r = done[i];
+      return r.status === "fulfilled" ? [{ source: s.choice, label: s.label, result: r.value }] : [];
+    });
+    const failed = srcs.flatMap((s, i) => {
+      const r = done[i];
+      return r.status === "rejected" ? [`${s.label}: ${(r.reason as Error).message}`] : [];
+    });
+    if (ok.length) setFits(key, ok);
+    if (failed.length) setError(failed.join("\n"));
+    setBusy(false);
   };
 
   // A typed onset is kept with the settings and refitted at once.
@@ -110,16 +128,18 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
     void runFit({ onsets });
   };
 
+  // Every spectrum fitted, a row per element of each.
   const saveTable = () =>
     fit &&
     downloadCsv(
       [
-        ["source", fit.label],
         ["cross-sections", fit.result.gos],
         ["convolved with the low loss", fit.result.convolved ? "yes" : "no"],
         [],
-        ["element", "edge", "onset (eV)", "intensity", "error", "at%"],
-        ...fit.result.rows.map((r) => [r.element, r.edge, r.onset, r.intensity, r.std, r.atomic_percent]),
+        ["spectrum", "pixels", "element", "edge", "onset (eV)", "intensity", "error", "at%"],
+        ...fits!.flatMap((f) =>
+          f.result.rows.map((r) => [f.label, f.result.pixels, r.element, r.edge, r.onset, r.intensity, r.std, r.atomic_percent]),
+        ),
       ],
       `${safeFileName(ds.title)}_eels_fit.csv`,
     );
@@ -133,20 +153,32 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
 
       <section className="q-form">
         {isSi && (
-          <label>
-            Spectrum
-            <select value={choice} onChange={(e) => q.setSource(key, e.target.value)} disabled={busy}>
-              <option value="all">{lineScan ? "All positions" : "All pixels"}</option>
-              <option value="cursor" disabled={!si.cursor}>
-                Cursor{si.cursor ? ` (${lineScan ? si.cursor.x : `${si.cursor.x}, ${si.cursor.y}`})` : ""}
-              </option>
-              {si.rois.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
+          <div className="q-sources" role="group" aria-label="Spectra to fit">
+            <span>Spectra</span>
+            <div className="q-source-list">
+              {[
+                { id: "all", name: lineScan ? "All positions" : "All pixels", color: null, disabled: false },
+                {
+                  id: "cursor",
+                  name: `Cursor${si.cursor ? ` (${lineScan ? si.cursor.x : `${si.cursor.x}, ${si.cursor.y}`})` : ""}`,
+                  color: null,
+                  disabled: !si.cursor,
+                },
+                ...si.rois.map((r) => ({ id: r.id, name: r.name, color: r.color, disabled: false })),
+              ].map((c) => (
+                <label key={c.id} className="q-check">
+                  <input
+                    type="checkbox"
+                    checked={choices.includes(c.id)}
+                    onChange={(e) => toggleChoice(c.id, e.target.checked)}
+                    disabled={busy || c.disabled}
+                  />
+                  {c.color && <span className="series-swatch" style={{ background: c.color }} />}
+                  {c.name}
+                </label>
               ))}
-            </select>
-          </label>
+            </div>
+          </div>
         )}
         <label title="Generalised oscillator strengths the edges are computed from">
           Cross-sections
@@ -215,8 +247,8 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
             Convolve with the low loss
           </label>
         )}
-        <button className="primary" onClick={() => runFit()} disabled={busy || !elements.length}>
-          {busy ? "Fitting…" : fit ? "Refit" : "Fit spectrum"}
+        <button className="primary" onClick={() => runFit()} disabled={busy || !elements.length || !choices.length}>
+          {busy ? "Fitting…" : fit ? "Refit" : choices.length > 1 ? `Fit ${choices.length} spectra` : "Fit spectrum"}
         </button>
         {error && <p className="field-error">{error}</p>}
       </section>
@@ -225,7 +257,18 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
         <>
           <section className="q-summary small">
             <div>
-              <span className="muted">Fitted:</span> {fit.label}
+              <span className="muted">Fitted:</span>{" "}
+              {fits!.length > 1 ? (
+                <select value={fit.source} onChange={(e) => setListed(e.target.value)} aria-label="Fit listed">
+                  {fits!.map((f) => (
+                    <option key={f.source} value={f.source}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                fit.label
+              )}
               {fit.result.pixels > 1 && (
                 <span className="muted">
                   {" "}
@@ -317,6 +360,9 @@ function EelsFitMaps({ ds }: { ds: DatasetSummary }) {
   const composition = useEelsFit((s) => s.composition);
   const { setJob, setComposition } = useEelsFit.getState();
   const running = !!job && ACTIVE.has(job.status);
+  const showFit = useQuant((s) => s.showFit);
+  const showComponents = useQuant((s) => s.showComponents);
+  const { setShowFit, setShowComponents } = useQuant.getState();
 
   // Poll the job while it runs; on completion bring in the new maps.
   useEffect(() => {
@@ -372,6 +418,18 @@ function EelsFitMaps({ ds }: { ds: DatasetSummary }) {
       ) : null}
       {job?.status === "cancelled" && <p className="muted small">Cancelled.</p>}
       {job?.status === "failed" && <p className="field-error">{job.error}</p>}
+      {ds.pixel_fit && !running && (
+        <div className="q-toggles small">
+          <label title="The cursor spectrum shows the fit of its pixels">
+            <input type="checkbox" checked={showFit} onChange={(e) => setShowFit(e.target.checked)} />
+            Show fit
+          </label>
+          <label>
+            <input type="checkbox" checked={showComponents} onChange={(e) => setShowComponents(e.target.checked)} />
+            Show elements
+          </label>
+        </div>
+      )}
     </section>
   );
 }

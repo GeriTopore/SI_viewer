@@ -1,6 +1,7 @@
 import { create } from "zustand";
+import { putBack, useUndo } from "./undo";
 
-export type Tool = "cursor" | "rect" | "ellipse" | "polygon" | "line" | "fft" | "pan";
+export type Tool = "cursor" | "rect" | "ellipse" | "polygon" | "line" | "fft";
 export type Reduce = "mean" | "sum";
 
 /** Region geometry in data pixel coordinates (pixel i spans [i, i+1)). */
@@ -34,7 +35,7 @@ export const CURSOR_COLOR = "#ff9f0a";
 const ROI_COLORS = ["#00e5ff", "#ff6bd6", "#8cff5a", "#b18cff", "#ffd60a", "#ff7a59"];
 
 const EMPTY: SiState = {
-  cursor: null, showCursor: true, showWhole: true, rois: [], selected: null, main: null, selectedWindow: null,
+  cursor: null, showCursor: true, showWhole: false, rois: [], selected: null, main: null, selectedWindow: null,
 };
 
 interface SiStore {
@@ -50,6 +51,8 @@ interface SiStore {
   addRoi: (si: string, shape: Shape) => string;
   updateRoi: (si: string, id: string, patch: Partial<Roi>) => void;
   removeRoi: (si: string, id: string) => void;
+  /** The user deletes regions: they can be undone. */
+  deleteRois: (si: string, ids: string[]) => void;
   /** Forget a spectrum image's cursor, regions and main window (e.g. after rebinning). */
   reset: (si: string) => void;
   setTool: (tool: Tool) => void;
@@ -61,7 +64,7 @@ interface SiStore {
 
 let nextId = 1;
 
-export const useSi = create<SiStore>((set) => {
+export const useSi = create<SiStore>((set, get) => {
   const update = (si: string, fn: (s: SiState) => Partial<SiState>) =>
     set((st) => {
       const cur = st.bySi[si] ?? EMPTY;
@@ -93,6 +96,18 @@ export const useSi = create<SiStore>((set) => {
         rois: s.rois.filter((r) => r.id !== id),
         selected: s.selected === id ? null : s.selected,
       })),
+    deleteRois: (si, ids) => {
+      const rois = get().bySi[si]?.rois ?? [];
+      const gone = rois.map((r, i) => ({ r, i })).filter(({ r }) => ids.includes(r.id));
+      if (!gone.length) return;
+      update(si, (s) => ({
+        rois: s.rois.filter((r) => !ids.includes(r.id)),
+        selected: s.selected && ids.includes(s.selected) ? null : s.selected,
+      }));
+      useUndo.getState().push(gone.length > 1 ? `${gone.length} regions` : gone[0].r.name, () =>
+        update(si, (s) => ({ rois: gone.reduce((out, { r, i }) => putBack(out, r, i), s.rois) })),
+      );
+    },
     reset: (si) =>
       set((st) => {
         const bySi = { ...st.bySi };
@@ -146,6 +161,40 @@ export function containsPoint(shape: Shape, x: number, y: number): boolean {
 export function translateShape(shape: Shape, dx: number, dy: number): Shape {
   if (shape.kind === "polygon") return { ...shape, points: shape.points.map(([x, y]) => [x + dx, y + dy]) };
   return { ...shape, x0: shape.x0 + dx, x1: shape.x1 + dx, y0: shape.y0 + dy, y1: shape.y1 + dy };
+}
+
+/** ``shape`` grown (``step`` 1) or shrunk (-1) about its centre, its
+ * proportions kept: the shorter side of its bounds changes by 2 pixels and
+ * the other by as much in proportion. Each side changes by an even number of
+ * pixels, so the centre stays exactly where it is and the edges on pixel
+ * edges. Null when it would get smaller than a pixel. */
+export function scaleShape(shape: Shape, step: 1 | -1): Shape | null {
+  const [x0, y0, x1, y1] = shapeBounds(shape);
+  const w = x1 - x0;
+  const h = y1 - y0;
+  const short = Math.min(w, h);
+  if (short + 2 * step < 1) return null;
+  const s = (short + 2 * step) / short;
+  // New side: the scaled one, rounded to keep its parity (and at least 1).
+  const side = (n: number) => {
+    const m = n + 2 * Math.round((n * s - n) / 2);
+    return m >= 1 ? m : n;
+  };
+  const [w2, h2] = [side(w), side(h)];
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  if (shape.kind === "polygon") {
+    // The bounds' corners land exactly on pixel edges; inner vertices are rounded.
+    const [sx, sy] = [w ? w2 / w : 1, h ? h2 / h : 1];
+    return {
+      ...shape,
+      points: shape.points.map(([x, y]) => [
+        x === x0 ? cx - w2 / 2 : x === x1 ? cx + w2 / 2 : Math.round(cx + (x - cx) * sx),
+        y === y0 ? cy - h2 / 2 : y === y1 ? cy + h2 / 2 : Math.round(cy + (y - cy) * sy),
+      ]),
+    };
+  }
+  return { ...shape, x0: cx - w2 / 2, x1: cx + w2 / 2, y0: cy - h2 / 2, y1: cy + h2 / 2 };
 }
 
 /** Request body for the backend's region-spectrum endpoint. */

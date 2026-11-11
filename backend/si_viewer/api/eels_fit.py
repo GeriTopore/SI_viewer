@@ -7,7 +7,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..jobs import Job
-from ..processing.eels_model import EelsFitOptions, atomic_percent_maps, build_model, fit_maps, fit_spectrum
+from ..processing.eels_model import (
+    EelsFitOptions, atomic_percent_maps, build_model, fit_maps, fit_spectrum, pixel_fit,
+)
 from ..processing.fitting import FitSource, source_spectrum
 from ..processing.technique import technique_of
 from ..session import DatasetKind
@@ -90,16 +92,38 @@ def post_eels_fit_maps(dataset_id: str, body: FitMapsBody, request: Request) -> 
     except ValueError as e:
         raise HTTPException(422, str(e))
 
+    version = si.data_version
+
     def run(job: Job) -> dict:
         job.report(0.01, "Building the model")
-        maps, skipped = fit_maps(
+        maps, skipped, fits = fit_maps(
             si.signal, body.options, low_loss, lambda f: job.report(0.02 + 0.95 * f, "Fitting each pixel")
         )
-        results = [("fitted", el, f"{el} (fit)", data) for el, data in maps.items()]
+        results = {el: {"counts": (f"{el} (fit)", data)} for el, data in maps.items()}
         if body.composition and len(maps) > 1:
-            results += [("composition", el, f"{el} at%", data) for el, data in atomic_percent_maps(maps).items()]
+            for el, data in atomic_percent_maps(maps).items():
+                results[el]["at%"] = (f"{el} at%", data)
         job.report(0.98)  # last chance to cancel before the results replace old ones
-        session.set_fit_maps(si, results)
+        session.set_fit_maps(si, list(results.items()))
+        si.pixel_fits, si.pixel_fits_version = fits, version
         return {"file": session.file_of(si).summary(session), "skipped": skipped}
 
     return request.app.state.jobs.submit("eels-fit-maps", f"Fit every pixel of {si.title}", run).summary()
+
+
+@router.get("/api/datasets/{dataset_id}/eels-pixel-fit")
+def get_eels_pixel_fit(dataset_id: str, request: Request, x: int, y: int, size: int = 1) -> dict:
+    """The per-pixel fit of an EELS spectrum image at the cursor: the pixel
+    (x, y), or the ``size`` × ``size`` block there added up (as ``eels-fit``
+    returns a fit; 404 when there is no per-pixel fit of the data as it is)."""
+    si = _eels(request, dataset_id)
+    fits = si.current_pixel_fits
+    if fits is None:
+        raise HTTPException(404, f"{si.title} has no per-pixel fit")
+    h, w = fits.failed.shape
+    if not (0 <= x < w and 0 <= y < h) or not 1 <= size <= 64:
+        raise HTTPException(422, "The pixel is outside the spectrum image")
+    try:
+        return pixel_fit(fits, x, y, size)
+    except ValueError as e:
+        raise HTTPException(422, str(e))

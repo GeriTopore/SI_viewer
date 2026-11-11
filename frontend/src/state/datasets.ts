@@ -3,10 +3,11 @@ import { api, type DatasetSummary, type EelsRole, type ExperimentSummary, type F
 import { DEFAULT_COLORMAP, useDisplay } from "./display";
 import { useProfiles } from "./profiles";
 import { useFftBoxes } from "./fftBoxes";
+import { useUndo } from "./undo";
 import { useLayers } from "./layers";
 import { useSi } from "./si";
 import { isLineScan, isWindowMap, kindLabel } from "../format";
-import { typeGroupKey, useUi } from "./ui";
+import { typeGroupKey, useUi, type BottomSplit, type BottomTab, type RightTab } from "./ui";
 
 interface OpenProgress {
   done: number;
@@ -14,8 +15,26 @@ interface OpenProgress {
   current: string;
 }
 
+/** What a workspace showed when it was left: restored when it is entered again. */
+interface Workspace {
+  selection: string[];
+  focusId: string | null;
+  bottomTab: BottomTab;
+  bottomSplit: BottomSplit | null;
+  rightTab: RightTab;
+}
+
 interface DatasetsState {
   files: FileSummary[];
+  /** A file of the workspace being viewed (the top-level entry of the pane
+   * holding it, see ``workspaceOf``). Only its datasets can be clicked into
+   * the view; another is entered first, which brings back what it showed. */
+  active: string | null;
+  /** Saved workspaces, under each of their files' ids. */
+  workspaces: Record<string, Workspace>;
+  /** Enter the workspace holding ``fileId``: the one left is saved, the one
+   * entered is restored (or shows its first dataset). */
+  enterWorkspace: (fileId: string) => void;
   /** Highlighted datasets, in the order they were added. The viewer shows
    * exactly these: at most one spectrum image/stack/spectrum, plus images. */
   selection: string[];
@@ -47,7 +66,7 @@ interface DatasetsState {
   /** Delete an element or window map (the backend also unticks an element). */
   deleteDataset: (d: DatasetSummary) => Promise<void>;
   /** Rebin the loaded data in place (one factor per axis). */
-  rebin: (d: DatasetSummary, factors: number[]) => Promise<void>;
+  rebin: (d: DatasetSummary, factors: number[], time?: number) => Promise<void>;
   /** Show only this dataset. */
   select: (datasetId: string) => void;
   /** Plain click in the dataset pane: images toggle in and out of the view;
@@ -65,6 +84,20 @@ interface DatasetsState {
 
 export const allDatasets = (files: FileSummary[]): DatasetSummary[] =>
   files.flatMap((f) => f.datasets);
+
+/** The top-level pane entry (an experiment, a link group's files or a file)
+ * holding ``fileId``: its key and files. */
+export function workspaceOf(files: FileSummary[], fileId: string): { key: string; files: FileSummary[] } | null {
+  for (const it of layoutPane(files).items) {
+    const fs = paneFiles(it);
+    if (fs.some((f) => f.id === fileId)) return { key: paneKey(it), files: fs };
+  }
+  return null;
+}
+
+/** Key of a top-level pane entry (a workspace). */
+export const paneKey = (it: PaneItem): string =>
+  it.type === "experiment" ? `x:${it.experiment.id}` : `f:${paneFiles(it).map((f) => f.id).join("+")}`;
 
 // --- Display order of linked EELS groups (the store keeps the opening order) ---
 
@@ -362,8 +395,33 @@ export const useDatasets = create<DatasetsState>((set, get) => {
   const byId = (id: string) => allDatasets(get().files).find((d) => d.id === id);
   const selected = () => get().selection.map(byId).filter((d): d is DatasetSummary => !!d);
 
+  // Workspaces: what the active one shows is saved under its files when it is
+  // left; showing a dataset of another (opening a file, a new result) moves
+  // the active one there.
+  const activeKey = () => {
+    const { active, files } = get();
+    return active ? (workspaceOf(files, active)?.key ?? null) : null;
+  };
+  const leave = () => {
+    const { active, files, selection, focusId, workspaces } = get();
+    const ws = active ? workspaceOf(files, active) : null;
+    if (!ws) return;
+    const { bottomTab, bottomSplit, rightTab } = useUi.getState();
+    const snapshot: Workspace = { selection, focusId, bottomTab, bottomSplit, rightTab };
+    set({ workspaces: { ...workspaces, ...Object.fromEntries(ws.files.map((f) => [f.id, snapshot])) } });
+  };
+  const follow = (datasetId: string | null) => {
+    const d = datasetId ? byId(datasetId) : undefined;
+    const target = d && workspaceOf(get().files, d.file_id);
+    if (!target || target.key === activeKey()) return;
+    leave();
+    set({ active: d.file_id, selection: [] });
+  };
+
   return {
     files: [],
+    active: null,
+    workspaces: {},
     selection: [],
     focusId: null,
     progress: null,
@@ -478,7 +536,12 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       const alive = new Set(allDatasets(files).map((d) => d.id));
       const selection = get().selection.filter((id) => alive.has(id));
       const focusId = alive.has(get().focusId ?? "") ? get().focusId : (selection.at(-1) ?? null);
-      set({ files, selection, focusId });
+      const workspaces = { ...get().workspaces };
+      delete workspaces[fileId];
+      // The active workspace is gone (or changed shape): follow what is still shown.
+      const left = focusId ? allDatasets(files).find((d) => d.id === focusId) : undefined;
+      const active = left?.file_id ?? null;
+      set({ files, selection, focusId, workspaces, active });
     },
 
     closeAll: async () => {
@@ -514,14 +577,18 @@ export const useDatasets = create<DatasetsState>((set, get) => {
 
     deleteDataset: async (d) => {
       try {
-        get().replaceFile((await api.deleteDataset(d.id)).file);
+        const r = await api.deleteDataset(d.id);
+        get().replaceFile(r.file);
+        useUndo.getState().push(d.title, async () => {
+          for (const f of (await api.undoDelete(r.undo)).files) get().replaceFile(f);
+        });
       } catch (e) {
         notify(`Could not delete ${d.title}: ${(e as Error).message}`);
       }
     },
 
-    rebin: async (d, factors) => {
-      const r = await api.rebin(d.id, factors);
+    rebin: async (d, factors, time = 1) => {
+      const r = await api.rebin(d.id, factors, time);
       get().replaceFile(r.file);
       // The datasets linked to it are rebinned with it.
       if (d.eels?.linked.length || r.dataset.eels?.linked.length) await get().syncFiles();
@@ -536,10 +603,39 @@ export const useDatasets = create<DatasetsState>((set, get) => {
         ),
       }),
 
-    select: (id) => set({ selection: [id], focusId: id }),
+    enterWorkspace: (fileId) => {
+      const { files, workspaces } = get();
+      const target = workspaceOf(files, fileId);
+      if (!target || target.key === activeKey()) return;
+      leave();
+      const saved = target.files.map((f) => workspaces[f.id]).find(Boolean);
+      const alive = new Set(target.files.flatMap((f) => f.datasets.map((d) => d.id)));
+      const selection = saved?.selection.filter((id) => alive.has(id)) ?? [];
+      if (saved && selection.length) {
+        useUi.setState({ bottomTab: saved.bottomTab, bottomSplit: saved.bottomSplit });
+        useUi.getState().setRightTab(saved.rightTab);
+        const focusId = saved.focusId && alive.has(saved.focusId) ? saved.focusId : selection.at(-1)!;
+        set({ active: fileId, selection, focusId });
+        return;
+      }
+      // Not entered before: its first dataset, as when it was opened.
+      const first = displayDatasets(target.files)[0];
+      set({ active: fileId, selection: first ? [first.id] : [], focusId: first?.id ?? null });
+    },
+
+    select: (id) => {
+      follow(id);
+      set({ selection: [id], focusId: id });
+    },
 
     clickDataset: (d) => {
+      follow(d.id);
       const { selection } = get();
+      // A member of the linked group in the viewer: the view stays, the member is focused.
+      if (!selection.includes(d.id) && d.eels?.linked.some((id) => selection.includes(id))) {
+        set({ focusId: d.id });
+        return;
+      }
       if (d.kind !== "image") {
         if (selection.includes(d.id)) set({ focusId: d.id });
         else get().select(d.id);
@@ -557,6 +653,7 @@ export const useDatasets = create<DatasetsState>((set, get) => {
     },
 
     addToSelection: (d) => {
+      follow(d.id);
       if (get().selection.includes(d.id)) {
         set({ focusId: d.id });
         return;
@@ -575,13 +672,17 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       set({ selection, focusId });
     },
 
-    setFocus: (focusId) => set({ focusId }),
+    setFocus: (focusId) => {
+      follow(focusId);
+      set({ focusId });
+    },
 
     // Arrow keys: step the focus; spectrum images, stacks and spectra also
     // become the view, while images are only inspected (click adds them).
     // Datasets hidden in folded type groups or under folded datasets are skipped.
     selectRelative: (step) => {
-      const files = get().files;
+      // Within the workspace being viewed.
+      const files = get().files.filter((f) => workspaceOf(get().files, f.id)?.key === activeKey());
       const list = displayDatasets(files);
       const { collapsedTypes, foldedNodes } = useUi.getState();
       const visible = new Set(displayDatasets(files, collapsedTypes, foldedNodes).map((d) => d.id));
@@ -606,10 +707,11 @@ export const useDatasets = create<DatasetsState>((set, get) => {
   };
 });
 
-/** Datasets made in the app that can be deleted: maps, thickness, ZLP shifts and background-removed SIs (with their r maps). */
+/** Datasets made in the app that can be deleted: maps, thickness, ZLP shifts,
+ * background-removed SIs (with their r maps), deconvolved SIs and line scans cut from SIs. */
 export const canDelete = (d: DatasetSummary) =>
   d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r" ||
-  d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved";
+  d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);

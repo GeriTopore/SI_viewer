@@ -5,6 +5,7 @@ import { ContrastControls } from "../components/ContrastControls";
 import { ElementsPicker } from "../components/ElementsPicker";
 import { LineScanImage, type ScanAxis } from "../components/LineScanImage";
 import { BottomPane } from "../components/BottomPane";
+import { HistogramPanel } from "../components/HistogramPanel";
 import { SpectrumPlot, type SpectrumSeries } from "../components/SpectrumPlot";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
@@ -71,7 +72,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
 
   // ---------- cursor and selection ----------
   const st = useSiState(ds.id);
-  const { patch, addRoi, updateRoi, removeRoi } = useSi.getState();
+  const { patch, addRoi, updateRoi, deleteRois } = useSi.getState();
   useEffect(() => {
     // Start with the cursor in the middle so a spectrum shows at once.
     if (!getSiState(ds.id).cursor && n) patch(ds.id, { cursor: { x: Math.floor(n / 2), y: 0 } });
@@ -99,8 +100,8 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
     return id;
   };
   const changeRange = (id: string, lo: number, hi: number) => updateRoi(ds.id, id, { shape: rangeShape(lo, hi) });
-  const removeRange = (id: string) => removeRoi(ds.id, id);
-  const clearRanges = () => getSiState(ds.id).rois.forEach((r) => removeRoi(ds.id, r.id));
+  const removeRange = (id: string) => deleteRois(ds.id, [id]);
+  const clearRanges = () => deleteRois(ds.id, getSiState(ds.id).rois.map((r) => r.id));
   const hasSelected = () => {
     const s = getSiState(ds.id);
     return s.selected !== null && s.rois.some((r) => r.id === s.selected);
@@ -191,14 +192,15 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   }, [st.showWhole, st.showCursor, st.cursor, ranges, whole.data, spectra, reduceMode, n]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Background removal (Process tab): its fits and bands on this plot.
-  const bg = useBackgroundPreview(ds, axis.x, series);
+  const bgPixels = useMemo(() => sel.map((s) => (s?.kind === "pixel" ? { x: s.x, y: s.y, size: s.size } : null)), [sel]);
+  const bg = useBackgroundPreview(ds, axis.x, series, bgPixels);
   // Deconvolution (Process tab): the deconvolved spectra, dashed.
   const plotted = useDeconvPreview(ds, bg.series, sel, reduceMode === "mean");
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
   const bands = useMemo(() => [...bg.bands, ...zlp.windows], [bg.bands, zlp.windows]);
   // The model fit (Quantify tab) and the elements' edges.
-  const fitSeries = useFitSeries(ds, axis.x, reduceMode === "mean");
+  const fitSeries = useFitSeries(ds, axis.x, reduceMode === "mean", null, st);
   const withFit = useMemo(() => [...plotted, ...fitSeries], [plotted, fitSeries]);
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(ds, preview, axis.x);
@@ -276,7 +278,11 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   );
 
   // A linked group has a tab for each member (T cycles them).
-  const tabs = memberTabs(ds, group, spectrumPlot, st, true, legend);
+  const tabs = [
+    ...memberTabs(ds, group, spectrumPlot, st, true, legend),
+    // The values of the image shown (log-scaled when it is shown in Log).
+    { id: "histogram" as const, label: "Histogram", content: <HistogramPanel frame={drawn} label={imgDs.title} display={display.display} /> },
+  ];
 
   // Image above, spectrum below, with the same draggable split as the other views.
   const viewerRef = useRef<HTMLDivElement>(null);

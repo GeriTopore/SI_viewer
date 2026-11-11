@@ -236,24 +236,37 @@ def test_maps_recover_known_intensities(client, tmp_path):
     assert r.status_code == 200, r.text
     job = _wait(client, r.json())
     assert job["status"] == "done", job["error"]
-    fitted, at = _maps(job, "fitted"), _maps(job, "composition")
-    assert set(fitted) == set(at) == {"O", "Mn"}
+    fitted = _maps(job, "fitted")
+    assert set(fitted) == {"O", "Mn"} and fitted["O"]["quantities"] == ["counts", "at%"]
     assert fitted["O"]["title"] == "O (fit)" and fitted["O"]["parent_id"] == ds["id"] and fitted["O"]["is_element_map"]
     assert np.allclose(_data(client, fitted["O"]["id"]), oxygen, rtol=1e-3)
     assert np.allclose(_data(client, fitted["Mn"]["id"]), manganese, rtol=1e-3)
-    assert np.allclose(_data(client, at["O"]["id"]), 100 * oxygen / (oxygen + manganese), rtol=1e-3)
+    # The fit at a pixel (and a block) adds up to that pixel's map values.
+    si_now = next(d for d in job["result"]["file"]["datasets"] if d["id"] == ds["id"])
+    assert si_now["pixel_fit"]
+    one = client.get(f"/api/datasets/{ds['id']}/eels-pixel-fit", params={"x": 2, "y": 1}).json()
+    rows = {r["element"]: r for r in one["rows"]}
+    assert one["pixels"] == 1 and rows["O"]["intensity"] == pytest.approx(float(oxygen[1, 2]), rel=1e-3)
+    assert one["residual_ratio"] < 0.05
+    block = client.get(f"/api/datasets/{ds['id']}/eels-pixel-fit", params={"x": 1, "y": 1, "size": 2}).json()
+    assert block["pixels"] == 4
+    assert {r["element"]: r for r in block["rows"]}["Mn"]["intensity"] == pytest.approx(float(manganese[1:3, 1:3].sum()), rel=1e-3)
+    assert client.get(f"/api/datasets/{ds['id']}/eels-pixel-fit", params={"x": 99, "y": 0}).status_code == 422
+    assert client.put(f"/api/datasets/{ds['id']}/fit-quantity", json={"quantity": "at%"}).status_code == 200
+    assert np.allclose(_data(client, fitted["O"]["id"]), 100 * oxygen / (oxygen + manganese), rtol=1e-3)
 
     # A second fit replaces the maps; without composition there are none.
     r = client.post(f"/api/datasets/{ds['id']}/eels-fit-maps", json={"options": HYDROGENIC, "composition": False})
     job = _wait(client, r.json())
-    assert len(_maps(job, "fitted")) == 2 and not _maps(job, "composition")
+    maps = _maps(job, "fitted")
+    assert len(maps) == 2 and all(d["quantities"] == ["counts"] and d["quantity"] == "counts" for d in maps.values())
 
 
 def test_maps_equal_exspy_multifit(eels_cuzn):
     s = hs.load(eels_cuzn).inav[30:35, 12:16]
     M.set_elements(s, ["Cu", "Zn"])
     done = []
-    maps, skipped = M.fit_maps(s, EelsFitOptions(**HYDROGENIC), report=done.append)
+    maps, skipped, fits = M.fit_maps(s, EelsFitOptions(**HYDROGENIC), report=done.append)
     assert skipped == [] and done[-1] == 1.0
     ref = s.deepcopy()
     ref.change_dtype("float32")

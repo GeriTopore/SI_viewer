@@ -116,7 +116,7 @@ export function useFftBoxTool(view: string, width: number, height: number): Inte
     onKeyDown(e) {
       const s = getViewFftBoxes(view);
       if ((e.key === "Delete" || e.key === "Backspace") && s.selected) {
-        removeBox(view, s.selected);
+        useFftBoxes.getState().deleteBox(view, s.selected);
         return true;
       }
       if (e.key === "Escape" && s.selected) {

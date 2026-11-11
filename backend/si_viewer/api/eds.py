@@ -177,20 +177,38 @@ def put_map_options(dataset_id: str, options: MapOptions, request: Request) -> d
 
 @router.delete("/api/datasets/{dataset_id}")
 def delete_dataset(dataset_id: str, request: Request) -> dict:
-    """Delete an element map (also unticks its element) or a window map. Returns its file."""
+    """Delete an element map (also unticks its element), a window map or a
+    result (with what was made from it). Returns its file, and ``undo``: the
+    token ``POST /api/undo/{token}`` takes to bring it back."""
     session = request.app.state.session
     ds = _dataset(request, dataset_id)
     entry = session.file_of(ds)
     try:
-        session.delete_dataset(ds)
+        token = session.delete_dataset(ds)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"file": entry.summary(session)}
+    return {"file": entry.summary(session), "undo": token}
+
+
+@router.post("/api/undo/{token}")
+def undo_delete(token: str, request: Request) -> dict:
+    """Undo a deletion (the last 20 can be): its datasets come back in their
+    places. Returns ``files``: the files that changed."""
+    session = request.app.state.session
+    try:
+        changed = session.undo(token)
+    except KeyError:
+        raise HTTPException(404, "That deletion can no longer be undone")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"files": [session.files[f].summary(session) for f in changed]}
 
 
 class RebinBody(BaseModel):
     # One integer factor per axis, in the summary's axis order.
     factors: list[int]
+    # In-situ series: frames per binned frame.
+    time: int = 1
 
 
 @router.post("/api/datasets/{dataset_id}/rebin")
@@ -198,12 +216,14 @@ def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
     """Rebin a spectrum image's loaded data in place (HyperSpy rebin), with
     the images on its scan (same x/y factors); its maps are recomputed.
     The EELS spectrum images linked to it are rebinned by the same factors,
-    energy included (with the images on their scans). Returns the spectrum image and
+    energy included (with the images on their scans). An in-situ series is
+    rebinned as a series, and can be binned along ``time`` too (each frame then
+    sums that many recorded frames). Returns the spectrum image and
     its file, and the linked ones and their files (``partners``,
     ``partner_files``; empty without any)."""
     ds = _dataset(request, dataset_id)
     try:
-        request.app.state.session.rebin(ds, body.factors)
+        request.app.state.session.rebin(ds, body.factors, time=body.time)
     except NotRebinnable as e:
         raise HTTPException(400, str(e))
     except ValueError as e:

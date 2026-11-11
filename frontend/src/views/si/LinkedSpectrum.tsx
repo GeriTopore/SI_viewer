@@ -9,6 +9,7 @@ import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "../SpectrumView";
 import { CURSOR_CHANNEL, useSiSpectra } from "./useSiSpectra";
 import { useThresholdLine } from "./useThresholdLine";
 import { useDeconvPreview } from "./useDeconvPreview";
+import { useBackgroundPreview } from "./useBackgroundPreview";
 import { useFitSeries } from "../useFitSeries";
 import { useMarkers } from "./xray";
 import { ElementsPicker } from "../../components/ElementsPicker";
@@ -142,10 +143,18 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
     }
     return { series: out, sel };
   }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, total, lineScan, cursorSize]);
+  // Background removal (Process tab): its fits and bands on this plot.
+  const bgPixels = useMemo(() => sel.map((s) => (s?.kind === "pixel" ? { x: s.x, y: s.y, size: s.size } : null)), [sel]);
+  const bg = useBackgroundPreview(member, axis.x, plain, bgPixels);
+  const windows = useMemo(() => [...bg.bands, ...zlp.windows], [bg.bands, zlp.windows]);
   // Deconvolution (Process tab): the deconvolved spectra, dashed.
-  const deconvolved = useDeconvPreview(member, plain, sel, reduce === "mean");
+  const deconvolved = useDeconvPreview(member, bg.series, sel, reduce === "mean");
   // The member's model fit (Quantify tab) and its elements' edges.
-  const fitSeries = useFitSeries(member, axis.x, reduce === "mean");
+  const fitCursor = useMemo(
+    () => (!lineScan && st.showCursor && st.cursor ? { x: st.cursor.x, y: st.cursor.y, size: cursorSize } : null),
+    [lineScan, st.showCursor, st.cursor, cursorSize],
+  );
+  const fitSeries = useFitSeries(member, axis.x, reduce === "mean", fitCursor, st);
   const series = useMemo(() => [...deconvolved, ...fitSeries], [deconvolved, fitSeries]);
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(member, preview, axis.x);
@@ -157,8 +166,10 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
       zoomKey={`${member.id}:spectra`}
       x={axis.x}
       series={series}
-      windows={zlp.windows}
-      onEditWindow={zlp.onEdit}
+      windows={windows}
+      onEditWindow={(id, range, final) => {
+        if (!bg.onEditBand(id, range, final)) zlp.onEdit(id, range, final);
+      }}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : `Loading ${role} into memory…`}

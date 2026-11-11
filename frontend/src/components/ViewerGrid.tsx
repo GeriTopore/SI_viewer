@@ -1,6 +1,7 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { safeFileName } from "../download";
 import { useDisplay } from "../state/display";
+import { useUi } from "../state/ui";
 import { isColour } from "../viewer/colormaps";
 import type { SnapshotPanel } from "../viewer/snapshot";
 import { PngExportDialog } from "./PngExportDialog";
@@ -37,9 +38,60 @@ interface Props {
   scanFactor?: number;
   /** Key of the FFT boxes drawn on the panels (published with the image). */
   fftView?: string;
+  /** Key under which a hand-made arrangement of the panels is kept; without
+   * it the panels can't be moved. */
+  layoutKey?: string;
 }
 
 const GAP = 6;
+
+/** Drag-and-drop type of a panel being moved (its key is kept in the grid). */
+const PANEL_MIME = "application/x-si-viewer-panel";
+
+/** Where a moved panel goes: beside the target in its row, or in a new row
+ * above or below the target's. */
+type DropSide = "left" | "right" | "above" | "below";
+
+/** The rows to show: the saved arrangement (panels no longer shown dropped,
+ * new ones added to the last row), else ``keys`` in rows of ``cols``. */
+function arrange(keys: string[], saved: string[][] | undefined, cols: number): string[][] {
+  if (saved) {
+    const shown = new Set(keys);
+    const rows = saved.map((r) => r.filter((k) => shown.has(k))).filter((r) => r.length);
+    if (rows.length) {
+      const placed = new Set(rows.flat());
+      const rest = keys.filter((k) => !placed.has(k));
+      if (rest.length) rows[rows.length - 1] = [...rows[rows.length - 1], ...rest];
+      return rows;
+    }
+  }
+  return Array.from({ length: Math.ceil(keys.length / cols) }, (_, i) => keys.slice(i * cols, (i + 1) * cols));
+}
+
+/** ``rows`` with the panel ``key`` moved to ``side`` of ``target``. */
+function movePanel(rows: string[][], key: string, target: string, side: DropSide): string[][] {
+  const out = rows.map((r) => r.filter((k) => k !== key));
+  const ri = out.findIndex((r) => r.includes(target));
+  if (ri < 0) return rows;
+  if (side === "left" || side === "right") {
+    const row = [...out[ri]];
+    row.splice(row.indexOf(target) + (side === "right" ? 1 : 0), 0, key);
+    out[ri] = row;
+  } else {
+    out.splice(side === "above" ? ri : ri + 1, 0, [key]);
+  }
+  return out.filter((r) => r.length);
+}
+
+/** The side of the panel under the pointer: its top or bottom quarter makes a
+ * new row, else the nearer half. */
+function sideOf(e: DragEvent): DropSide {
+  const r = e.currentTarget.getBoundingClientRect();
+  const fy = (e.clientY - r.top) / r.height;
+  if (fy < 0.25) return "above";
+  if (fy > 0.75) return "below";
+  return e.clientX - r.left < r.width / 2 ? "left" : "right";
+}
 
 /** Number of columns giving the largest panels (the smallest panel area,
  * images fitted into equal cells) in a ``w`` × ``h`` area. */
@@ -70,7 +122,7 @@ export function bestColumns(aspects: number[], w: number, h: number): number {
 /** One panel per image, in a grid; panels of the same pixel size share
  * pan and zoom. Clicking a panel makes it the one being edited. */
 export function ViewerGrid({
-  panels, active, onActivate, interaction, renderOverlay, onRemove, empty, scanFactor, fftView,
+  panels, active, onActivate, interaction, renderOverlay, onRemove, empty, scanFactor, fftView, layoutKey,
 }: Props) {
   const areaRef = useRef<HTMLDivElement>(null);
   const [area, setArea] = useState({ w: 0, h: 0 });
@@ -85,6 +137,59 @@ export function ViewerGrid({
     area.w,
     area.h,
   );
+  // Rows of panels: as arranged by hand, else automatic.
+  const saved = useUi((s) => (layoutKey ? s.gridLayouts[layoutKey] : undefined));
+  const setGridLayout = useUi((s) => s.setGridLayout);
+  const keys = panels.map((p) => p.layer.key);
+  const rows = arrange(keys, saved, cols);
+  const byKey = new Map(panels.map((p) => [p.layer.key, p]));
+  const ordered = rows.flat().map((k) => byKey.get(k)!);
+
+  // Moving a panel: dragged by the strip along its top edge, dropped beside
+  // another panel or in a new row above or below it.
+  const [dragged, setDragged] = useState<string | null>(null);
+  const [drop, setDrop] = useState<{ key: string; side: DropSide } | null>(null);
+  const movable = !!layoutKey && panels.length > 1;
+  const dropProps = (key: string) =>
+    !movable
+      ? {}
+      : {
+          onDragOver: (e: DragEvent) => {
+            if (!dragged || !e.dataTransfer.types.includes(PANEL_MIME)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            const side = sideOf(e);
+            const next = key === dragged ? null : { key, side };
+            if (next?.key !== drop?.key || next?.side !== drop?.side) setDrop(next);
+          },
+          onDragLeave: (e: DragEvent) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop((d) => (d?.key === key ? null : d));
+          },
+          onDrop: (e: DragEvent) => {
+            e.preventDefault();
+            if (dragged && dragged !== key) setGridLayout(layoutKey!, movePanel(rows, dragged, key, sideOf(e)));
+            setDragged(null);
+            setDrop(null);
+          },
+        };
+  const gripProps = (key: string) =>
+    !movable
+      ? null
+      : {
+          draggable: true,
+          onDragStart: (e: DragEvent) => {
+            e.dataTransfer.setData(PANEL_MIME, key);
+            e.dataTransfer.effectAllowed = "move";
+            // The whole panel as the drag image.
+            const panel = e.currentTarget.parentElement;
+            if (panel) e.dataTransfer.setDragImage(panel, e.nativeEvent.offsetX, e.nativeEvent.offsetY);
+            setDragged(key);
+          },
+          onDragEnd: () => {
+            setDragged(null);
+            setDrop(null);
+          },
+        };
 
   // The edited panel publishes for the FFT (the first one if it is hidden).
   const publishKey = panels.some((p) => p.layer.key === active) ? active : panels[0]?.layer.key;
@@ -103,17 +208,20 @@ export function ViewerGrid({
     }
   };
 
-  const first = panels[0];
+  const first = ordered[0];
   const zoom = useDisplay((s) => (first ? s.views[first.viewKey]?.zoom : undefined));
 
   // The export dialog, opened on the panels shown at that moment.
-  const [exporting, setExporting] = useState<{ panels: SnapshotPanel[]; cols: number; name: string } | null>(null);
+  const [exporting, setExporting] = useState<{ panels: SnapshotPanel[]; cols: number[]; name: string } | null>(null);
   const saveImage = () => {
-    const shown = panels.filter((p) => p.layer.frame && p.layer.display);
+    const ready = (p: GridPanel) => !!(p.layer.frame && p.layer.display);
+    const shown = ordered.filter(ready);
     if (!shown.length) return;
+    // The figure keeps the rows as shown.
+    const lengths = rows.map((r) => r.filter((k) => ready(byKey.get(k)!)).length).filter((n) => n > 0);
     setExporting({
       name: `${safeFileName(shown.map((p) => p.layer.label).join("+"))}.png`,
-      cols: Math.min(cols, shown.length),
+      cols: lengths,
       panels: shown.map((p) => ({
         label: p.layer.label,
         colour: isColour(p.layer.display!.colormap) ? p.layer.display!.colormap : undefined,
@@ -131,26 +239,35 @@ export function ViewerGrid({
   return (
     <div className="image-view">
       <div className="viewer-grid-wrap">
-        <div
-          ref={areaRef}
-          className="viewer-grid"
-          style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: GAP }}
-        >
-          {panels.map((p, i) => (
-            <GridCell
-              key={p.layer.key}
-              p={p}
-              active={p.layer.key === publishKey}
-              first={i === 0}
-              onActivate={() => onActivate(p.layer.key)}
-              interaction={interaction}
-              renderOverlay={renderOverlay}
-              controlRef={controlRef(p.viewKey)}
-              onSave={onSave}
-              onRemove={onRemove?.(p.layer.key) ?? null}
-              scanFactor={scanFactor}
-              fftView={fftView}
-            />
+        <div ref={areaRef} className={`viewer-grid${dragged ? " moving" : ""}`} style={{ gap: GAP }}>
+          {rows.map((row) => (
+            <div key={row.join("|")} className="viewer-grid-row" style={{ gap: GAP }}>
+              {row.map((k) => {
+                const p = byKey.get(k)!;
+                return (
+                  <GridCell
+                    key={k}
+                    p={p}
+                    active={k === publishKey}
+                    first={p === first}
+                    onActivate={() => onActivate(k)}
+                    interaction={interaction}
+                    renderOverlay={renderOverlay}
+                    controlRef={controlRef(p.viewKey)}
+                    onSave={onSave}
+                    onRemove={onRemove?.(k) ?? null}
+                    scanFactor={scanFactor}
+                    fftView={fftView}
+                    grip={gripProps(k)}
+                    dropProps={dropProps(k)}
+                    dropSide={drop?.key === k ? drop.side : null}
+                    dragging={dragged === k}
+                  />
+                );
+              })}
+              {/* The automatic grid keeps its columns: a short last row is padded. */}
+              {!saved && Array.from({ length: cols - row.length }, (_, i) => <div key={`pad${i}`} className="grid-pad" />)}
+            </div>
           ))}
           {!panels.length && empty && <div className="image-message">{empty}</div>}
         </div>
@@ -167,6 +284,11 @@ export function ViewerGrid({
           <button className="link-button" onClick={() => eachView((c) => c.oneToOne())} title="One screen pixel per data pixel">
             1:1
           </button>
+          {saved && (
+            <button className="link-button" onClick={() => setGridLayout(layoutKey!, null)} title="Back to the automatic grid">
+              Reset layout
+            </button>
+          )}
           <button
             className="link-button"
             onClick={saveImage}
@@ -192,6 +314,7 @@ export function ViewerGrid({
 
 function GridCell({
   p, active, first, onActivate, interaction, renderOverlay, controlRef, onSave, onRemove, scanFactor, fftView,
+  grip, dropProps, dropSide, dragging,
 }: {
   p: GridPanel;
   active: boolean;
@@ -204,6 +327,12 @@ function GridCell({
   onRemove: (() => void) | null;
   scanFactor?: number;
   fftView?: string;
+  /** The strip along the top edge that moves the panel (null: it can't move). */
+  grip: object | null;
+  dropProps: object;
+  /** A moved panel would land on this side. */
+  dropSide: DropSide | null;
+  dragging: boolean;
 }) {
   const { layer } = p;
   const layers = useMemo(
@@ -212,7 +341,13 @@ function GridCell({
   );
   const colormap = layer.display?.colormap;
   return (
-    <div className={`grid-panel${active ? " active" : ""}`} onPointerDownCapture={onActivate}>
+    <div
+      className={`grid-panel${active ? " active" : ""}${dragging ? " dragging" : ""}`}
+      onPointerDownCapture={onActivate}
+      {...dropProps}
+    >
+      {grip && <div className="panel-grip" title="Drag to move the panel" {...grip} />}
+      {dropSide && <div className={`panel-drop ${dropSide}`} aria-hidden />}
       <ImageView
         viewKey={p.viewKey}
         follow

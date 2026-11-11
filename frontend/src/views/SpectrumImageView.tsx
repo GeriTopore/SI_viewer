@@ -3,6 +3,7 @@ import { fetchEnergyMap, fetchFrame, fetchInsituAdf, type Frame, type PixelsSpec
 import { Coalescer } from "../api/coalesce";
 import { api, contrastVersion, dataVersion, type DatasetSummary, type DeconvolutionSelection, type NavigatorSource } from "../api/client";
 import { ContextMenu } from "../components/ContextMenu";
+import { AnnotationsToggle } from "../components/AnnotationsToggle";
 import { ElementsPicker } from "../components/ElementsPicker";
 import { InsituFrameBar } from "../components/InsituFrameBar";
 import { BASE_LAYER, FFT_TOOL_TITLE, LayeredViewer } from "../components/LayeredViewer";
@@ -12,7 +13,7 @@ import { SpectrumPlot, type EnergyRange, type Marker, type PlotWindow, type Spec
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import { baseLayerKey, useLayers } from "../state/layers";
-import { CURSOR_COLOR, getSiState, shapeToRegion, useSi, useSiState, type Reduce, type Tool } from "../state/si";
+import { CURSOR_COLOR, getSiState, scaleShape, shapeToRegion, useSi, useSiState, type Reduce, type Tool } from "../state/si";
 import { autoRange, sortedSample } from "../viewer/contrast";
 import { isColour } from "../viewer/colormaps";
 import { bytesLabel, formatValue, insituViewLabel } from "../format";
@@ -20,13 +21,13 @@ import { imageGeometry, isAbort } from "./geometry";
 import { useNavigatorTools } from "./si/useNavigatorTools";
 import { navigatorGeometry, polygonToScan, scanInteraction, scanPixel, scanTransform } from "./si/scan";
 import { CURSOR_CHANNEL, LINE_CHANNEL, useSiSpectra, type LineBand } from "./si/useSiSpectra";
-import { useViewProfiles } from "../state/profiles";
+import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from "../state/profiles";
 import { eelsTab, useUi, type BottomTab } from "../state/ui";
-import { useShortcuts } from "../keyboard";
+import { stepKeys, useShortcuts } from "../keyboard";
 import { bandPolygon, pixelLength, pointAt } from "../viewer/profile";
 import { fwhmAt, useMarkers } from "./si/xray";
 import { SPECTRUM_COLOR, useEnergyAxis, useSpectrum } from "./SpectrumView";
-import { memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
+import { memberLabel, memberTabs, useGroup, useLossLog } from "./si/LinkedSpectrum";
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
 import { useDeconvPreview } from "./si/useDeconvPreview";
@@ -47,10 +48,9 @@ const TOOLS: { tool: Tool; label: string; title: string }[] = [
   {
     tool: "line",
     label: "╱",
-    title: "Line profile: drag to draw (Shift snaps the angle); click on the profile for the spectrum there",
+    title: "Line profile: drag to draw (Shift snaps the angle); shift-click on the profile for the spectrum there",
   },
   { tool: "fft", label: "FFT", title: FFT_TOOL_TITLE },
-  { tool: "pan", label: "✋", title: "Pan (or hold Space / middle-drag with any tool)" },
 ];
 
 /** Band colour of a window with no solid colour of its own. */
@@ -97,15 +97,30 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     e: () => setTool("ellipse"),
     p: () => setTool("polygon"),
     l: () => setTool("line"),
-    h: () => setTool("pan"),
+    // Shift +/-: the selected region bigger or smaller (lines: the viewer's).
+    ...stepKeys((step) => {
+      if (tool === "line") return false;
+      const { selected, rois } = getSiState(ds.id);
+      const roi = rois.find((r) => r.id === selected);
+      if (!roi) return false;
+      const shape = scaleShape(roi.shape, step);
+      if (shape) useSi.getState().updateRoi(ds.id, roi.id, { shape });
+      return true;
+    }),
   });
   // Cursor and region tools bring the spectrum tab back (the line tool shows profiles).
   // A linked EELS group has a tab for each member instead of "Spectrum".
   const group = useGroup(ds);
   const linked = !!ds.eels && group.length > 1;
   const setBottomTab = useUi((s) => s.setBottomTab);
+  // Only on a change of tool (or group), not on opening the view: entering a
+  // workspace brings back the tab it was left on.
+  const lastTool = useRef({ tool, linked });
   useEffect(() => {
-    if (tool === "line" || tool === "fft" || tool === "pan") return;
+    const changed = lastTool.current.tool !== tool || lastTool.current.linked !== linked;
+    lastTool.current = { tool, linked };
+    if (!changed) return;
+    if (tool === "line" || tool === "fft") return;
     const tab = useUi.getState().bottomTab;
     const mine: BottomTab[] = linked ? group.map((m) => eelsTab(m.id)) : ["spectrum"];
     if (!mine.includes(tab)) setBottomTab(linked ? eelsTab(ds.id) : "spectrum");
@@ -118,15 +133,22 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const files = useDatasets((s) => s.files);
   // Refetched when the file's maps change (computed maps added or removed).
   const fileKey = files.find((f) => f.id === ds.file_id)?.datasets.map((d) => `${d.id}:${d.title}`).join(",");
+  // In a linked group, the virtual image of every member can be the navigator.
+  const members = linked ? group.filter((m) => m.id !== ds.id) : [];
+  const membersKey = members.map((m) => m.id).join(",");
   useEffect(() => {
     api.navigators(ds.id).then((list) => {
       // The spectrum image itself (total counts) is the virtual image.
-      const s = list.map((x) => (x.id === ds.id ? { ...x, id: VIRTUAL, label: "Virtual image" } : x));
+      const own = linked ? `Virtual image · ${memberLabel(ds, group)}` : "Virtual image";
+      const s = list.map((x) => (x.id === ds.id ? { ...x, id: VIRTUAL, label: own } : x));
+      s.splice(1, 0, ...members.map((m) => ({
+        id: m.id, label: `Virtual image · ${memberLabel(m, group)}`, factor: 1, dataset_id: m.id,
+      })));
       setSources(s);
       // Keep the current source unless it was deleted.
       setSourceId((cur) => (cur && (cur === NONE || s.some((x) => x.id === cur)) ? cur : (s[0]?.id ?? VIRTUAL)));
     });
-  }, [ds.id, fileKey]);
+  }, [ds.id, fileKey, membersKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The main window: the range the virtual image sums (null: all of it).
   const isVirtual = sourceId === VIRTUAL;
@@ -149,7 +171,13 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // virtual image over the whole range), which needs the SI in memory.
   const isAdf = sourceId === ADF;
   const frameId = isVirtual ? (main ? null : ds.id) : sourceId;
-  const sourceReady = frameId !== null && frameId !== NONE && (frameId !== ds.id || ready);
+  const member = members.find((m) => m.id === sourceId);
+  const sourceReady = frameId !== null && frameId !== NONE && (frameId !== ds.id || ready) && !member?.lazy;
+  // A member shown as the navigator is loaded first (its total counts need it in memory).
+  useEffect(() => {
+    if (!member?.lazy) return;
+    api.loadDataset(member.id).then(updateDataset).catch((e) => setNavError((e as Error).message));
+  }, [member?.id, member?.lazy, updateDataset]); // eslint-disable-line react-hooks/exhaustive-deps
   // The ADF of a series follows the frame held: it has the dataset's version.
   const sourceSummary = allDatasets(files).find((d) => d.id === (isVirtual || isAdf ? ds.id : sourceId));
   const sourceVersion = sourceSummary ? dataVersion(sourceSummary) : "";
@@ -221,7 +249,34 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     else setDisplay(navKey, { lo, hi });
   }, [navFrame]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const virtualLabel = main ? `Virtual image (${rangeText(main)})` : "Virtual image";
+  const virtualName = linked ? `Virtual image · ${memberLabel(ds, group)}` : "Virtual image";
+  const virtualLabel = main ? `${virtualName} (${rangeText(main)})` : virtualName;
+
+  // A line scan along a profile line (drawn in the navigator's pixels: a
+  // finer navigator has scanK of them per spectrum pixel), and along the
+  // same line of the spectrum images linked to it.
+  const cutLineScan = async (l: ProfileLine) => {
+    const { replaceFile } = useDatasets.getState();
+    const k = scanK;
+    try {
+      const r = await api.cutLineScan(
+        ds.id,
+        { x0: l.x0 / k, y0: l.y0 / k, x1: l.x1 / k, y1: l.y1 / k, width: Math.max(1, l.width / k) },
+        l.name,
+      );
+      replaceFile(r.file);
+      r.partner_files.forEach(replaceFile);
+      // Kept with the line: deleting the line deletes them.
+      const line = getViewProfiles(navView).lines.find((x) => x.id === l.id);
+      if (line) {
+        const made = [r.dataset.id, ...r.partners.map((p) => p.id)];
+        useProfiles.getState().updateLine(navView, l.id, { lineScans: [...(line.lineScans ?? []), ...made] });
+      }
+      useLayers.getState().notify(`${r.dataset.title} added to the dataset pane.`);
+    } catch (e) {
+      useLayers.getState().notify(`Could not make the line scan: ${(e as Error).message}`);
+    }
+  };
 
   // ---------- spectra ----------
   const whole = useSpectrum(ds, ready);
@@ -229,6 +284,11 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // across the line's width; a point covers one pixel along it).
   // Lines are drawn in the navigator's pixels: a finer navigator has its own.
   const navView = scanK > 1 ? `${ds.id}:nav:x${scanK}` : `${ds.id}:nav`;
+  // Annotations hidden with the eye: picking a drawing tool shows them again.
+  const annotationsHidden = useUi((s) => !!s.annotationsHidden[navView]);
+  useEffect(() => {
+    if (tool !== "cursor") useUi.getState().setAnnotationsHidden(navView, false);
+  }, [tool, navView]);
   const profiles = useViewProfiles(navView);
   const pickLine = profiles.pick && profiles.lines.find((l) => l.id === profiles.pick!.line && l.visible);
   const lineBand = useMemo<LineBand | null>(() => {
@@ -246,7 +306,11 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   }, [pickLine, profiles.pick, g.width, g.height, scanK]);
   const spectra = useSiSpectra(ds.id, dataVersion(ds), st, cursorSize, ready, lineBand);
   const totalPixels = g.width * g.height;
-  const fitSeries = useFitSeries(ds, axis.x, reduce === "mean");
+  const fitCursor = useMemo(
+    () => (st.showCursor && st.cursor ? { x: st.cursor.x, y: st.cursor.y, size: cursorSize } : null),
+    [st.showCursor, st.cursor, cursorSize],
+  );
+  const fitSeries = useFitSeries(ds, axis.x, reduce === "mean", fitCursor, st);
   // Each series with the pixels it sums (for the deconvolution preview; none for fits).
   const { series, sel } = useMemo(() => {
     const k = (n: number) => (reduce === "mean" ? 1 / n : 1);
@@ -311,7 +375,8 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     return out;
   }, [files, images, sourceId, isVirtual, main, axis.x, displays, windowColours, layerProps, edit, draft, navView, ds.id, virtualLabel, showMain]);
   // Background removal (Process tab): its fits and bands on this plot.
-  const bg = useBackgroundPreview(ds, axis.x, series);
+  const bgPixels = useMemo(() => sel.map((s) => (s?.kind === "pixel" ? { x: s.x, y: s.y, size: s.size } : null)), [sel]);
+  const bg = useBackgroundPreview(ds, axis.x, series, bgPixels);
   // Deconvolution (Process tab): the deconvolved spectra, dashed.
   const plotted = useDeconvPreview(ds, bg.series, sel, reduce === "mean");
   // Thickness (Process tab): the zero-loss threshold on a low loss.
@@ -490,18 +555,21 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
               <option value={NONE}>None (maps only)</option>
             </select>
           </label>
-          <div className="segmented tool-buttons" role="group" aria-label="Navigator tool">
-            {TOOLS.map((t) => (
-              <button
-                key={t.tool}
-                className={tool === t.tool ? "active" : undefined}
-                aria-pressed={tool === t.tool}
-                title={t.title}
-                onClick={() => setTool(t.tool)}
-              >
-                {t.label}
-              </button>
-            ))}
+          <div className="tool-row">
+            <div className="segmented tool-buttons" role="group" aria-label="Navigator tool">
+              {TOOLS.map((t) => (
+                <button
+                  key={t.tool}
+                  className={tool === t.tool ? "active" : undefined}
+                  aria-pressed={tool === t.tool}
+                  title={t.title}
+                  onClick={() => setTool(t.tool)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <AnnotationsToggle view={navView} />
           </div>
         </div>
         <LayeredViewer
@@ -509,6 +577,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           lineTool={tool === "line"}
           fftTool={tool === "fft"}
           profilePick
+          onLineScan={cutLineScan}
           gridContext="si"
           base={
             sourceId === NONE
@@ -537,7 +606,14 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           onActiveChange={onActiveLayer}
           interaction={scanInteraction(tools.interaction, scanK)}
           renderOverlay={(t) => (
-            <RoiOverlay t={scanTransform(t, scanK)} state={st} cursorSize={cursorSize} draft={tools.draft} hover={tools.hover} />
+            <RoiOverlay
+              t={scanTransform(t, scanK)}
+              state={st}
+              cursorSize={cursorSize}
+              draft={tools.draft}
+              hover={tools.hover}
+              hideRois={annotationsHidden}
+            />
           )}
           bottomTabs={memberTabs(ds, group, spectrumPlot, st, false, legend)}
           footer={ds.insitu?.view ? <InsituFrameBar ds={ds} /> : undefined}

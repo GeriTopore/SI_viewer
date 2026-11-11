@@ -878,6 +878,13 @@ single spectra). A *Background removal* section in the Process tab.
   - Selecting the new SI shows its settings; changing them and *Re-run*
     replaces it in place.
   - Rebinning the source recomputes its background-removed SIs.
+- **Log fit** (power law and exponential): *Fast | Log | Full*; Log is a
+  linear least-squares fit of ln I to ln E (or E), every pixel at once;
+  channels without counts are left out.
+- **LBA** (spectrum images and line scans): each background-window channel
+  is smoothed across the scan by a Gaussian (FWHM in px), each pixel's
+  window scaled back to its own mean, then fitted; the fit is subtracted from
+  the raw spectrum. The cursor's preview uses its neighbourhood's LBA.
 
 **M10e: later.**
 - Edge maps from the periodic table using exSpy's EELS edges (the EELS
@@ -1088,8 +1095,14 @@ the ADF frame at the same time as navigator.
   section (frames and the missing-frames note, time span, frame time, duration,
   start, frame size, raw files and size). The list's shape column is short
   ("208×100×100|3456") and ellipsizes before the title does.
-- *Disabled on a frame.* Rebin (backend 400/422, button and menu entry
-  disabled, tooltip) and zero-loss alignment (the next frame would undo them).
+- *Rebin.* A series is rebinned as a series: the dialog adds a *Time* row
+  (frames per new frame). Every frame read from then on is binned as it is
+  read (y, x, energy in summed blocks, remainder cropped; time: the sum of
+  that many recorded frames, at their mean time); the binning stacks. The
+  view becomes the binned frame where it started (a range becomes one frame).
+  The ADF navigator keeps its resolution (the sub-scan factor grows) and its
+  frames are binned in time the same way. Linked series get the same factors.
+- *Disabled on a frame.* Zero-loss alignment (the next frame would undo it).
   Everything else works on the frame: spectra, regions, line profiles, energy
   windows and maps, spatial/spectral filters, background removal, thickness
   (set the role to low loss), FFT, Save (file named with the frame), plot export.
@@ -1169,16 +1182,22 @@ region. *Fit* draws the model, the background and each element's edges on the
 spectrum (as the EDS fit) and lists each element's intensity, its error, at%
 and onset, with the residual (its size relative to the signal) and the
 background's exponent. Typing an onset refits. `POST …/eels-fit {source,
-options}`. Built (`processing/eels_model.py`, `api/eels_fit.py`,
+options}`. Several spectra (the whole, the cursor, regions) can be ticked
+and are fitted together; each fit is drawn over its spectrum while that is
+shown, the table lists one (picked by name) and the CSV all of them.
+Built (`processing/eels_model.py`, `api/eels_fit.py`,
 `components/EelsFitPanel.tsx`, `state/eelsFit.ts`); both paths are tested
 equal to exSpy's own calls.
 
 **M13c — Maps.** *Fit every pixel* runs `multifit(kind="smart")` as a job
 (about 10 ms a pixel without a low loss, 30 ms with one; progress, cancel),
-with the settings of the single fit. Result: a fitted map per element and
-at% maps, listed like the EDS fitted maps (`origin "fitted"` /
-`"composition"`; removed when the spectrum image is rebinned, filtered or
-re-aligned). 2D scans only. `POST …/eels-fit-maps {options}`.
+with the settings of the single fit. Result: a fitted map per element with
+a Counts / at% switch, as the EDS fitted maps (`origin "fitted"`; removed when the spectrum image is rebinned, filtered or
+re-aligned). 2D scans only. `POST …/eels-fit-maps {options}`. The fit of every
+pixel is kept on the spectrum image (`Dataset.pixel_fits`, while its data is
+unchanged; summary `pixel_fit`): with *Show fit* the spectrum view draws the
+fit at the cursor (the cursor's block added up) instead of the single fit.
+`GET …/eels-pixel-fit?x&y&size`.
 
 **Later.** A linear per-pixel solve (onsets and exponent from the summed fit;
 40 spectra in 0.05 s) and an LCPL background; LBA; profiles for line scans;
@@ -1187,7 +1206,7 @@ Gaussians in the fine structure; the per-pixel fit uses the loaded data
 (filters are not applied; the single fit uses the processed spectrum); a
 fit is not cleared when an in-situ frame changes.
 
-### 4.16 Dataset pane as a tree; one list of fitted maps (M14, in progress)
+### 4.16 Dataset pane as a tree; one list of fitted maps (M14, done)
 
 **M14a — The dataset pane is a tree** (built). Everything made from a dataset is
 listed under it, indented with tree lines, to any depth: a background-removed
@@ -1218,7 +1237,7 @@ background-removed subset can't be told from the source's.
   makes already has its parent (window maps on a background-removed SI
   point at it).
 
-**M14b — One list of fitted maps, with an at% switch.** A per-pixel fit (EELS
+**M14b — One list of fitted maps, with an at% switch** (built). A per-pixel fit (EELS
 model, and EDS) gives one map per element, not a *Map* list plus an *at%*
 list. A *Counts | at%* switch (on the group's header, and in the viewer
 toolbar when such a map is shown) says which quantity the maps show; it
@@ -1229,6 +1248,70 @@ applies to all the maps of that fit at once.
   revision so contrast is redone.
 - **Display, profiles and export** use the quantity shown; the title and
   units follow ("Cu (fit)" / "Cu at%").
+- **Built:** `Dataset.quantities` / `quantity` (`FIT_QUANTITIES`),
+  `Session.set_fit_quantity`, `PUT …/fit-quantity {quantity}` on the
+  spectrum image; a refit keeps showing at% if it was shown. Fitted maps get
+  their own type group, *Fit*; `FitQuantitySwitch.tsx` sits on its header
+  and in the viewer toolbar. Maps without at% (excluded elements) stay on
+  counts.
+
+### Line scans cut from a spectrum image (built)
+
+*Generate LineScan*, from the right-click menu of a line (on the image, with
+any tool, or on its name in the Line profile tab), makes a line scan along it, listed under the spectrum image (`origin "line-scan"`):
+positions sampled as the profile is (about one per pixel along the line,
+bilinear between pixel centres, so at any angle), each spectrum the mean
+across the line's width; a "Distance" axis in the scan's units. The
+spectrum images linked to it are cut along the same line and their line
+scans linked. Made once from the loaded data (filters not applied).
+`processing/line_scan.py`, `Session.add_line_scans`, `POST
+…/line-scan {line: {x0, y0, x1, y1, width}, name, with_linked}`.
+
+### 4.17 Grid panels arranged by hand (M15, done)
+
+In the Grid view, a panel is moved by dragging the strip along its top edge
+(a grip shows on hover). A bar shows where it lands: left or right of another
+panel (into that row), or above or below it (a new row). Panels in a row share
+its width and the rows share the height; images fit their panels. The
+arrangement is kept per view for the session (`gridLayouts` in the ui
+store); panels added later join the last row, removed ones leave it. *Reset
+layout* goes back to the automatic grid, whose short last row keeps the
+column width. *Save PNG* lays the figure out in the same rows (a shorter row
+centred). `components/ViewerGrid.tsx`, `figureLayout` in `viewer/snapshot.ts`.
+
+### 4.18 One workspace per loaded dataset (M16, done)
+
+Each top-level entry of the dataset pane (a file, an experiment, or the files
+of a linked EELS box) is a workspace. The one being viewed is tinted in the
+pane; the others are dimmed. A click on anything in another workspace (a
+row, or its name) only enters it: what it showed when it was left comes back
+(the datasets shown, the one being edited, the tab under the image and its
+split, the right-hand tab); one never entered shows its first dataset. Then
+clicks act as usual. Nothing else in another workspace responds (folding,
+×, renaming, right-click menus, colours, dragging, keys): any click on it,
+wherever, only enters it. Hovering over it lights up its name only. ↑/↓ stay
+in the workspace. Showing a dataset from code (a file
+just opened, a new result) moves to its workspace, saving the one left.
+Cursors, regions, lines, FFT boxes, contrast and zoom were already kept per
+dataset. `active` and `workspaces` in `state/datasets.ts`; `DatasetList.tsx`.
+
+### 4.19 Undo a deletion (M17, done)
+
+⌘/Ctrl Z brings back the last thing deleted; each deletion says it can be
+undone ("Deleted Fe Kα · ⌘/Ctrl Z to undo"), and undoing says what came back.
+- **Datasets** (window maps, thickness, ZLP shift, fitted maps, background-
+  removed and deconvolved spectra with everything made from them): the
+  backend keeps the last 20 deletions (`Session.undoable`) and puts the
+  datasets back in their places (`POST /api/undo/{token}`; the token comes
+  with `DELETE /api/datasets/{id}`). A computed element map comes back by
+  re-ticking its element (it is listed after the others). Closing the file
+  drops its deletions.
+- **Regions, line profiles, FFT boxes** (deleted with × or the Delete key; a
+  click that draws nothing is not a deletion): kept in the browser and put
+  back in their places.
+- Not undone: other changes (rebinning, alignment, closing a file). No redo.
+- `state/undo.ts`, `deleteRois` / `deleteLine` / `deleteBox`; tests in
+  `tests/test_undo.py`.
 
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
@@ -1261,7 +1344,10 @@ applies to all the maps of that fit at once.
 | M11 | Grid / Merged views for images and maps (M11a, done), split pane under the image (M11b, done) | Done |
 | M12 | In-situ EELS series from `.dm4` + `.raw`: reader (M12a), frame browsing (M12b), time-series job (M12c), Time tab (M12d), sum frames with drift correction (M12e) | In progress (M12a, M12b done) |
 | M13 | EELS element maps by fitting edges with cross-sections: edges in the periodic table (M13a), fit one spectrum (M13b), per-pixel maps (M13c) | In progress |
-| M14 | Dataset pane as a tree of datasets and their results (M14a); one list of fitted maps with a Counts / at% switch (M14b) | In progress (M14a built) |
+| M14 | Dataset pane as a tree of datasets and their results (M14a); one list of fitted maps with a Counts / at% switch (M14b) | Done |
+| M15 | Grid panels arranged by hand: drag by the top edge into a row or a new row; PNG export follows | Done |
+| M16 | One workspace per loaded dataset: entering one brings back what it showed | Done |
+| M17 | Undo a deletion (⌘/Ctrl Z): datasets, regions, line profiles, FFT boxes | Done |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

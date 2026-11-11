@@ -6,6 +6,9 @@ import { calibratedLength, sampleProfile } from "../viewer/profile";
 import { formatValue } from "../format";
 import { downloadCsv, safeFileName } from "../download";
 import type { AxisCal, ViewLayer } from "./ImageView";
+import { ColourPick } from "./ColourPick";
+import { askDeleteLine } from "./LineDeleteDialog";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { ProfilePlot, type DistanceRange, type ProfileSeries, type ProfileTable } from "./ProfilePlot";
 
 // Profile of a grey image shown with maps.
@@ -25,14 +28,16 @@ interface Props {
   pickable?: boolean;
   /** Switches to the spectrum (where a picked spectrum is shown). */
   onShowSpectrum?: () => void;
+  /** Cuts a line scan along a line (spectrum images). */
+  onLineScan?: (line: ProfileLine) => void;
 }
 
 /** Profiles of the visible layers along a view's lines, with the line list
  * (width, visibility), normalisation and CSV export. */
-export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShowSpectrum }: Props) {
+export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShowSpectrum, onLineScan }: Props) {
   const { lines, selected, normalise, pick } = useViewProfiles(view);
   const [exporting, setExporting] = useState(false);
-  const { patch, updateLine, removeLine } = useProfiles.getState();
+  const { patch, updateLine } = useProfiles.getState();
   const units = calX.units || "px";
   const shown = lines.filter((l) => l.visible);
   const drawn = layers.filter((l) => l.visible && l.frame);
@@ -110,7 +115,8 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
               units={units}
               onSelect={() => patch(view, { selected: l.id })}
               onChange={(p) => updateLine(view, l.id, p)}
-              onRemove={() => removeLine(view, l.id)}
+              onRemove={() => askDeleteLine(view, l.id)}
+              onLineScan={onLineScan}
             />
           ))}
         </div>
@@ -166,7 +172,7 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
       {!lines.length ? (
         <p className="muted small profile-empty">
           Drag on the image to draw a line; its profile appears here for every image layer shown.
-          {pickable && " Click or drag on the profile to see the spectrum there."}
+          {pickable && " Shift-click or shift-drag on the profile to see the spectrum there."}
         </p>
       ) : drawn.length ? (
         <ProfilePlot
@@ -183,8 +189,17 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
   );
 }
 
+/** The right-click menu of a profile line. */
+export const lineMenuItems = (line: ProfileLine, onLineScan: (line: ProfileLine) => void): MenuItem[] => [
+  {
+    label: "Generate LineScan",
+    title: "A line scan along the line, each spectrum the mean across its width",
+    onSelect: () => onLineScan(line),
+  },
+];
+
 function LineChip({
-  line, selected, units, onSelect, onChange, onRemove,
+  line, selected, units, onSelect, onChange, onRemove, onLineScan,
 }: {
   line: ProfileLine;
   selected: boolean;
@@ -192,9 +207,24 @@ function LineChip({
   onSelect: () => void;
   onChange: (p: Partial<ProfileLine>) => void;
   onRemove: () => void;
+  onLineScan?: (line: ProfileLine) => void;
 }) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
-    <span className={`profile-line${selected ? " selected" : ""}`} onClick={onSelect}>
+    <span
+      className={`profile-line${selected ? " selected" : ""}`}
+      onClick={onSelect}
+      onContextMenu={
+        onLineScan &&
+        ((e) => {
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        })
+      }
+    >
+      {menu && onLineScan && (
+        <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={lineMenuItems(line, onLineScan)} />
+      )}
       <input
         type="checkbox"
         checked={line.visible}
@@ -203,9 +233,11 @@ function LineChip({
         title="Show this line"
         style={{ accentColor: line.color }}
       />
-      <span className="profile-line-name" style={{ color: line.color }}>
-        {line.name}
-      </span>
+      <ColourPick color={line.color} label={line.name} onChange={(color) => onChange({ color })}>
+        <span className="profile-line-name" style={{ color: line.color }}>
+          {line.name}
+        </span>
+      </ColourPick>
       <label className="profile-width" title={`Width integrated across the line (pixels; ${units} along it)`}>
         w
         <input

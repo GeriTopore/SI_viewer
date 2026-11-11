@@ -43,7 +43,7 @@ function dedupe(points: [number, number][]) {
 export function useNavigatorTools(si: string, width: number, height: number, frameArrows = false) {
   const tool = useSi((s) => s.tool);
   const cursorSize = useSi((s) => s.cursorSize);
-  const { patch, addRoi, updateRoi, removeRoi } = useSi.getState();
+  const { patch, addRoi, updateRoi, deleteRois } = useSi.getState();
   const [draft, setDraft] = useState<Shape | null>(null);
   const [hover, setHover] = useState<Pt | null>(null);
   const drag = useRef<Drag | null>(null);
@@ -94,10 +94,10 @@ export function useNavigatorTools(si: string, width: number, height: number, fra
 
   const interaction: Interaction = {
     cursor:
-      tool === "pan" ? "grab" : tool === "cursor" ? (grabbing ? "grabbing" : near ? "move" : undefined) : "cell",
+      tool === "cursor" ? (grabbing ? "grabbing" : near ? "move" : undefined) : "cell",
 
     onDown(p, _e, t) {
-      if (tool === "pan" || tool === "line" || tool === "fft") return false; // lines, FFT boxes: the viewer's tools
+      if (tool === "line" || tool === "fft") return false; // lines, FFT boxes: the viewer's tools
       const s = getSiState(si);
       const selected = s.rois.find((r) => r.id === s.selected && r.visible);
       if (selected && tool !== "polygon") {
@@ -208,7 +208,7 @@ export function useNavigatorTools(si: string, width: number, height: number, fra
         return true;
       }
       if ((e.key === "Delete" || e.key === "Backspace") && s.selected) {
-        removeRoi(si, s.selected);
+        deleteRois(si, [s.selected]);
         return true;
       }
       if (e.key === "Escape") {

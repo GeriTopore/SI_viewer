@@ -30,12 +30,21 @@ export function useShortcuts(keys: Record<string, (e: KeyboardEvent) => unknown>
   }, [enabled]);
 }
 
+/** Shift + / Shift - (the "+" and "_" keys on most layouts, or = and -
+ * with Shift): ``fn(1)`` or ``fn(-1)`` for ``useShortcuts``. ``fn`` returns
+ * false when it has nothing to change. */
+export function stepKeys(fn: (step: 1 | -1) => boolean): Record<string, (e: KeyboardEvent) => unknown> {
+  const on = (step: 1 | -1) => (e: KeyboardEvent) => e.shiftKey && fn(step);
+  return { "+": on(1), "=": on(1), _: on(-1), "-": on(-1) };
+}
+
 /** Shortcuts listed in the help overlay (? key). */
 export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
   {
     group: "General",
     keys: [
       ["⌘/Ctrl O", "Open files"],
+      ["⌘/Ctrl Z", "Undo the last deletion (maps, results, regions, lines, FFT boxes)"],
       ["↑ / ↓", "Previous / next dataset"],
       ["[ / ]", "Fold or unfold the datasets / right-hand pane"],
       ["?", "Show these shortcuts"],
@@ -60,7 +69,7 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
       ["C", "Spectrum cursor (arrow keys nudge it, Shift ×10)"],
       ["R / E / P", "Rectangle / ellipse / polygon region"],
       ["L", "Line profile"],
-      ["H", "Pan"],
+      ["Shift + / Shift −", "Selected line: wider / narrower; selected region: bigger / smaller"],
       ["Delete", "Remove the selected region, line or energy window"],
       ["Shift + drag", "Line: snap the angle to 15°"],
     ],

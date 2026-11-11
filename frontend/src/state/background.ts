@@ -60,8 +60,8 @@ export function validateWindows(o: BackgroundOptions): string | null {
 /** Background [30%, 40%] and signal [42%, 65%] of the energy range. */
 function defaultState(d: DatasetSummary): BgState {
   if (d.background) {
-    const { model, order, fast, background, signal } = d.background;
-    return { on: false, subtracted: false, options: { model, order, fast, background, signal } };
+    const { model, order, fast, log = false, lba = 0, background, signal } = d.background;
+    return { on: false, subtracted: false, options: { model, order, fast, log, lba, background, signal } };
   }
   const r = energyRange(d) ?? { e0: 0, e1: 1, step: 0.01, units: "" };
   const w = r.e1 - r.e0;
@@ -70,7 +70,7 @@ function defaultState(d: DatasetSummary): BgState {
     on: false,
     subtracted: false,
     options: {
-      model: "power_law", order: 2, fast: true,
+      model: "power_law", order: 2, fast: true, log: false, lba: 0,
       background: [at(0.3), at(0.4)],
       signal: [at(0.42), at(0.65)],
     },

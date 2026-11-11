@@ -72,7 +72,7 @@ const PREVIEW = 420;
 interface Props {
   panels: SnapshotPanel[];
   /** Columns of the grid (1 for a single image). */
-  cols: number;
+  cols: number | number[];
   /** A grid of labelled panels (else a single image). */
   grid: boolean;
   /** File name of the download. */

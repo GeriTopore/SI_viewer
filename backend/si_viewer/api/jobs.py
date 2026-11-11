@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -11,7 +13,7 @@ from ..processing.filters import filter_image
 from ..processing.fit_maps import composition_maps, fit_pixels
 from ..processing.fitting import FitOptions, FitSource, fit_model, source_spectrum
 from ..processing.xray import element_table
-from ..session import DatasetKind
+from ..session import FIT_QUANTITIES, DatasetKind
 from .datasets import _dataset
 
 router = APIRouter(tags=["jobs"])
@@ -20,7 +22,7 @@ router = APIRouter(tags=["jobs"])
 class QuantSpec(BaseModel):
     """Composition maps from the fitted maps (Cliff-Lorimer)."""
 
-    composition: bool = False
+    composition: bool = True
     kfactors: dict[str, float] = {}  # by line, e.g. "Fe_Ka"
     lines: dict[str, str] = {}  # element → line (default: its analysis line)
     exclude: list[str] = []
@@ -71,7 +73,7 @@ def start_fit_maps(dataset_id: str, body: FitMapsBody, request: Request) -> dict
             line = body.quant.lines.get(el, analysis)
             if line in intensities:
                 per_element[el] = (line, intensities[line])
-        maps = [("fitted", el, f"{line_label(line)} (fit)", data) for el, (line, data) in per_element.items()]
+        maps = {el: {"counts": (f"{line_label(line)} (fit)", data)} for el, (line, data) in per_element.items()}
         if body.quant.composition:
             included = {el: v for el, v in per_element.items() if el not in body.quant.exclude}
             if included:
@@ -82,14 +84,31 @@ def start_fit_maps(dataset_id: str, body: FitMapsBody, request: Request) -> dict
                     weights,
                     body.quant.min_counts,
                 )
-                maps += [("composition", el, f"{el} at%", data) for el, data in at.items()]
+                for el, data in at.items():
+                    maps[el]["at%"] = (f"{el} at%", data)
         job.report(0.97)  # last chance to cancel before the results replace old ones
-        session.set_fit_maps(si, maps)
+        session.set_fit_maps(si, list(maps.items()))
         entry = session.file_of(si)
         return {"file": entry.summary(session), "skipped": [e for e in fitted.elements if e not in fitted.chosen]}
 
     job = request.app.state.jobs.submit("fit-maps", f"Fit every pixel of {si.title}", run)
     return job.summary()
+
+
+class QuantityBody(BaseModel):
+    quantity: Literal[FIT_QUANTITIES]
+
+
+@router.put("/api/datasets/{dataset_id}/fit-quantity")
+def put_fit_quantity(dataset_id: str, body: QuantityBody, request: Request) -> dict:
+    """Show counts or at% on all the maps of a spectrum image's per-pixel fit."""
+    session = request.app.state.session
+    si = _dataset(request, dataset_id)
+    try:
+        session.set_fit_quantity(si, body.quantity)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(si).summary(session)}
 
 
 @router.get("/api/jobs/{job_id}")

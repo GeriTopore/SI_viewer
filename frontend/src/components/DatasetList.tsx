@@ -3,20 +3,21 @@ import {
 } from "react";
 import { api, thumbnailUrl, type DatasetSummary, type EelsPartner, type FileSummary } from "../api/client";
 import {
-  allDatasets, canDelete, elementOf, isColourMap, layoutPane, layoutTree, setMapColour, useDatasets,
-  type FileTree, type PaneItem, type RowItem,
+  allDatasets, canDelete, elementOf, isColourMap, layoutPane, layoutTree, paneFiles, paneKey, setMapColour,
+  useDatasets, workspaceOf, type FileTree, type PaneItem, type RowItem,
 } from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
 import { isColour, swatchBackground } from "../viewer/colormaps";
-import { datasetTooltip, isBackgroundRemoved, isDeconvolved, isInsituView, isThickness, isWindowMap, isZlpShift, kindLabel, shapeLabel } from "../format";
+import { datasetTooltip, isBackgroundRemoved, isDeconvolved, isLineScan, isThickness, isWindowMap, isZlpShift, kindLabel, shapeLabel } from "../format";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { openAlignment } from "./AlignSection";
 import { RenameInput } from "./RenameInput";
+import { FitQuantitySwitch } from "./FitQuantitySwitch";
 import { ExportDialog } from "./ExportDialog";
 import { useExportFormats } from "../download";
 
@@ -34,15 +35,51 @@ const badgeClass = (d: DatasetSummary) =>
   `badge badge-${isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
-  isBackgroundRemoved(d) || isDeconvolved(d)
-    ? "Delete this spectrum image (and what was made from it)"
-    : d.origin === "fitted" || d.origin === "composition" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
+  isBackgroundRemoved(d) || isDeconvolved(d) || d.origin === "line-scan"
+    ? `Delete this ${isLineScan(d) ? "line scan" : "spectrum image"} (and what was made from it)`
+    : d.origin === "fitted" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
       ? "Delete this map"
       : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
         (d.origin === "file" ? ". The file on disk is not changed." : "");
 
 export function DatasetList() {
-  const { files, selection, focusId, clickDataset, toggleSelect, closeFile, deleteDataset } = useDatasets();
+  const { files, selection, focusId, clickDataset, toggleSelect, closeFile, deleteDataset, enterWorkspace } = useDatasets();
+  // The workspace being viewed (a top-level entry); the others are entered first.
+  const active = useDatasets((s) => s.active);
+  const activeKey = active ? (workspaceOf(files, active)?.key ?? null) : null;
+  const workspaceKey = new Map(
+    layoutPane(files).items.flatMap((it) => paneFiles(it).map((f): [string, string] => [f.id, paneKey(it)])),
+  );
+  /** ``fileId`` is in a workspace other than the one being viewed. */
+  const elsewhere = (fileId: string) => activeKey !== null && workspaceKey.get(fileId) !== activeKey;
+  const wsClass = (it: PaneItem) =>
+    activeKey === null ? "" : paneKey(it) === activeKey ? " workspace-active" : " workspace-inactive";
+  // Another workspace takes no action of its own (folding, ×, renaming, menus,
+  // colours, dragging, keys): any click on it only enters it.
+  const wsProps = (it: PaneItem) => {
+    if (activeKey === null || paneKey(it) === activeKey) return {};
+    const enter = (e: React.SyntheticEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const first = paneFiles(it)[0];
+      if (first) enterWorkspace(first.id);
+    };
+    const block = (e: React.SyntheticEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    return {
+      onClickCapture: enter,
+      onContextMenuCapture: enter,
+      onDoubleClickCapture: block,
+      onDragStartCapture: block,
+      onKeyDownCapture: (e: KeyboardEvent) => {
+        if (e.key === "Tab") return;
+        if (e.key === "Enter" || e.key === " ") enter(e);
+        else block(e);
+      },
+    };
+  };
   const listMode = useUi((s) => s.listMode);
   const collapsedTypes = useUi((s) => s.collapsedTypes);
   const toggleTypeGroup = useUi((s) => s.toggleTypeGroup);
@@ -77,19 +114,27 @@ export function DatasetList() {
       stale = true;
     };
   }, [menuId]);
-  const highlighted = new Set(selection);
+  // A linked EELS group in the viewer is highlighted as a whole; of several
+  // highlighted, the one Info and Process show is marked "focused".
+  const byIdAll = new Map(allDatasets(files).map((d) => [d.id, d]));
+  const highlighted = new Set(selection.flatMap((id) => [id, ...(byIdAll.get(id)?.eels?.linked ?? [])]));
 
   // Rows are div[role=button] (not <button>) so the colour picker can sit inside.
   // Click: maps/images are added to or removed from the view; a spectrum
   // image, stack or spectrum becomes the view. ⌘/Ctrl-click toggles anything
   // (e.g. removes the spectrum image to leave just its maps). Images can also
   // be dragged onto the viewer.
-  const activate = (d: DatasetSummary, toggle: boolean) => (toggle ? toggleSelect(d) : clickDataset(d));
+  // A dataset of another workspace enters that workspace first (bringing back
+  // what it showed); the next click acts on the dataset.
+  const activate = (d: DatasetSummary, toggle: boolean) =>
+    elsewhere(d.file_id) ? enterWorkspace(d.file_id) : toggle ? toggleSelect(d) : clickDataset(d);
   const itemProps = (d: DatasetSummary, className: string) => ({
     role: "button",
     tabIndex: 0,
     "aria-pressed": highlighted.has(d.id),
-    className: `${className}${highlighted.has(d.id) ? " selected" : ""}`,
+    className: `${className}${highlighted.has(d.id) ? " selected" : ""}${
+      highlighted.size > 1 && d.id === focusId && highlighted.has(d.id) ? " focused" : ""
+    }`,
     onClick: (e: MouseEvent) => activate(d, e.metaKey || e.ctrlKey),
     onContextMenu: (e: MouseEvent) => {
       e.preventDefault();
@@ -110,7 +155,7 @@ export function DatasetList() {
       e.preventDefault();
       activate(d, e.metaKey || e.ctrlKey);
     },
-    draggable: d.kind === "image" && renaming !== d.id,
+    draggable: d.kind === "image" && renaming !== d.id && !elsewhere(d.file_id),
     onDragStart: (e: DragEvent) => {
       e.dataTransfer.setData(DATASET_MIME, d.id);
       e.dataTransfer.effectAllowed = "copy";
@@ -190,10 +235,14 @@ export function DatasetList() {
       </li>
     ) : (
       <li className={tree.children.has(d.id) ? "tree-node" : undefined}>
-        <div {...itemProps(d, inGroup ? "dataset no-badge" : "dataset")} title={datasetTooltip(d, parentTitle(d))}>
+        <div
+          {...itemProps(d, `${inGroup ? "dataset no-badge" : "dataset"}${tree.children.has(d.id) ? " has-results" : ""}`)}
+          title={datasetTooltip(d, parentTitle(d))}
+        >
+          {/* Before the badge, as a type group's chevron is. */}
+          {nodeToggle(d, tree)}
           {!inGroup && <span className={badgeClass(d)}>{kindLabel(d)}</span>}
           <span className="dataset-title">
-            {nodeToggle(d, tree)}
             {isColourMap(d) && <ColourDot d={d} />}
             <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} />
             {titleOf(d)}
@@ -210,21 +259,24 @@ export function DatasetList() {
     const active = isCollapsed && g.ds.some((d) => highlighted.has(d.id) || d.id === focusId);
     return (
       <li key={g.key} className={`type-group${isCollapsed ? " collapsed" : ""}${active ? " active" : ""}`}>
-        <button
-          className="type-group-toggle"
-          aria-expanded={!isCollapsed}
-          title={`${g.ds.length} × ${g.label}`}
-          onClick={() => toggleTypeGroup(g.key)}
-          onContextMenu={(e) => {
-            if (!exportFormats[g.ds[0].kind]?.length) return;
-            e.preventDefault();
-            setGroupMenu({ x: e.clientX, y: e.clientY, ds: g.ds });
-          }}
-        >
-          <span className="process-chevron" aria-hidden />
-          <span className={badgeClass(g.ds[0])}>{g.label}</span>
-          <span className="dataset-shape">{g.ds.length}</span>
-        </button>
+        <div className="type-group-header">
+          <button
+            className="type-group-toggle"
+            aria-expanded={!isCollapsed}
+            title={`${g.ds.length} × ${g.label}`}
+            onClick={() => toggleTypeGroup(g.key)}
+            onContextMenu={(e) => {
+              if (!exportFormats[g.ds[0].kind]?.length) return;
+              e.preventDefault();
+              setGroupMenu({ x: e.clientX, y: e.clientY, ds: g.ds });
+            }}
+          >
+            <span className="process-chevron" aria-hidden />
+            <span className={badgeClass(g.ds[0])}>{g.label}</span>
+            <span className="dataset-shape">{g.ds.length}</span>
+          </button>
+          <FitQuantitySwitch ds={g.ds} />
+        </div>
         {!isCollapsed && <ul className={listClass}>{g.ds.map((d) => renderDataset(d, tree, true))}</ul>}
       </li>
     );
@@ -244,10 +296,10 @@ export function DatasetList() {
         </li>
       ),
     );
-  const renderFile = (file: FileSummary) => {
+  const renderFile = (file: FileSummary, extra = "", props = {}) => {
     const isCollapsed = collapsed[file.id];
     return (
-      <li key={file.id} className="file">
+      <li key={file.id} className={`file${extra}`} {...props}>
         <div className="file-header">
           <button
             className="disclosure"
@@ -257,7 +309,7 @@ export function DatasetList() {
             {isCollapsed ? "▸" : "▾"}
           </button>
           {/* In an experiment: what the file is (Survey, ADF, EELS LL, …). */}
-          <span className="file-name" title={file.path}>
+          <span className="file-name" title={file.path} onClick={() => enterWorkspace(file.id)}>
             {file.role ?? file.name}
           </span>
           <button className="icon-button" title="Close file" onClick={() => closeFile(file.id)}>
@@ -277,7 +329,7 @@ export function DatasetList() {
     const { experiment: x } = it;
     const isCollapsed = collapsed[x.id];
     return (
-      <li key={x.id} className="experiment">
+      <li key={x.id} className={`experiment${wsClass(it)}`} {...wsProps(it)}>
         <div className="file-header">
           <button
             className="disclosure"
@@ -287,7 +339,7 @@ export function DatasetList() {
             {isCollapsed ? "▸" : "▾"}
           </button>
           <span className="fb-icon dir" aria-hidden />
-          <span className="file-name" title={x.path}>
+          <span className="file-name" title={x.path} onClick={() => it.files[0] && enterWorkspace(it.files[0].id)}>
             {x.name}
           </span>
           <button
@@ -300,7 +352,7 @@ export function DatasetList() {
             ×
           </button>
         </div>
-        {!isCollapsed && <ul className="file-list experiment-files">{it.files.map(renderFile)}</ul>}
+        {!isCollapsed && <ul className="file-list experiment-files">{it.files.map((f) => renderFile(f))}</ul>}
       </li>
     );
   };
@@ -310,13 +362,18 @@ export function DatasetList() {
       <ul className="file-list">
         {items.map((it) =>
           it.type === "file" ? (
-            renderFile(it.file)
+            renderFile(it.file, wsClass(it), wsProps(it))
           ) : it.type === "experiment" ? (
             renderExperiment(it)
           ) : (
-            <li key={it.files.map((f) => f.id).join("+")} className="pair-box" style={pairStyle(it.colour)}>
+            <li
+              key={it.files.map((f) => f.id).join("+")}
+              className={`pair-box${wsClass(it)}`}
+              style={pairStyle(it.colour)}
+              {...wsProps(it)}
+            >
               <span className="pair-label">Linked EELS</span>
-              <ul className="file-list">{it.files.map(renderFile)}</ul>
+              <ul className="file-list">{it.files.map((f) => renderFile(f))}</ul>
             </li>
           ),
         )}
@@ -330,13 +387,7 @@ export function DatasetList() {
             { label: "Rename…", onSelect: () => setRenaming(menu.d.id) },
             ...eelsItems(menu.d, partners, files),
             ...(menu.d.kind === "stack" ? [{ label: "Align frames…", onSelect: () => openAlignment(menu.d) }] : []),
-            ...(canRebin(menu.d)
-              ? [
-                  isInsituView(menu.d)
-                    ? { label: "Rebin…", disabled: true, title: "Not for in-situ frames: the next frame would undo it" }
-                    : { label: "Rebin…", onSelect: () => setRebinTarget(menu.d) },
-                ]
-              : []),
+            ...(canRebin(menu.d) ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
             ...(exportFormats[menu.d.kind]?.length ? [{ label: "Export…", onSelect: () => setExporting([menu.d]) }] : []),
             ...(canDelete(menu.d) ? [{ label: "Delete", danger: true, onSelect: () => deleteDataset(menu.d) }] : []),
           ]}
@@ -516,13 +567,13 @@ export function DatasetListHeader() {
   );
 }
 
-const ListIcon = () => (
+export const ListIcon = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
     <path d="M1 2.5h12M1 7h12M1 11.5h12" stroke="currentColor" strokeWidth="1.5" />
   </svg>
 );
 
-const GridIcon = () => (
+export const GridIcon = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
     <rect x="1" y="1" width="5" height="5" rx="1" fill="currentColor" />
     <rect x="8" y="1" width="5" height="5" rx="1" fill="currentColor" />

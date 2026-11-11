@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..jobs import Job
-from ..processing.background import BackgroundOptions, EnergyAxis, channel_windows, preview
+from ..processing.background import (
+    BackgroundOptions, EnergyAxis, channel_windows, lba_margin, lba_window, preview,
+)
+from ..session import si_cube
 from .datasets import _dataset
 
 router = APIRouter(tags=["background"])
@@ -23,10 +26,47 @@ def _eels_spectra(request: Request, dataset_id: str):
     return ds
 
 
+class Pixel(BaseModel):
+    """The size × size block of pixels centred on (x, y) that a spectrum sums."""
+
+    x: int
+    y: int
+    size: int = Field(1, ge=1, le=64)
+
+
 class PreviewBody(BaseModel):
     options: BackgroundOptions
     # Spectra on the dataset's whole energy axis.
     spectra: list[list[float]]
+    # Per spectrum, the block of pixels it is from (null: a sum of many, which
+    # LBA leaves as it is).
+    pixels: list[Pixel | None] | None = None
+
+
+def _with_lba(ds, spectra: np.ndarray, pixels: list[Pixel | None], options: BackgroundOptions) -> None:
+    """Replace the background window of each spectrum that is from a block of
+    pixels by the block's LBA window (scaled to the spectrum's own mean in the
+    window), in place. Only the neighbourhood of the block is averaged."""
+    axis = EnergyAxis.of(ds.signal)
+    win = channel_windows(axis, options)
+    ds.materialise()
+    cube = si_cube(ds)
+    h, w = cube.shape[:2]
+    m = lba_margin(options.lba)
+    for i, px in enumerate(pixels[: len(spectra)]):
+        if px is None:
+            continue
+        half = (px.size - 1) // 2
+        x0, y0 = max(0, px.x - half), max(0, px.y - half)
+        x1, y1 = min(w, x0 + px.size), min(h, y0 + px.size)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        cx0, cy0 = max(0, x0 - m), max(0, y0 - m)
+        crop = cube[cy0 : min(h, y1 + m), cx0 : min(w, x1 + m), win.b0 : win.b1]
+        block = lba_window(crop, options.lba)[y0 - cy0 : y1 - cy0, x0 - cx0 : x1 - cx0].sum(axis=(0, 1))
+        own = spectra[i, win.b0 : win.b1]
+        if block.mean() > 0:
+            spectra[i, win.b0 : win.b1] = block * own.mean() / block.mean()
 
 
 @router.post("/api/datasets/{dataset_id}/background/preview")
@@ -35,7 +75,8 @@ def post_background_preview(dataset_id: str, body: PreviewBody, request: Request
     dataset's whole energy axis), from the first channel of the background
     window (``start``) to the last of the signal window, inclusive; and the
     power-law exponent ``r`` of each (null for other models and failed fits).
-    Quick, for use while the windows are dragged."""
+    With LBA, a spectrum from a block of ``pixels`` is fitted to the block's
+    LBA background window. Quick, for use while the windows are dragged."""
     ds = _eels_spectra(request, dataset_id)
     axis = EnergyAxis.of(ds.signal)
     if len(body.spectra) > MAX_PREVIEW_SPECTRA:
@@ -44,6 +85,8 @@ def post_background_preview(dataset_id: str, body: PreviewBody, request: Request
         raise HTTPException(422, f"Each spectrum needs {axis.size} channels, the dataset's whole energy axis")
     try:
         spectra = np.asarray(body.spectra, dtype=float).reshape(len(body.spectra), axis.size)
+        if body.options.lba > 0 and body.pixels and ds.kind.value == "spectrum_image":
+            _with_lba(ds, spectra, body.pixels, body.options)
         start, background, r = preview(spectra, axis, body.options)
     except ValueError as e:
         raise HTTPException(422, str(e))

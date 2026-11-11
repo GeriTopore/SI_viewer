@@ -1,7 +1,8 @@
 import { useRef } from "react";
 import type { Interaction, Pt } from "../components/ImageView";
-import { getViewProfiles, useProfiles, type LineGeometry } from "../state/profiles";
+import { getViewProfiles, useProfiles, type LineGeometry, type ProfileLine } from "../state/profiles";
 import { useUi } from "../state/ui";
+import { askDeleteLine } from "../components/LineDeleteDialog";
 import { distanceToLine } from "../viewer/profile";
 
 type Drag =
@@ -27,6 +28,14 @@ function endpoint(from: Pt, p: Pt, snap: boolean): Pt {
  * selected line, Esc deselects. Drawing or changing a line shows the Line
  * profile tab under the image. ``view`` is the image view's key.
  */
+/** The visible line of ``view`` under ``p`` (the top one), within a few
+ * screen pixels or its width. */
+export function lineAt(view: string, p: { x: number; y: number }, zoom: number): ProfileLine | undefined {
+  const tol = HANDLE_PX / zoom;
+  const visible = getViewProfiles(view).lines.filter((l) => l.visible);
+  return [...visible].reverse().find((l) => distanceToLine(l, p.x, p.y) <= Math.max(tol, l.width / 2));
+}
+
 export function useLineTool(view: string): Interaction {
   const { patch, addLine, updateLine, removeLine } = useProfiles.getState();
   const drag = useRef<Drag | null>(null);
@@ -98,7 +107,7 @@ export function useLineTool(view: string): Interaction {
     onKeyDown(e) {
       const s = getViewProfiles(view);
       if ((e.key === "Delete" || e.key === "Backspace") && s.selected) {
-        removeLine(view, s.selected);
+        askDeleteLine(view, s.selected);
         return true;
       }
       if (e.key === "Escape" && s.selected) {

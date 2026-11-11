@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type BackgroundPreview, type DatasetSummary } from "../../api/client";
+import { api, type BackgroundPixel, type BackgroundPreview, type DatasetSummary } from "../../api/client";
 import type { EnergyRange, PlotWindow, SpectrumSeries } from "../../components/SpectrumPlot";
 import {
   BG_BAND, SIGNAL_BAND, canRemoveBackground, energyRange, isBgBand, snapEnergy, useBackground, useBgState,
@@ -31,8 +31,12 @@ export interface BackgroundTool {
  * (switched in the Process tab), the fitted background of every series is
  * requested (debounced, stale responses dropped) and drawn dashed, and the
  * Background and Signal bands are offered, kept in step with the section's
- * inputs. ``series`` are the raw spectra on the energy axis ``x``. */
-export function useBackgroundPreview(ds: DatasetSummary, x: Float64Array, series: SpectrumSeries[]): BackgroundTool {
+ * inputs. ``series`` are the raw spectra on the energy axis ``x``; ``pixels``
+ * the block of pixels each is from, if any (with LBA, these are fitted to
+ * their neighbourhood's average). */
+export function useBackgroundPreview(
+  ds: DatasetSummary, x: Float64Array, series: SpectrumSeries[], pixels?: (BackgroundPixel | null)[],
+): BackgroundTool {
   const st = useBgState(ds);
   const { options } = st;
   const eligible = canRemoveBackground(ds) && !ds.background;
@@ -52,7 +56,8 @@ export function useBackgroundPreview(ds: DatasetSummary, x: Float64Array, series
     const timer = setTimeout(async () => {
       try {
         const fit = await api.backgroundPreview(
-          ds.id, options, series.map((s) => Array.from(s.data, (v) => v ?? 0)), ac.signal,
+          ds.id, options, series.map((s) => Array.from(s.data, (v) => v ?? 0)),
+          options.lba > 0 ? series.map((_, i) => pixels?.[i] ?? null) : undefined, ac.signal,
         );
         setFitted({ inputs: series, fit });
         // The exponent shown is the cursor's (or the only spectrum's).

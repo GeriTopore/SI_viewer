@@ -58,8 +58,9 @@ def _is_element_map(signal, kind: DatasetKind) -> bool:
 # (raw maps are computed from them straight away); larger ones stay lazy.
 SI_IN_MEMORY_LIMIT = 4 << 30
 
-# Element maps made by fitting every pixel (net counts, and at% composition).
-FIT_ORIGINS = ("fitted", "composition")
+# What a map made by fitting every pixel can show: the fitted intensity, and
+# the at% composition made from the maps of the fit.
+FIT_QUANTITIES = ("counts", "at%")
 
 
 class NotRebinnable(ValueError):
@@ -109,12 +110,13 @@ class Dataset:
     kind: DatasetKind
     is_element_map: bool = False
     # "file" (loaded), "computed" (an element map made from a spectrum image),
-    # "fitted" / "composition" (per-pixel fits), "window" (an energy-window map),
+    # "fitted" (per-pixel fits), "window" (an energy-window map),
     # "background" (EELS spectra with the background removed), "background-r"
     # (the power-law exponent map of one), "thickness" (the thickness of an
     # EELS low loss: a map, or a profile for a line scan), "zlp-shift" (the
     # energy shift zero-loss alignment applied at every pixel of a low loss)
-    # or "deconvolved" (EELS spectra with plural scattering removed).
+    # "deconvolved" (EELS spectra with plural scattering removed) or
+    # "line-scan" (spectra along a line of a spectrum image).
     origin: str = "file"
     # Element symbol of an element map (Velox maps: their title).
     element: str | None = None
@@ -131,6 +133,15 @@ class Dataset:
     # Deconvolved EELS spectra ("deconvolved"): the options they were made
     # with (see processing/deconvolution.py) and the low loss used.
     deconvolution: dict | None = None
+    # Fitted maps: the image of each quantity it has (see FIT_QUANTITIES) and
+    # the one shown (``signal`` is that image).
+    quantities: dict[str, object] = field(default_factory=dict, repr=False)
+    quantity: str | None = None
+    # EELS spectrum images: the fit of every pixel (see
+    # processing/eels_model.PixelFits) and the data it was made from
+    # (``data_version``); shown at the cursor while that is current.
+    pixel_fits: object | None = field(default=None, repr=False)
+    pixel_fits_version: tuple = ()
     # Bumped whenever the data is recomputed, so clients refresh caches.
     revision: int = 0
     # Bumped when the data is replaced by other data of the same kind (the next
@@ -201,6 +212,16 @@ class Dataset:
                 s.metadata.General.title = title
 
     @property
+    def data_version(self) -> tuple:
+        """Changes whenever the data is recomputed, replaced or filtered."""
+        return (self.revision, self.data_rev, self.filter_rev)
+
+    @property
+    def current_pixel_fits(self):
+        """The fit of every pixel, if made from the data as it is now."""
+        return self.pixel_fits if self.pixel_fits_version == self.data_version else None
+
+    @property
     def filter_spec(self):
         from .processing.filters import Filters
 
@@ -261,6 +282,7 @@ class Dataset:
         self._keep_eels_elements(signal)
         self.signal = signal
         self.revision += 1
+        self.pixel_fits = None  # made from the old data
         self.thumbnails.clear()
         self.cache = {}  # a new dict: a result still being computed from the old data lands in the old one
 
@@ -273,6 +295,7 @@ class Dataset:
         self._keep_eels_elements(signal)
         self.signal = signal
         self.data_rev += 1
+        self.pixel_fits = None
         self.thumbnails = {}
         self.cache = {}
 
@@ -298,6 +321,9 @@ class Dataset:
             "edges": edges_info(s) if technique == "EELS" else None,
             "origin": self.origin,
             "element": self.element,
+            "pixel_fit": self.current_pixel_fits is not None,
+            "quantities": list(self.quantities),
+            "quantity": self.quantity,
             "parent_id": self.parent_id,
             "window": None if self.window is None else dict(self.window),
             "background": None if self.background is None else {
@@ -419,6 +445,8 @@ class Session:
         # loss): group id -> member dataset ids.
         self.eels_groups: dict[str, list[str]] = {}
         self.experiments: dict[str, Experiment] = {}
+        # Deletions that can be undone, oldest first (see ``delete_dataset``).
+        self.undoable: dict[str, dict] = {}
         self._lock = threading.RLock()
 
     def open_file(self, path: str | Path, experiment_id: str | None = None) -> FileEntry:
@@ -735,6 +763,8 @@ class Session:
     def close_file(self, file_id: str) -> None:
         with self._lock:
             entry = self.files.pop(file_id)
+            for token in [t for t, u in self.undoable.items() if u["file_id"] == file_id]:
+                del self.undoable[token]
             self._leave_experiment(entry)
             for ds_id in entry.dataset_ids:
                 ds = self.datasets.get(ds_id)
@@ -1082,6 +1112,39 @@ class Session:
         self._set_role(ds)
         return ds
 
+    def add_line_scans(self, si: Dataset, line, name: str, with_linked: bool = True) -> list[Dataset]:
+        """Cut a line scan from the 2D spectrum image ``si`` along ``line`` (a
+        ``LineSpec`` in its scan's pixels; see processing/line_scan.py), titled
+        "<si> · <name>" and listed under it. With ``with_linked``, the spectrum
+        images linked to it are cut along the same line too and their line
+        scans linked as they are. Made once from the loaded data (filters are
+        not applied). Returns the new datasets, ``si``'s first. ValueError for
+        a line that can't be cut."""
+        from .processing.line_scan import line_scan_signal
+
+        if si.kind is not DatasetKind.SPECTRUM_IMAGE or si.is_line_scan:
+            raise ValueError(f"{si.title} is not a 2D spectrum image")
+        sources = [si, *(self.linked_of(si) if with_linked else [])]
+        signals = []
+        for src in sources:
+            src.materialise()
+            signals.append(line_scan_signal(src.signal, line, f"{src.title} · {name}"))
+        made = []
+        for src, signal in zip(sources, signals):
+            frame = None if src.insitu is None else src.insitu.view.label()
+            ds = Dataset(
+                id=_new_id(), file_id=src.file_id, signal=signal, kind=classify(signal),
+                origin="line-scan", parent_id=src.id, technique_source=src.technique_source,
+                eels_role=src.eels_role, eels_role_source=src.eels_role_source, source_frame=frame,
+            )
+            with self._lock:
+                self.datasets[ds.id] = ds
+                self.files[src.file_id].dataset_ids.append(ds.id)
+            made.append(ds)
+        if len(made) > 1:
+            self._join(made)
+        return made
+
     def replace_deconvolved(self, dd: Dataset, options, signal) -> Dataset:
         """Replace a deconvolved dataset's data with ``signal`` made with new
         ``options``: same dataset, new revision. An automatic title follows
@@ -1380,10 +1443,10 @@ class Session:
             self._view_changed(ds)
         ds.technique_source = "user"
 
-    def delete_dataset(self, dataset: Dataset) -> None:
+    def delete_dataset(self, dataset: Dataset) -> str:
         """Delete an element map, a window map, a thickness or a
         background-removed or deconvolved spectrum image (with everything made
-        from it).
+        from it). Returns a token that ``undo`` takes to bring it back.
 
         Deleting an element map also unticks its element in the map's spectrum image and in the
         file's other (non-image) EDS spectra, which removes that element's
@@ -1391,45 +1454,116 @@ class Session:
         """
         from .processing.xray import eds_info
 
+        entry: dict = {"file_id": dataset.file_id, "restore": [], "elements": []}
         if dataset.origin in ("window", "thickness", "zlp-shift"):
+            entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
-            return
-        if dataset.origin in ("background", "background-r", "deconvolved"):
+            return self._keep_undoable(entry)
+        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan"):
+            entry["restore"] = self._tree_places(dataset)
             self._remove_tree(dataset)
-            return
+            return self._keep_undoable(entry)
         if not dataset.is_element_map:
             raise ValueError(f"{dataset.title} is not an element map and can't be deleted")
+        # A computed map comes back with its element; any other is kept.
+        if dataset.origin != "computed":
+            entry["restore"] = self._tree_places(dataset)
         self._remove(dataset)
-        if dataset.origin in FIT_ORIGINS:
-            return  # results of a per-pixel fit: nothing else to undo
+        if dataset.origin == "fitted":
+            return self._keep_undoable(entry)  # results of a per-pixel fit: nothing else to undo
         element = dataset.element
         for d in self.siblings_in_file(dataset.file_id):
             if d.kind is DatasetKind.SPECTRUM_IMAGE and dataset.parent_id not in (None, d.id):
                 continue  # another spectrum image in the same file
             info = eds_info(d.signal)
             if info is not None and element in info["elements"]:
+                entry["elements"].append((d.id, list(info["elements"])))
                 self.set_elements(d, [e for e in info["elements"] if e != element])
+        return self._keep_undoable(entry)
+
+    # ---------- undoing a deletion ----------
+
+    UNDO_LIMIT = 20
+
+    def _tree_places(self, dataset: Dataset) -> list[tuple[Dataset, int]]:
+        """``dataset`` and everything made from it, each with its place in its
+        file's list, in list order."""
+        with self._lock:
+            ids = self.files[dataset.file_id].dataset_ids
+            tree, todo = [], [dataset]
+            while todo:
+                d = todo.pop()
+                tree.append(d)
+                todo += [c for c in self.siblings(d) if c.parent_id == d.id]
+            return sorted(((d, ids.index(d.id)) for d in tree if d.id in ids), key=lambda p: p[1])
+
+    def _keep_undoable(self, entry: dict) -> str:
+        token = _new_id()
+        with self._lock:
+            self.undoable[token] = entry
+            while len(self.undoable) > self.UNDO_LIMIT:
+                self.undoable.pop(next(iter(self.undoable)))
+        return token
+
+    def undo(self, token: str) -> list[str]:
+        """Bring back what the deletion ``token`` removed: the datasets in
+        their places, and the elements it unticked (which remakes their maps).
+        Returns the ids of the files that changed. KeyError if the token is
+        unknown (or too old); ValueError if the file was closed."""
+        with self._lock:
+            entry = self.undoable.pop(token)
+            entry_file = self.files.get(entry["file_id"])
+            if entry_file is None:
+                raise ValueError("Its file was closed")
+            for d, index in entry["restore"]:
+                if d.parent_id is not None and d.parent_id not in self.datasets:
+                    continue  # made from something that is gone too
+                self.datasets[d.id] = d
+                if d.id not in entry_file.dataset_ids:
+                    entry_file.dataset_ids.insert(min(index, len(entry_file.dataset_ids)), d.id)
+        for ds_id, elements in entry["elements"]:
+            ds = self.datasets.get(ds_id)
+            if ds is not None:
+                self.set_elements(ds, elements)
+        return [entry["file_id"]]
 
     def _fit_maps(self, si: Dataset) -> list[Dataset]:
-        return [d for d in self.siblings_in_file(si.file_id) if d.parent_id == si.id and d.origin in FIT_ORIGINS]
+        return [d for d in self.siblings_in_file(si.file_id) if d.parent_id == si.id and d.origin == "fitted"]
 
-    def set_fit_maps(self, si: Dataset, maps: list[tuple[str, str, str, np.ndarray]]) -> None:
-        """Replace ``si``'s per-pixel fit results with ``maps``: tuples of
-        (origin "fitted" or "composition", element, title, data)."""
+    def set_fit_maps(self, si: Dataset, maps: list[tuple[str, dict[str, tuple[str, np.ndarray]]]]) -> None:
+        """Replace ``si``'s per-pixel fit results with ``maps``: one per
+        element, (element, {quantity: (title, data)}) with "counts" first. The
+        quantity shown stays the one the old maps showed, where a map has it."""
         from .processing.element_maps import scan_image
 
-        for d in self._fit_maps(si):
+        old = self._fit_maps(si)
+        shown = "at%" if any(d.quantity == "at%" for d in old) else "counts"
+        for d in old:
             self._remove(d)
-        for origin, element, title, data in maps:
+        for element, by_quantity in maps:
+            quantities = {q: scan_image(si.signal, data, title) for q, (title, data) in by_quantity.items()}
+            quantity = shown if shown in quantities else "counts"
             ds = Dataset(
-                id=_new_id(), file_id=si.file_id, signal=scan_image(si.signal, data, title),
-                kind=DatasetKind.IMAGE, is_element_map=True, origin=origin, element=element, parent_id=si.id,
+                id=_new_id(), file_id=si.file_id, signal=quantities[quantity], kind=DatasetKind.IMAGE,
+                is_element_map=True, origin="fitted", element=element, parent_id=si.id,
+                quantities=quantities, quantity=quantity,
             )
             with self._lock:
                 self.datasets[ds.id] = ds
                 self.files[si.file_id].dataset_ids.append(ds.id)
 
-    def rebin(self, si: Dataset, factors: list[int], with_linked: bool = True) -> list[Dataset]:
+    def set_fit_quantity(self, si: Dataset, quantity: str) -> None:
+        """Show ``quantity`` on every map of ``si``'s per-pixel fit that has it
+        (a new revision, so contrast is redone). ValueError if none has it."""
+        maps = [d for d in self._fit_maps(si) if quantity in d.quantities]
+        if not maps:
+            raise ValueError(f"{si.title} has no fitted maps in {quantity}")
+        for d in maps:
+            if d.quantity != quantity:
+                d.quantity = quantity
+                d.replace_signal(d.quantities[quantity])
+
+    def rebin(self, si: Dataset, factors: list[int], with_linked: bool = True, time: int = 1) -> list[Dataset]:
         """Rebin a spectrum image and everything recorded on its scan, in place.
 
         Only spectrum images can be rebinned, and always as a whole: the
@@ -1446,14 +1580,23 @@ class Session:
         them before anything is rebinned. Returns the datasets
         rebinned, the spectrum image first, then its scan's images, then the
         linked ones and their images.
+
+        An in-situ series is rebinned as a series (see ``_rebin_series``), and
+        can also be binned along ``time`` (frames per binned frame).
         """
         if si.kind is not DatasetKind.SPECTRUM_IMAGE:
             raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images can (with their whole scan)")
         if si.is_line_scan:
             raise NotRebinnable(f"{si.title} is a line scan and can't be rebinned: rebinning needs a 2D scan")
-        for d in (si, *(self.linked_of(si) if with_linked else [])):
-            if d.insitu is not None:
-                raise NotRebinnable(f"{d.title} is a frame of an in-situ series and can't be rebinned: the next frame would undo it")
+        linked_all = self.linked_of(si) if with_linked else []
+        if si.insitu is None:
+            if time != 1:
+                raise ValueError(f"{si.title} has no time axis to rebin: only in-situ series do")
+            for d in linked_all:
+                if d.insitu is not None:
+                    raise NotRebinnable(f"{d.title} (linked) is an in-situ series: rebin it from the series instead")
+        elif any(d.insitu is None for d in linked_all):
+            raise NotRebinnable(f"{si.title} is linked to spectrum images that are not in-situ series: unlink them first")
         am = si.signal.axes_manager
         axes = list(am._axes)
         if len(factors) != len(axes):
@@ -1461,7 +1604,9 @@ class Session:
         for f, ax in zip(factors, axes):
             if not 1 <= f <= ax.size:
                 raise ValueError(f"Factor for {ax.name or 'axis'} must be between 1 and {ax.size}")
-        if all(f == 1 for f in factors):
+        if si.insitu is not None and not 1 <= time <= si.insitu.n:
+            raise ValueError(f"Factor for Time must be between 1 and {si.insitu.n}")
+        if all(f == 1 for f in factors) and time == 1:
             raise ValueError("Choose a factor above 1 for at least one axis")
 
         # HyperSpy's scale is in natural order (x, y | energy).
@@ -1483,6 +1628,8 @@ class Session:
                     raise ValueError(
                         f"Factor for {ax.name or 'axis'} must be at most {ax.size} for {d.title} (linked)"
                     )
+            if d.insitu is not None and time > d.insitu.n:
+                raise ValueError(f"Factor for Time must be at most {d.insitu.n} for {d.title} (linked)")
         on_scan = [
             d for d in self.siblings_in_file(si.file_id)
             if d.origin == "file" and d.kind in (DatasetKind.IMAGE, DatasetKind.STACK)
@@ -1492,7 +1639,10 @@ class Session:
         si.materialise()
         for d in on_scan:
             self.remove_alignment(d)  # its shifts are in pixels of the old size
-        _rebin_in_place(si, scale)
+        if si.insitu is not None:
+            self._rebin_series(si, scale, time)
+        else:
+            _rebin_in_place(si, scale)
         for d in on_scan:
             # Natural order: (frames |) x, y.
             _rebin_in_place(d, [1] * d.signal.axes_manager.navigation_dimension + [fx, fy])
@@ -1506,15 +1656,42 @@ class Session:
             else:
                 m.replace_signal(new_map)
         self._remake_window_maps(si)
-        self._remake_backgrounds(si)
-        self._remake_thickness(si)
+        if si.insitu is None:  # of an in-situ series they are snapshots of a frame, as they were made
+            self._remake_backgrounds(si)
+            self._remake_thickness(si)
         if si.origin == "background":
             for r in self._background_r_maps(si):
                 self._remove(r)  # made at the old size: re-run from the source to update
         rebinned = [si, *on_scan]
         for d in linked:
-            rebinned += self.rebin(d, factors, with_linked=False)
+            rebinned += self.rebin(d, factors, with_linked=False, time=time)
         return rebinned
+
+    @staticmethod
+    def _rebin_series(ds: Dataset, scale: list[int], time: int) -> None:
+        """Rebin an in-situ series by ``scale`` (natural order: x, y, E) and
+        ``time``: every frame read from now on is binned (on top of any
+        earlier binning), and ``ds`` holds the binned frame where its view
+        started (a frame range becomes that one frame), with the axes HyperSpy's
+        rebin gives the frame it held."""
+        series = ds.insitu
+        fx, fy, fe = scale
+        ft0, fy0, fx0, fe0 = series.binning
+        raw_start = series.view.start * ft0
+        template = ds.signal.rebin(scale=scale) if any(f > 1 for f in scale) else ds.signal
+        series.set_binning((ft0 * time, fy0 * fy, fx0 * fx, fe0 * fe))
+        k = min(raw_start // series.binning[0], series.n - 1)
+        data = series.read(k)
+        with ds._load_lock:
+            ds.replace_signal(series.fresh_signal(template, data))
+            series.view = ViewState("frame", k, k)
+        natural = ds.signal.axes_manager._get_axes_in_natural_order()
+        label = ", ".join(
+            [f"Time×{time}"] * (time > 1)
+            + [f"{_defined(ax.name) or f'axis {i}'}×{f}" for i, (ax, f) in enumerate(zip(natural, scale)) if f > 1]
+        )
+        ds.rebinned.append(label)
+        series.schedule_ahead(k)
 
     def set_map_options(self, si: Dataset, options: dict) -> None:
         """Change how ``si``'s element maps are computed and recompute them."""

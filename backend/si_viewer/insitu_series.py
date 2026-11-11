@@ -11,6 +11,12 @@ frame: the raw layout is (E, y, x) per frame). Frames read are kept in an LRU
 cache bounded by bytes; after a frame is shown its neighbours are read ahead
 on a background thread. Nothing here reads more than one frame at a time
 except :meth:`InsituSeries.reduce`, which is run as a job.
+
+A series can be rebinned (:meth:`InsituSeries.set_binning`): every frame read
+from then on is binned as it is read, along y, x and energy (summed blocks,
+the remainder cropped, as HyperSpy's rebin) and along time (a frame is then
+the sum of that many recorded frames, at their mean time). Frame indices are
+then in binned frames.
 """
 
 from __future__ import annotations
@@ -103,9 +109,11 @@ class InsituSeries:
         self.signal = signal  # lazy, (frames, y, x, E)
         md = signal.metadata.Insitu.as_dictionary()
         self.meta = md
-        self.n = int(md["frames"])
-        self.times = np.asarray(md.get("frame_times_s") or np.arange(self.n), dtype=np.float64)
-        self.frame_shape = tuple(int(s) for s in signal.data.shape[1:])  # (y, x, E)
+        self.n_raw = int(md["frames"])
+        self.times_raw = np.asarray(md.get("frame_times_s") or np.arange(self.n_raw), dtype=np.float64)
+        self.raw_frame_shape = tuple(int(s) for s in signal.data.shape[1:])  # (y, x, E)
+        # Binning factors along (time, y, x, E); see set_binning.
+        self.binning: tuple[int, int, int, int] = (1, 1, 1, 1)
         self.cache = FrameCache(FRAME_CACHE_BYTES if cache_bytes is None else cache_bytes)
         self.view = ViewState()
         # ADF images (at the ADF's resolution) of the views held lately, by view.
@@ -115,6 +123,54 @@ class InsituSeries:
         self._inflight: dict[int, threading.Event] = {}
         self._ahead_gen = 0
         self._ahead = ThreadPoolExecutor(max_workers=1, thread_name_prefix="readahead")
+
+    # ---------- binning ----------
+
+    @property
+    def n(self) -> int:
+        """Frames of the series as browsed (binned along time)."""
+        return self.n_raw // self.binning[0]
+
+    @property
+    def times(self) -> np.ndarray:
+        """Time of each (binned) frame: the mean of the frames binned in it."""
+        ft = self.binning[0]
+        return self.times_raw[: self.n * ft].reshape(self.n, ft).mean(axis=1)
+
+    @property
+    def frame_shape(self) -> tuple[int, int, int]:
+        """(y, x, E) of a (binned) frame."""
+        return tuple(s // f for s, f in zip(self.raw_frame_shape, self.binning[1:]))
+
+    def set_binning(self, binning: tuple[int, int, int, int]) -> None:
+        """Bin every frame read from now on by ``binning`` (time, y, x, E),
+        counted from the recorded frames. The cache and the ADF images (of
+        the old binning) are dropped. Raises ValueError for a factor below 1
+        or one that leaves nothing."""
+        binning = tuple(int(f) for f in binning)
+        sizes = (self.n_raw, *self.raw_frame_shape)
+        if len(binning) != 4 or any(not 1 <= f <= n for f, n in zip(binning, sizes)):
+            raise ValueError(f"Binning factors must be between 1 and {list(sizes)}")
+        self.cancel_ahead()
+        self.binning = binning  # type: ignore[assignment]
+        self.cache.clear()
+        self.adf_images.clear()
+
+    def _binned(self, raw: list[np.ndarray]) -> np.ndarray:
+        """The frame binned from the recorded frames ``raw`` (one per frame of
+        the time bin), each (y, x, E): summed along time and in blocks along
+        y, x and E. Integers stay integers (uint32 when the counts fit)."""
+        fy, fx, fe = self.binning[1:]
+        y, x, e = self.frame_shape
+        acc = np.zeros((y, x, e), dtype=np.float64 if raw[0].dtype.kind == "f" else np.int64)
+        for f in raw:
+            block = f[: y * fy, : x * fx, : e * fe].reshape(y, fy, x, fx, e, fe)
+            acc += block.sum(axis=(1, 3, 5), dtype=acc.dtype)
+        if acc.dtype.kind == "f":
+            return acc.astype(raw[0].dtype if raw[0].dtype.itemsize >= 4 else np.float32)
+        if acc.min(initial=0) >= 0 and acc.max(initial=0) < 2**32:
+            return acc.astype(np.uint32)
+        return acc
 
     # ---------- the dataset's signal ----------
 
@@ -142,8 +198,16 @@ class InsituSeries:
 
     # ---------- reading ----------
 
+    def _read_raw(self, k: int) -> np.ndarray:
+        return np.asarray(self.signal.data[k].compute(scheduler="synchronous"))
+
     def _read_now(self, k: int) -> np.ndarray:
-        frame = np.asarray(self.signal.data[k].compute(scheduler="synchronous"))
+        """(Binned) frame ``k``, read: the recorded frames of its time bin."""
+        ft = self.binning[0]
+        if self.binning == (1, 1, 1, 1):
+            frame = self._read_raw(k)
+        else:
+            frame = self._binned([self._read_raw(j) for j in range(k * ft, (k + 1) * ft)])
         frame.flags.writeable = False  # shared with the cache: tools must not change it in place
         return frame
 
@@ -165,8 +229,9 @@ class InsituSeries:
             event.wait()
             return self.read(k, keep)  # the owner's result is cached now (or it failed: we read it)
         try:
+            binning = self.binning
             frame = self._read_now(k)
-            if keep:
+            if keep and self.binning == binning:  # not a frame of a binning since replaced
                 self.cache.put(k, frame)
             return frame
         finally:
@@ -239,6 +304,7 @@ class InsituSeries:
         return {
             "frames": self.n,
             "recorded_frames": md.get("recorded_frames"),
+            "time_binning": self.binning[0],
             "frame_shape": [int(s) for s in self.frame_shape],
             "first_time_s": float(times[0]),
             "last_time_s": float(times[-1]),
@@ -282,7 +348,7 @@ def adf_stack(ds, siblings: list):
         if d is ds or d.kind is not DatasetKind.STACK:
             continue
         s = d.loaded_signal
-        if s.metadata.get_item("Insitu.frames") is None or s.axes_manager.navigation_size != ds.insitu.n:
+        if s.metadata.get_item("Insitu.frames") is None or s.axes_manager.navigation_size != ds.insitu.n_raw:
             continue
         k = scan_factor_of(ds, d)
         if k is not None:
@@ -294,7 +360,9 @@ def adf_image(ds, siblings: list) -> np.ndarray | None:
     """The ADF image matching what ``ds`` holds, at the ADF's own resolution
     (k times finer than the scan for a sub-scan, see :func:`adf_stack`): the
     ADF frame of the same index, or the mean/sum of the same range of frames.
-    None if the file has no matching ADF."""
+    A series binned along time takes the ADF frames binned the same way (each
+    the sum of the recorded frames of its bin). None if the file has no
+    matching ADF."""
     found = adf_stack(ds, siblings)
     if found is None:
         return None
@@ -304,9 +372,12 @@ def adf_image(ds, siblings: list) -> np.ndarray | None:
     hit = series.adf_images.get(view)
     if hit is not None:
         return hit
+    ft = series.binning[0]
     data = adf.loaded_signal.data
-    chunk = data[view.start : view.end + 1]
+    chunk = data[view.start * ft : (view.end + 1) * ft]
     chunk = np.asarray(chunk.compute() if hasattr(chunk, "compute") else chunk, dtype=np.float64)
+    if ft > 1:
+        chunk = chunk.reshape(-1, ft, *chunk.shape[1:]).sum(axis=1)
     if view.mode == "frame" or view.start == view.end:
         image = chunk[0]
     elif view.mode == "mean":

@@ -6,7 +6,14 @@ subtracted over a *signal* window after it. The estimates are HyperSpy's own
 exponential, polynomial and offset fits), written for many spectra at once and
 per pixel, so that a single dead pixel doesn't spoil the estimate for the rest.
 A full fit refines the power law or exponential of every pixel by least squares
-with HyperSpy's own model, starting from the estimates.
+with HyperSpy's own model, starting from the estimates. A log fit is a linear
+least-squares fit of ln I to ln E (power law) or E (exponential), at every
+pixel at once.
+
+LBA (local background averaging): before the fit, each channel of the
+background window is smoothed across the scan with a Gaussian (its FWHM in
+pixels), and each pixel's smoothed window is scaled back to that pixel's own
+mean; the background is fitted to that and subtracted from the raw spectrum.
 """
 
 from __future__ import annotations
@@ -37,6 +44,11 @@ class BackgroundOptions(BaseModel):
     order: int = Field(2, ge=1, le=6)
     # Fast: the closed-form estimate; else a least-squares fit at every pixel.
     fast: bool = True
+    # Power law and exponential: a linear fit of the logarithm (overrides fast).
+    log: bool = False
+    # LBA: FWHM in pixels of the Gaussian the background window is averaged
+    # with across the scan; 0 for none.
+    lba: float = Field(0.0, ge=0, le=50)
     # [lo, hi] in the energy axis' units: the window the background is fitted
     # in, and the window kept (with the background subtracted).
     background: tuple[float, float]
@@ -96,6 +108,10 @@ class Windows:
         return self.s1 - self.b0
 
 
+def uses_log(options: BackgroundOptions) -> bool:
+    return options.log and options.model in ("power_law", "exponential")
+
+
 def min_background_channels(options: BackgroundOptions) -> int:
     if options.model in ("power_law", "exponential"):
         return 3
@@ -109,8 +125,10 @@ def automatic_title(options: BackgroundOptions, axis: EnergyAxis) -> str:
 def describe(options: BackgroundOptions, units: str = "") -> str:
     """e.g. "power law (fast), background 800–920 eV, signal 925–1010 eV"."""
     name = MODEL_NAMES[options.model] + (f" (order {options.order})" if options.model == "polynomial" else "")
+    fit = "log fit" if uses_log(options) else "fast" if options.fast else "full"
+    lba = f", LBA {options.lba:g} px" if options.lba > 0 else ""
     return (
-        f"{name} ({'fast' if options.fast else 'full'}), background {window_label(*options.background, units)}"
+        f"{name} ({fit}){lba}, background {window_label(*options.background, units)}"
         f", signal {window_label(*options.signal, units)}"
     )
 
@@ -183,6 +201,65 @@ def _exponential_estimate(y: np.ndarray, x: np.ndarray, axis: EnergyAxis) -> tup
     return np.where(ok, amp, 0.0), np.where(ok, tau, 1.0), ok
 
 
+def _log_line(u: np.ndarray, y: np.ndarray, use: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(intercept, slope, ok) of the least-squares line ln y = intercept +
+    slope·u of every row of ``y`` (n, nb), over the channels ``use`` (n, nb)
+    where y > 0 (at least 2 of them, at 2 different u)."""
+    w = (use & (y > 0)).astype(float)
+    with np.errstate(all="ignore"):
+        v = np.where(w > 0, np.log(np.where(y > 0, y, 1.0)), 0.0)
+        s0, su, suu = w.sum(1), w @ u, w @ (u * u)
+        sv, suv = (w * v).sum(1), (w * v) @ u
+        det = s0 * suu - su * su
+        slope = (s0 * suv - su * sv) / det
+        intercept = (sv - slope * su) / s0
+    ok = (s0 >= 2) & (np.abs(det) > 1e-12 * np.maximum(1.0, s0 * suu)) & np.isfinite(slope) & np.isfinite(intercept)
+    return np.where(ok, intercept, 0.0), np.where(ok, slope, 0.0), ok
+
+
+def _power_law_log(y: np.ndarray, x: np.ndarray, axis: EnergyAxis) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(A, r, ok) of A·x^-r by a linear fit of ln y to ln x; ``x`` the
+    window's energies (all must be positive)."""
+    if not (x > 0).all():
+        raise ValueError("A log fit of a power law needs energies above 0 in the background window")
+    c, slope, ok = _log_line(np.log(x), y, np.ones(y.shape, bool))
+    with np.errstate(all="ignore"):
+        amp = np.exp(c) / (axis.scale if axis.binned else 1.0)
+    ok &= np.isfinite(amp)
+    return np.where(ok, amp, 0.0), np.where(ok, -slope, np.nan), ok
+
+
+def _exponential_log(y: np.ndarray, x: np.ndarray, axis: EnergyAxis) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(A, tau, ok) of A·exp(-x/tau) by a linear fit of ln y to x."""
+    c, slope, ok = _log_line(x, y, np.ones(y.shape, bool))
+    with np.errstate(all="ignore"):
+        amp = np.exp(c) / (axis.scale if axis.binned else 1.0)
+        tau = -1.0 / slope
+    ok &= np.isfinite(amp) & np.isfinite(tau) & (slope != 0)
+    return np.where(ok, amp, 0.0), np.where(ok, tau, 1.0), ok
+
+
+def lba_window(window: np.ndarray, fwhm: float) -> np.ndarray:
+    """LBA of the background-window channels ``window`` (scan axes…, nb):
+    each channel smoothed across the scan by a Gaussian of ``fwhm`` pixels,
+    then each pixel's window scaled to its own mean (left as it was where
+    the smoothed mean is not positive). float64, same shape."""
+    from scipy.ndimage import gaussian_filter
+
+    raw = np.nan_to_num(np.asarray(window, dtype=float))
+    sigma = fwhm / (2 * math.sqrt(2 * math.log(2)))
+    smooth = gaussian_filter(raw, sigma=(sigma,) * (raw.ndim - 1) + (0,), mode="nearest")
+    with np.errstate(all="ignore"):
+        k = raw.mean(-1, keepdims=True) / smooth.mean(-1, keepdims=True)
+    good = np.isfinite(k) & (smooth.mean(-1, keepdims=True) > 0)
+    return np.where(good, smooth * np.where(good, k, 1.0), raw)
+
+
+def lba_margin(fwhm: float) -> int:
+    """Pixels on each side that the LBA of a pixel depends on."""
+    return int(4.0 * fwhm / (2 * math.sqrt(2 * math.log(2))) + 0.5) + 1
+
+
 def _multifit(component, y: np.ndarray, x: np.ndarray, axis: EnergyAxis, start: dict[str, np.ndarray]) -> None:
     """Least-squares fit of ``component`` (a HyperSpy component) to every row
     of ``y`` (n, nb) from the ``start`` values of its parameters; the fitted
@@ -231,9 +308,10 @@ def fit_block(
     scale = axis.scale if axis.binned else 1.0
     r = np.full(n, np.nan)
 
+    log = uses_log(options)
     if options.model == "power_law":
-        amp, r, ok = _power_law_estimate(yb, x)
-        if not options.fast and ok.any():
+        amp, r, ok = _power_law_log(yb, xb, axis) if log else _power_law_estimate(yb, x)
+        if not log and not options.fast and ok.any():
             from hyperspy._components.power_law import PowerLaw
 
             comp = PowerLaw()
@@ -243,8 +321,8 @@ def fit_block(
             amp, r = np.where(good, fa, amp), np.where(good, fr, r)
         bg = _power_law_curve(amp, np.nan_to_num(r), x, scale)
     elif options.model == "exponential":
-        amp, tau, ok = _exponential_estimate(yb, x, axis)
-        if not options.fast and ok.any():
+        amp, tau, ok = _exponential_log(yb, xb, axis) if log else _exponential_estimate(yb, x, axis)
+        if not log and not options.fast and ok.any():
             from hyperspy._components.exponential import Exponential
 
             comp = Exponential()
@@ -290,15 +368,24 @@ def remove_background(
     keep = win.s1 - win.s0
     out = np.empty((n, keep), np.float32)
     r = np.full(n, np.nan, np.float32)
-    step = FAST_CHUNK if options.fast or options.model in ("polynomial", "offset") else FULL_CHUNK
+    nb = win.b1 - win.b0
+    nav = tuple(signal.data.shape[:-1])
+    averaged = None
+    if options.lba > 0 and nav:
+        averaged = lba_window(np.asarray(signal.data)[..., win.b0 : win.b1], options.lba).reshape(n, nb)
+    fast = options.fast or uses_log(options) or options.model in ("polynomial", "offset")
+    step = FAST_CHUNK if fast else FULL_CHUNK
     for start in range(0, n, step):
         stop = min(start + step, n)
         block = flat[start:stop, win.b0 : win.s1].astype(float)
-        bg, r[start:stop] = fit_block(block, axis, win, options)
+        fitted = block
+        if averaged is not None:
+            fitted = block.copy()
+            fitted[:, :nb] = averaged[start:stop]
+        bg, r[start:stop] = fit_block(fitted, axis, win, options)
         out[start:stop] = (block - bg)[:, win.s0 - win.b0 :]
         report(stop / n)
 
-    nav = tuple(signal.data.shape[:-1])
     result = signal.isig[win.s0 : win.s1].deepcopy()
     result.data = out.reshape(*nav, keep)
     result.metadata.set_item("Processing.si_viewer.background_removal", describe(options, axis.units))

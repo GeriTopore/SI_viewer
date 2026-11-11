@@ -16,7 +16,8 @@ function planeAxes(d: DatasetSummary): [number, number] | null {
 const axisName = (d: DatasetSummary, i: number) => d.axes[i].name || `axis ${i}`;
 
 /** Dialog choosing an integer binning factor per axis of a spectrum image
- * (HyperSpy rebin). Images on the same scan are binned with it. */
+ * (HyperSpy rebin). Images on the same scan are binned with it. An in-situ
+ * series also has its time axis: each new frame sums that many frames. */
 export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => void }) {
   const plane = planeAxes(d);
   // Start with 2 × 2 on the scan.
@@ -36,6 +37,8 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
   const byId = new Map(allDatasets(files).map((x) => [x.id, x]));
   const group = groupOf(d, byId).filter((x) => x.id !== d.id);
   const [linked, setLinked] = useState(true);
+  const series = d.insitu?.view ? d.insitu : null;
+  const [time, setTime] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,12 +55,12 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
     );
   };
 
-  const unchanged = factors.every((f) => f === 1);
+  const unchanged = factors.every((f) => f === 1) && time === 1;
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
-      await useDatasets.getState().rebin(d, factors);
+      await useDatasets.getState().rebin(d, factors, time);
       onClose();
     } catch (e) {
       setError((e as Error).message);
@@ -81,6 +84,29 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
             </tr>
           </thead>
           <tbody>
+            {series && (
+              <tr>
+                <td>Time</td>
+                <td>{series.frames}</td>
+                <td>
+                  <input
+                    type="number"
+                    min={1}
+                    max={series.frames}
+                    step={1}
+                    value={time}
+                    onChange={(e) => setTime(Math.max(1, Math.min(series.frames, Math.round(Number(e.target.value) || 1))))}
+                    disabled={busy}
+                    aria-label="Binning factor for Time"
+                  />
+                </td>
+                <td>
+                  {Math.floor(series.frames / time)}
+                  {series.frames % time > 0 && <span className="muted"> (crops {series.frames % time})</span>}
+                </td>
+                <td>{series.frame_step_s ? `${formatValue(series.frame_step_s * time)} s` : "–"}</td>
+              </tr>
+            )}
             {d.axes.map((a, i) => {
               const f = factors[i];
               const size = Math.floor(a.size / f);
@@ -125,7 +151,9 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
           </p>
         )}
         <div className="rebin-warning" role="note">
-          Overwrites the loaded data; the file is unchanged.
+          {series
+            ? `Every frame is binned from now on${series.view?.mode !== "frame" ? "; the frame range becomes one frame" : ""}; the files are unchanged.`
+            : "Overwrites the loaded data; the file is unchanged."}
         </div>
         {error && <p className="field-error">{error}</p>}
         <div className="rebin-actions">

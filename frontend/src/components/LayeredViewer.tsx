@@ -17,14 +17,19 @@ import { LineOverlay } from "./LineOverlay";
 import { FftBoxOverlay } from "./FftBoxOverlay";
 import { FftCompare } from "./FftCompare";
 import { SurveyRegions } from "./SurveyRegions";
+import { HistogramPanel } from "./HistogramPanel";
 import { ProfilePanel } from "./ProfilePanel";
-import { useProfiles, useViewProfiles } from "../state/profiles";
-import { useLineTool } from "../views/useLineTool";
+import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from "../state/profiles";
+import { lineAt, useLineTool } from "../views/useLineTool";
+import { ContextMenu } from "./ContextMenu";
+import { AnnotationsToggle } from "./AnnotationsToggle";
+import { lineMenuItems } from "./ProfilePanel";
 import { useFftBoxTool } from "../views/useFftBoxTool";
 import { useUi, type BottomTab, type GridContext, type GridMode } from "../state/ui";
 import { BottomPane } from "./BottomPane";
 import { ViewerGrid, type GridPanel } from "./ViewerGrid";
-import { useShortcuts } from "../keyboard";
+import { FitQuantitySwitch } from "./FitQuantitySwitch";
+import { stepKeys, useShortcuts } from "../keyboard";
 import { stretch } from "../views/si/scan";
 
 /** Tooltip of the FFT box tool (the image views' and the navigator's). */
@@ -71,6 +76,8 @@ interface Props {
   fftTool?: boolean;
   /** Points picked on the profile plot (spectrum images: their spectrum). */
   profilePick?: boolean;
+  /** Cuts a line scan along a profile line (spectrum images). */
+  onLineScan?: (line: ProfileLine) => void;
   /** Shown right under the image (e.g. a stack's frame slider). */
   footer?: ReactNode;
   /** Tabs of the pane under the image besides "Line profile" (e.g. the
@@ -100,7 +107,7 @@ export const BASE_LAYER = BASE;
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
   viewKey, base, images, geometry, loading, error, children, empty, interaction, renderOverlay,
-  lineTool, fftTool, profilePick, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
+  lineTool, fftTool, profilePick, onLineScan, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
   scanFactor = 1,
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
@@ -227,13 +234,45 @@ export function LayeredViewer({
   // FFT boxes: squares whose FFT the FFT panel can show instead of the view.
   const drawingBoxes = lineTool === undefined ? imageTool === "fft" : !!fftTool;
   const boxInteraction = useFftBoxTool(viewKey, geometry.width, geometry.height);
-  const toolInteraction = drawingLines ? lineInteraction : drawingBoxes ? boxInteraction : interaction;
+  const activeInteraction = drawingLines ? lineInteraction : drawingBoxes ? boxInteraction : interaction;
+  // Shift +/-: the selected line one pixel wider or narrower (on a spectrum
+  // image only with the line tool: otherwise its selected region is resized).
+  useShortcuts(
+    stepKeys((step) => {
+      if (lineTool === false) return false;
+      const { selected, lines } = getViewProfiles(viewKey);
+      const line = lines.find((l) => l.id === selected);
+      if (!line) return false;
+      const width = Math.min(200, Math.max(1, Math.round(line.width) + step));
+      if (width !== line.width) useProfiles.getState().updateLine(viewKey, line.id, { width });
+      return true;
+    }),
+  );
+  // Annotations hidden with the eye: drawing lines or boxes shows them again.
+  const annotationsHidden = useUi((s) => !!s.annotationsHidden[viewKey]);
+  useEffect(() => {
+    if (drawingLines || drawingBoxes) useUi.getState().setAnnotationsHidden(viewKey, false);
+  }, [drawingLines, drawingBoxes, viewKey]);
+  // Right-clicking a profile line (with any tool) opens its menu.
+  const [lineMenu, setLineMenu] = useState<{ x: number; y: number; line: ProfileLine } | null>(null);
+  const toolInteraction: Interaction | undefined = onLineScan
+    ? {
+        ...activeInteraction,
+        onContextMenu: (p, e, t) => {
+          const line = annotationsHidden ? undefined : lineAt(viewKey, p, t.zoom);
+          if (!line) return activeInteraction?.onContextMenu?.(p, e, t) ?? false;
+          setLineMenu({ x: e.clientX, y: e.clientY, line });
+          return true;
+        },
+      }
+    : activeInteraction;
   // The FFTs of the view and its boxes, beside the image (when it is the one the FFT panel follows).
   const showCompare = useViewerImage((s) => s.compare && s.image?.fftView === viewKey);
   const hasLines = useViewProfiles(viewKey).lines.length > 0;
 
   // Pane under the image: the given tabs, plus line profiles (with the line
-  // tool, or once there are lines). Its height is a fraction of the viewer.
+  // tool, or once there are lines), and the histogram of the edited layer
+  // whenever there is a pane. Its height is a fraction of the viewer.
   const setBottomTab = useUi((s) => s.setBottomTab);
   const showProfiles = hasLines || drawingLines || bottomTabs.length > 0;
   const spectrumTab = bottomTabs.find((t) => t.id !== "alignment");
@@ -252,6 +291,7 @@ export function LayeredViewer({
                 calY={geometry.calY}
                 title={base?.label ?? images[0]?.title ?? "image"}
                 pickable={profilePick}
+                onLineScan={onLineScan}
                 onShowSpectrum={spectrumTab ? () => setBottomTab(spectrumTab.id) : undefined}
               />
             ),
@@ -259,6 +299,15 @@ export function LayeredViewer({
         ]
       : []),
   ];
+  if (tabs.length) {
+    // The layer's own pixels (not stretched over the scan).
+    const own = isBase ? (base?.frame ?? null) : activeLayer ? (frames[activeLayer.key] ?? null) : null;
+    tabs.push({
+      id: "histogram" as const,
+      label: "Histogram",
+      content: <HistogramPanel frame={own} label={activeLayer?.label ?? ""} display={activeLayer?.display} />,
+    });
+  }
   const viewerRef = useRef<HTMLDivElement>(null);
   // Image and stack views: their own tool keys.
   useShortcuts({ l: () => setImageTool("line"), h: () => setImageTool("pan") }, lineTool === undefined);
@@ -338,6 +387,7 @@ export function LayeredViewer({
               ))}
             </div>
           )}
+          {lineTool === undefined && <AnnotationsToggle view={viewKey} />}
           {canSwitch && (
             <div className="segmented" role="group" aria-label="Several images">
               {(["merged", "grid"] as const).map((m) => (
@@ -360,6 +410,7 @@ export function LayeredViewer({
               ))}
             </div>
           )}
+          <FitQuantitySwitch ds={baseDataset ? [baseDataset, ...images] : images} />
           {showPanel && activeLayer && (
             <span className="editing-chip" title="Layer being edited (pick another in the Layers panel)">
               <span
@@ -397,14 +448,19 @@ export function LayeredViewer({
               onActivate={activate}
               interaction={toolInteraction}
               fftView={viewKey}
+              layoutKey={viewKey}
               renderOverlay={(t, p) => (
                 <>
                   {renderOverlay?.(t)}
-                  <FftBoxOverlay t={t} view={viewKey} />
-                  {surveys.filter((d) => d.id === p.layer.key).map((d) => (
-                    <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
-                  ))}
-                  <LineOverlay t={t} view={viewKey} calX={p.calX} calY={p.calY} />
+                  {!annotationsHidden && (
+                    <>
+                      <FftBoxOverlay t={t} view={viewKey} />
+                      {surveys.filter((d) => d.id === p.layer.key).map((d) => (
+                        <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
+                      ))}
+                      <LineOverlay t={t} view={viewKey} calX={p.calX} calY={p.calY} />
+                    </>
+                  )}
                 </>
               )}
               onRemove={(key) => (key === BASE ? null : () => deselect(key))}
@@ -428,11 +484,15 @@ export function LayeredViewer({
               renderOverlay={(t) => (
                 <>
                   {renderOverlay?.(t)}
-                  <FftBoxOverlay t={t} view={viewKey} />
-                  {surveys.map((d) => (
-                    <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
-                  ))}
-                  <LineOverlay t={t} view={viewKey} calX={geometry.calX} calY={geometry.calY} />
+                  {!annotationsHidden && (
+                    <>
+                      <FftBoxOverlay t={t} view={viewKey} />
+                      {surveys.map((d) => (
+                        <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
+                      ))}
+                      <LineOverlay t={t} view={viewKey} calX={geometry.calX} calY={geometry.calY} />
+                    </>
+                  )}
                 </>
               )}
               analysisKey={activeLayer?.key}
@@ -450,6 +510,14 @@ export function LayeredViewer({
       </div>
       {tabs.length > 0 && (
         <BottomPane tabs={tabs} viewerRef={viewerRef} resizeLabel="Resize the image and the pane below it" />
+      )}
+      {lineMenu && onLineScan && (
+        <ContextMenu
+          x={lineMenu.x}
+          y={lineMenu.y}
+          onClose={() => setLineMenu(null)}
+          items={lineMenuItems(lineMenu.line, onLineScan)}
+        />
       )}
     </div>
   );

@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from si_viewer.app import create_app
 from si_viewer.io import load_file
 from si_viewer.processing.background import (
-    BackgroundOptions, EnergyAxis, channel_windows, fit_block, remove_background,
+    BackgroundOptions, EnergyAxis, channel_windows, describe, fit_block, lba_window, remove_background,
 )
 from si_viewer.processing.regions import window_label
 
@@ -236,7 +236,7 @@ def test_cuzn_spectrum_image(client, eels_cuzn):
     assert bg["technique"] == "EELS" and bg["signal_type"] == "EELS" and not bg["line_scan"]
     assert bg["eels"]["linked"] == [] and si["eels"]["linked"] == []
     assert bg["background"] == {
-        "source_id": si["id"], "model": "power_law", "order": 2, "fast": True,
+        "source_id": si["id"], "model": "power_law", "order": 2, "fast": True, "log": False, "lba": 0.0,
         "background": [800, 920], "signal": [925, 1010], "units": "eV",
     }
     assert bg["title"] == f"{window_label(925, 1010, 'eV', 8.0)}, bg removed" == "925–1010 eV, bg removed"
@@ -533,3 +533,72 @@ def test_dm4_spectrum_image(client, eels_dm4):
         json={"options": options, "spectra": [np.ones(axis["size"]).tolist()]},
     )
     assert p.status_code == 200, p.text
+
+
+# ---------- log fit and LBA ----------
+
+
+def test_log_fit_recovers_a_power_law_and_an_exponential():
+    x = 400.0 + 2.0 * np.arange(300)
+    scales = np.array([[1], [2], [0.5]])
+    o = {"background": [440, 520], "signal": [560, 700], "log": True}
+    window = slice((560 - 400) // 2, (700 - 400) // 2)
+    for model, truth in (("power_law", 5e9 * x**-3.0), ("exponential", 1e4 * np.exp(-x / 150.0))):
+        s = _signal_from(np.tile(truth, (3, 1)) * scales, offset=400.0, scale=2.0)
+        out, r = remove_background(s, BackgroundOptions(model=model, **o))
+        assert np.abs(out.data).max() / (truth[window] * scales).max() < 1e-5, model
+        if model == "power_law":
+            np.testing.assert_allclose(r, 3.0, rtol=1e-6)
+
+
+def test_log_fit_skips_channels_without_counts():
+    x = 400.0 + 2.0 * np.arange(300)
+    truth = 5e9 * x**-3.0
+    data = np.tile(truth, (2, 1))
+    data[1, 25] = 0  # one empty channel in the background window
+    data[1, 26] = -3
+    out, r = remove_background(
+        _signal_from(data, 400.0, 2.0), BackgroundOptions(background=[440, 520], signal=[560, 700], log=True),
+    )
+    np.testing.assert_allclose(r, 3.0, rtol=1e-6)
+    no_counts = _signal_from(np.zeros((1, 300)), 400.0, 2.0)
+    out, r = remove_background(no_counts, BackgroundOptions(background=[440, 520], signal=[560, 700], log=True))
+    assert np.isnan(r).all() and (out.data == 0).all()
+
+
+def test_lba_keeps_spectra_of_one_shape_and_steadies_noisy_ones():
+    x = 400.0 + 2.0 * np.arange(200)
+    truth = 5e9 * x**-3.0
+    amounts = np.linspace(1, 3, 20 * 16).reshape(20, 16, 1)
+    window = slice(20, 60)
+    # The same shape everywhere: LBA changes nothing.
+    exact = amounts * truth
+    np.testing.assert_allclose(lba_window(exact[..., window], 3.0), exact[..., window], rtol=1e-9)
+
+    rng = np.random.default_rng(0)
+    noisy = _signal_from(rng.poisson(amounts * truth * 0.2).astype(float), 400.0, 2.0)
+    o = {"background": [440, 520], "signal": [530, 700]}
+    _, plain = remove_background(noisy, BackgroundOptions(**o))
+    _, lba = remove_background(noisy, BackgroundOptions(lba=4.0, **o))
+    assert np.nanstd(lba) < 0.5 * np.nanstd(plain)
+    assert abs(np.nanmean(lba) - 3.0) < 0.1
+    assert describe(BackgroundOptions(lba=4.0, log=True, **o), "eV").startswith("power law (log fit), LBA 4 px,")
+
+
+def test_lba_preview_of_a_pixel_is_what_is_subtracted(client, eels_cuzn):
+    si = _si(_open(client, eels_cuzn))
+    options = {**CUZN, "lba": 3.0, "log": True}
+    job = _remove(client, si, **options)
+    assert job["status"] == "done", job
+    file = job["result"]["file"]
+    bg = next(d for d in file["datasets"] if d["id"] == job["result"]["dataset_id"])
+    raw = _data(client, si).astype(float)
+    url = f"/api/datasets/{si['id']}/background/preview"
+    for x, y in ((5, 3), (0, 0)):
+        body = client.post(url, json={
+            "options": options, "spectra": [raw[y, x].tolist(), raw[y, x].tolist()], "pixels": [{"x": x, "y": y}, None],
+        }).json()
+        np.testing.assert_allclose(
+            _data(client, bg)[y, x], raw[y, x, 28:39] - np.array(body["background"][0])[28 - 12 :], rtol=1e-4, atol=1e-2,
+        )
+        assert body["background"][0] != body["background"][1]  # without the pixel: no LBA

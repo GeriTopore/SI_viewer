@@ -29,7 +29,7 @@ export interface DistanceRange {
 interface Props {
   tables: ProfileTable[];
   xUnits: string;
-  /** Picking: a click picks a distance and a drag a range (else drag zooms). */
+  /** Picking: a shift-click picks a distance and a shift-drag a range (a drag zooms). */
   onPick?: (range: DistanceRange) => void;
   /** Picked range, drawn as a band. */
   picked?: DistanceRange | null;
@@ -81,6 +81,8 @@ export function ProfilePlot({ tables, xUnits, onPick, picked, onHover }: Props) 
     const values = (_u: uPlot, vals: number[]) => vals.map((v) => (v == null ? "" : formatValue(v)));
     const auto: uPlot.Range.Function = (_u, lo, hi) =>
       lo == null || hi == null ? [0, 1] : uPlot.rangeNum(lo, hi, 0.1, true);
+    // Whether the press under way picks (shift held) rather than zooms.
+    let picking = false;
     const opts: uPlot.Options = {
       width: el.clientWidth,
       height: el.clientHeight,
@@ -113,13 +115,13 @@ export function ProfilePlot({ tables, xUnits, onPick, picked, onHover }: Props) 
             live.current.onHover?.(x);
           },
         ],
-        // Release: pick the range (or the clicked point), or zoom to it.
+        // Release: pick the range (shift-drag), or zoom to it.
         setSelect: [
           (u) => {
             const d0 = u.posToVal(u.select.left, "x");
             const d1 = u.posToVal(u.select.left + u.select.width, "x");
             if (u.select.width >= 2) {
-              if (live.current.onPick) live.current.onPick({ d0, d1 });
+              if (picking && live.current.onPick) live.current.onPick({ d0, d1 });
               else u.setScale("x", { min: d0, max: d1 });
             }
             u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
@@ -150,11 +152,14 @@ export function ProfilePlot({ tables, xUnits, onPick, picked, onHover }: Props) 
     const plot = new uPlot(opts, data(), el);
     plotRef.current = plot;
 
-    // A click (no drag) picks a point.
+    // A shift-click (no drag) picks a point.
     let downX = 0;
-    const onDown = (e: MouseEvent) => (downX = e.clientX);
+    const onDown = (e: MouseEvent) => {
+      downX = e.clientX;
+      picking = e.shiftKey;
+    };
     const onUp = (e: MouseEvent) => {
-      if (Math.abs(e.clientX - downX) > 2 || !live.current.onPick) return;
+      if (Math.abs(e.clientX - downX) > 2 || !picking || !live.current.onPick) return;
       const rect = plot.over.getBoundingClientRect();
       const d = plot.posToVal(e.clientX - rect.left, "x");
       live.current.onPick({ d0: d, d1: d });
@@ -201,8 +206,8 @@ export function ProfilePlot({ tables, xUnits, onPick, picked, onHover }: Props) 
           </>
         ) : (
           <span className="muted">
-            {onPick ? "Click or drag on the profile to see the spectrum there · " : "Drag to zoom · "}
-            double-click resets
+            Drag to zoom · double-click resets
+            {onPick && " · Shift-click or shift-drag marks the image"}
           </span>
         )}
       </div>

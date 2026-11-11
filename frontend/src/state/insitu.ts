@@ -74,13 +74,15 @@ export const useInsitu = create<InsituStore>((set, get) => {
           await new Promise((r) => setTimeout(r, 300));
           try {
             job = await api.getJob(job.id);
-            setJob(id, job);
+            if (ACTIVE.has(job.status)) setJob(id, job);
           } catch {
             /* backend busy or restarted: try again */
           }
         }
+        // The new view first, then the job's end: the bar never shows the old view in between.
         if (job.status === "done" && job.result) useDatasets.getState().replaceFile(job.result.file);
         else if (job.status === "failed") setError(id, job.error);
+        setJob(id, job);
       } catch (e) {
         setError(id, (e as Error).message);
       }

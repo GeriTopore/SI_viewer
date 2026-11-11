@@ -70,7 +70,11 @@ export function DropZone() {
       setFinding(true);
       try {
         const items = (await Promise.all(dropped.map((d) => describe(d.entry, d.file)))).filter((i): i is DroppedItem => !!i);
-        if (!items.length) return;
+        if (!items.length) {
+          // The browser gave no readable file (e.g. a drag it doesn't pass on).
+          notify("Could not read what was dropped. Use Open…");
+          return;
+        }
         const { files, openFiles, openFolder } = useDatasets.getState();
         const hints = [...new Set(files.flatMap((f) => [parentOf(f.path), ...(f.experiment ? [f.experiment.path] : [])]))];
         const { paths } = await api.locate(items, hints);

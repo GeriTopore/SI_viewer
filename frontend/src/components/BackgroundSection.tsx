@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { BackgroundModel, DatasetSummary } from "../api/client";
+import type { BackgroundModel, BackgroundOptions, DatasetSummary } from "../api/client";
 import { formatValue } from "../format";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { energyRange, snapEnergy, useBackground, useBgState, validateWindows } from "../state/background";
@@ -12,6 +12,15 @@ const MODELS: { id: BackgroundModel; label: string; title: string }[] = [
   { id: "polynomial", label: "Polynomial", title: "A polynomial of the energy loss" },
   { id: "offset", label: "Offset", title: "A constant: the mean of the background window" },
 ];
+
+type Fit = "fast" | "log" | "full";
+const FITS: { id: Fit; label: string; title: string; options: Partial<BackgroundOptions> }[] = [
+  { id: "fast", label: "Fast", title: "Fast: a closed-form estimate, instant", options: { fast: true, log: false } },
+  { id: "log", label: "Log", title: "Log: a linear least-squares fit of the logarithm, instant", options: { fast: true, log: true } },
+  { id: "full", label: "Full", title: "Full: a least-squares fit at every pixel; slower", options: { fast: false, log: false } },
+];
+const fitOf = (o: BackgroundOptions): Fit => (o.log ? "log" : o.fast ? "fast" : "full");
+const DEFAULT_LBA = 3;
 
 /** A limit of a window, typed in energy units; kept as typed until Enter or
  * leaving the field, then snapped to a channel. */
@@ -124,27 +133,44 @@ export function BackgroundSection({ d }: { d: DatasetSummary }) {
           </select>
         </label>
       )}
-      <div className="q-row">
-        <span>Fit</span>
-        <div className="segmented process-choice" role="group" aria-label="Fit">
-          <button
-            className={options.fast ? "active" : undefined}
-            aria-pressed={options.fast}
-            title="Fast: a closed-form estimate, instant"
-            onClick={() => setOptions(d, { fast: true })}
-          >
-            Fast
-          </button>
-          <button
-            className={!options.fast ? "active" : undefined}
-            aria-pressed={!options.fast}
-            title="Full: a least-squares fit at every pixel; slower"
-            onClick={() => setOptions(d, { fast: false })}
-          >
-            Full
-          </button>
+      {(options.model === "power_law" || options.model === "exponential") && (
+        <div className="q-row">
+          <span>Fit</span>
+          <div className="segmented process-choice" role="group" aria-label="Fit">
+            {FITS.map((f) => (
+              <button
+                key={f.id}
+                className={fitOf(options) === f.id ? "active" : undefined}
+                aria-pressed={fitOf(options) === f.id}
+                title={f.title}
+                onClick={() => setOptions(d, f.options)}
+                disabled={running}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
+      {d.kind === "spectrum_image" && (
+        <div className="q-row" title="Local background averaging: the background window is averaged across the scan with a Gaussian before the fit">
+          <label className="q-check">
+            <input
+              type="checkbox"
+              checked={options.lba > 0}
+              onChange={(e) => setOptions(d, { lba: e.target.checked ? DEFAULT_LBA : 0 })}
+              disabled={running}
+            />
+            LBA
+          </label>
+          {options.lba > 0 && (
+            <span className="q-inline">
+              <EnergyInput value={options.lba} step={0.5} label="LBA FWHM" onCommit={(v) => setOptions(d, { lba: Math.min(50, Math.max(0.5, v)) })} />
+              px FWHM
+            </span>
+          )}
+        </div>
+      )}
       {windowRow("background", "Background", "#f97316", "The range the model is fitted to, before the edge")}
       {windowRow("signal", "Signal", "#22c55e", "The range kept, starting where the background window ends or later")}
       {!made && st.on && (

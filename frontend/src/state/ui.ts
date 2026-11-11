@@ -13,9 +13,9 @@ export type GridContext = "si" | "images";
 /** Tabs of the pane under the image; a linked EELS spectrum image has one per
  * member of its group, ``eels:<dataset id>`` (ids last for one session only:
  * a stored one that is not shown falls back, see BottomPane). */
-export type BottomTab = "spectrum" | "profile" | "alignment" | `eels:${string}`;
+export type BottomTab = "spectrum" | "profile" | "histogram" | "alignment" | `eels:${string}`;
 const isBottomTab = (t: string | undefined): t is BottomTab =>
-  t === "spectrum" || t === "profile" || t === "alignment" || (!!t && t.startsWith("eels:") && t.length > 5);
+  t === "spectrum" || t === "profile" || t === "histogram" || t === "alignment" || (!!t && t.startsWith("eels:") && t.length > 5);
 export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
 /** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */
 export type BottomSplit = [BottomTab, BottomTab];
@@ -106,6 +106,10 @@ interface UiState {
   toggleTypeGroup: (key: string) => void;
   /** Datasets whose results are folded away in the list, by id (this session only). */
   foldedNodes: Record<string, true>;
+  /** Grid views arranged by hand: rows of panel keys, per view (this session
+   * only). Without one, a view's grid is automatic. */
+  gridLayouts: Record<string, string[][]>;
+  setGridLayout: (view: string, rows: string[][] | null) => void;
   toggleNode: (id: string) => void;
   /** Tab shown in the right-hand column. */
   rightTab: RightTab;
@@ -153,6 +157,15 @@ interface UiState {
   /** Ids of the Process tab's sections folded to their titles. */
   processCollapsed: string[];
   toggleProcess: (id: string) => void;
+  /** The Process tab as a list of foldable sections or a grid of icons. */
+  processMode: ListMode;
+  setProcessMode: (mode: ListMode) => void;
+  /** The process opened from the icon grid (null: the grid). */
+  processOpen: string | null;
+  setProcessOpen: (id: string | null) => void;
+  /** Image views whose annotations (regions, lines, FFT boxes) are hidden, by view key. */
+  annotationsHidden: Record<string, true>;
+  setAnnotationsHidden: (view: string, hidden: boolean) => void;
   /** FFT of the viewer's image, above the tabs. */
   fftOpen: boolean;
   setFftOpen: (open: boolean) => void;
@@ -202,6 +215,14 @@ export const useUi = create<UiState>((set, get) => ({
       else collapsedTypes[key] = true;
       save("si-viewer.collapsedTypes", JSON.stringify(collapsedTypes));
       return { collapsedTypes };
+    }),
+  gridLayouts: {},
+  setGridLayout: (view, rows) =>
+    set((s) => {
+      const gridLayouts = { ...s.gridLayouts };
+      if (rows) gridLayouts[view] = rows;
+      else delete gridLayouts[view];
+      return { gridLayouts };
     }),
   foldedNodes: {},
   toggleNode: (id) =>
@@ -299,6 +320,21 @@ export const useUi = create<UiState>((set, get) => ({
     save("si-viewer.processCollapsed", processCollapsed.join(","));
     set({ processCollapsed });
   },
+  processMode: load<ListMode>("si-viewer.processMode", "list"),
+  setProcessMode: (processMode) => {
+    save("si-viewer.processMode", processMode);
+    set({ processMode });
+  },
+  processOpen: null,
+  setProcessOpen: (processOpen) => set({ processOpen }),
+  annotationsHidden: {},
+  setAnnotationsHidden: (view, hidden) =>
+    set((s) => {
+      const annotationsHidden = { ...s.annotationsHidden };
+      if (hidden) annotationsHidden[view] = true;
+      else delete annotationsHidden[view];
+      return { annotationsHidden };
+    }),
   fftOpen: load<string>("si-viewer.fftOpen", "true") === "true",
   fftMeasure: load<string>("si-viewer.fftMeasure", "true") === "true",
   fftScale: load<string>("si-viewer.fftScale", "log") === "linear" ? "linear" : "log",

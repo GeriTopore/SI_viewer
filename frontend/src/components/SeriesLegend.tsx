@@ -1,6 +1,7 @@
 import type { PixelsSpectrum } from "../api/arrays";
 import { CURSOR_COLOR, useSi, type SiState } from "../state/si";
 import { CURSOR_CHANNEL } from "../views/si/useSiSpectra";
+import { ColourPick } from "./ColourPick";
 
 interface Props {
   si: string;
@@ -14,7 +15,7 @@ const CURSOR_SIZES = [1, 3, 5, 7, 9, 15];
 
 /** Legend chips for the SI spectra: all pixels, the cursor and each region. */
 export function SeriesLegend({ si, state, spectra, totalPixels, wholeColor }: Props) {
-  const { patch, updateRoi, removeRoi, cursorSize, setCursorSize } = useSi();
+  const { patch, updateRoi, deleteRois, cursorSize, setCursorSize } = useSi();
   const cursor = state.cursor;
 
   return (
@@ -61,15 +62,17 @@ export function SeriesLegend({ si, state, spectra, totalPixels, wholeColor }: Pr
             onChange={(e) => updateRoi(si, r.id, { visible: e.target.checked })}
             aria-label={`Show ${r.name}`}
           />
-          <span className="series-swatch" style={{ background: r.color }} />
-          {r.name}
+          <ColourPick color={r.color} label={r.name} onChange={(color) => updateRoi(si, r.id, { color })}>
+            <span className="series-swatch" style={{ background: r.color }} />
+            {r.name}
+          </ColourPick>
           <span className="muted">{spectra[r.id] ? `${spectra[r.id].pixels.toLocaleString()} px` : "…"}</span>
           <button
             className="icon-button"
             title={`Remove ${r.name}`}
             onClick={(e) => {
               e.stopPropagation();
-              removeRoi(si, r.id);
+              deleteRois(si, [r.id]);
             }}
           >
             ×

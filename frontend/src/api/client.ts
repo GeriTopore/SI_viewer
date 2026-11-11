@@ -21,6 +21,8 @@ export interface InsituInfo {
   frames: number;
   /** Frames the .dm4 says were recorded (null if it doesn't say). */
   recorded_frames: number | null;
+  /** Recorded frames summed in each frame (1: not binned along time). */
+  time_binning?: number;
   /** One frame as in the array: [y, x, energy] or [y, x]. */
   frame_shape: number[];
   first_time_s: number;
@@ -138,14 +140,20 @@ export interface DatasetSummary {
   /** In-situ series (spectrum image or image stack); null otherwise. */
   insitu: InsituInfo | null;
   /** "computed": an element map made from a spectrum image (window +
-   * background); "fitted"/"composition": from fitting every pixel. */
+   * background); "fitted": from fitting every pixel. */
   origin:
-    | "file" | "computed" | "fitted" | "composition" | "aligned-average" | "window" | "background" | "background-r"
-    | "thickness" | "zlp-shift" | "deconvolved";
+    | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
+    | "thickness" | "zlp-shift" | "deconvolved" | "line-scan";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
   element: string | null;
+  /** Fitted maps: what they can show (counts, and at% when composition was
+   * made) and what they show; empty / null for other datasets. */
+  quantities: FitQuantity[];
+  quantity: FitQuantity | null;
+  /** EELS spectrum images: every pixel was fitted (the fit at the cursor can be shown). */
+  pixel_fit: boolean;
   /** Spectrum image a computed map was made from. */
   parent_id: string | null;
   /** Bumped when the data is recomputed or rebinned. */
@@ -219,6 +227,10 @@ export interface BackgroundOptions {
   order: number;
   /** Closed-form estimate (else a least-squares fit at every pixel). */
   fast: boolean;
+  /** Power law and exponential: a linear fit of the logarithm (overrides fast). */
+  log: boolean;
+  /** LBA: FWHM in pixels of the Gaussian the background window is averaged with; 0 for none. */
+  lba: number;
   /** Fit range, before the edge. */
   background: [number, number];
   /** Range kept; it starts where the background window ends or later. */
@@ -276,6 +288,13 @@ export interface BackgroundInfo extends BackgroundOptions {
 /** Fitted backgrounds of some spectra: per spectrum the values on channels
  * start … start + n - 1 (to the end of the signal window), and its power-law
  * exponent (null for other models). */
+/** The block of pixels a previewed spectrum sums (for LBA). */
+export interface BackgroundPixel {
+  x: number;
+  y: number;
+  size: number;
+}
+
 export interface BackgroundPreview {
   start: number;
   background: number[][];
@@ -454,14 +473,19 @@ export const registrationReportUrl = (id: string) => `/api/datasets/${id}/regist
 export const alignmentShiftsUrl = (id: string) => `/api/datasets/${id}/alignment/shifts.csv`;
 
 
-type Versioned = { revision: number; filter_rev: number; data_rev?: number };
+type Versioned = { revision: number; filter_rev: number; data_rev?: number; insitu?: { view?: { mode: string } | null } | null };
 
 /** Changes whenever the data shown for a dataset does (recomputed, rebinned,
  * filtered or replaced by the next frame), for cache keys. */
 export const dataVersion = (d: Versioned) => `${d.revision}.${d.filter_rev}.${d.data_rev ?? 0}`;
 
-/** Like ``dataVersion`` but unchanged by a new frame: contrast is redone when it changes. */
-export const contrastVersion = (d: Versioned) => `${d.revision}.${d.filter_rev}`;
+export type FitQuantity = "counts" | "at%";
+
+/** Like ``dataVersion`` but unchanged by a new frame: contrast is redone when
+ * it changes. An in-situ sum is on another scale than a frame or a mean, so
+ * switching to or from it changes it too. */
+export const contrastVersion = (d: Versioned) =>
+  `${d.revision}.${d.filter_rev}${d.insitu?.view?.mode === "sum" ? ".sum" : ""}`;
 
 /** Options of a spectrum fit (exSpy EDS model). */
 export interface FitOptions {
@@ -807,6 +831,9 @@ export const api = {
     request<DatasetAndFile>(`/api/datasets/${id}/elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
   setEelsElements: (id: string, elements: string[]) =>
     request<DatasetAndFile>(`/api/datasets/${id}/eels-elements`, { method: "PUT", body: JSON.stringify({ elements }) }),
+  /** The per-pixel fit at the cursor: pixel (x, y), or the ``size`` × ``size`` block there added up. */
+  eelsPixelFit: (id: string, x: number, y: number, size: number, signal?: AbortSignal) =>
+    request<EelsFitResult>(`/api/datasets/${id}/eels-pixel-fit?x=${x}&y=${y}&size=${size}`, { signal }),
   eelsFit: (id: string, source: FitSource, options: EelsFitOptions) =>
     request<EelsFitResult>(`/api/datasets/${id}/eels-fit`, { method: "POST", body: JSON.stringify({ source, options }) }),
   /** Job: fit every pixel; its result's file has a fitted map per element (and at% maps). */
@@ -845,22 +872,42 @@ export const api = {
   /** Move a window map to [lo, hi]: recomputed in place (same id, new revision). */
   setWindowMap: (id: string, lo: number, hi: number) =>
     request<DatasetAndFile>(`/api/datasets/${id}/window`, { method: "PATCH", body: JSON.stringify({ lo, hi }) }),
-  deleteDataset: (id: string) => request<{ file: FileSummary }>(`/api/datasets/${id}`, { method: "DELETE" }),
+  /** Delete a map or result; ``undo`` is the token that brings it back. */
+  deleteDataset: (id: string) =>
+    request<{ file: FileSummary; undo: string }>(`/api/datasets/${id}`, { method: "DELETE" }),
+  /** Undo a deletion: the files that changed. */
+  undoDelete: (token: string) => request<{ files: FileSummary[] }>(`/api/undo/${token}`, { method: "POST" }),
   fit: (id: string, source: FitSource, options: FitOptions) =>
     request<FitResult>(`/api/datasets/${id}/fit`, { method: "POST", body: JSON.stringify({ source, options }) }),
   /** One integer factor per axis, in the summary's axis order. */
-  rebin: (id: string, factors: number[]) =>
-    request<DatasetAndFile>(`/api/datasets/${id}/rebin`, { method: "POST", body: JSON.stringify({ factors }) }),
+  /** Cut a line scan along ``line`` (scan pixels; ``width`` averaged across),
+   * and from the spectrum images linked to it (``partners``, linked in turn). */
+  cutLineScan: (id: string, line: { x0: number; y0: number; x1: number; y1: number; width: number }, name: string) =>
+    request<DatasetAndFile & { partners: DatasetSummary[]; partner_files: FileSummary[] }>(
+      `/api/datasets/${id}/line-scan`,
+      { method: "POST", body: JSON.stringify({ line, name }) },
+    ),
+  /** Show ``quantity`` on all the maps of a spectrum image's per-pixel fit. */
+  setFitQuantity: (siId: string, quantity: FitQuantity) =>
+    request<{ file: FileSummary }>(`/api/datasets/${siId}/fit-quantity`, {
+      method: "PUT",
+      body: JSON.stringify({ quantity }),
+    }),
+  /** ``time``: frames per binned frame of an in-situ series. */
+  rebin: (id: string, factors: number[], time = 1) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/rebin`, { method: "POST", body: JSON.stringify({ factors, time }) }),
   setFilters: (id: string, filters: Filters) =>
     request<DatasetAndFile & { notes: string[] }>(`/api/datasets/${id}/filters`, {
       method: "PUT",
       body: JSON.stringify(filters),
     }),
   /** Fitted background of each given spectrum (on the dataset's full energy axis). */
-  backgroundPreview: (id: string, options: BackgroundOptions, spectra: number[][], signal?: AbortSignal) =>
+  backgroundPreview: (
+    id: string, options: BackgroundOptions, spectra: number[][], pixels?: (BackgroundPixel | null)[], signal?: AbortSignal,
+  ) =>
     request<BackgroundPreview>(`/api/datasets/${id}/background/preview`, {
       method: "POST",
-      body: JSON.stringify({ options, spectra }),
+      body: JSON.stringify({ options, spectra, pixels }),
       signal,
     }),
   /** Job: a new spectrum image of the signal window with the background removed. */

@@ -7,14 +7,16 @@ interface Props {
   cursorSize: number;
   draft: Shape | null;
   hover: Pt | null;
+  /** Regions hidden (the cursor and a region being drawn still show). */
+  hideRois?: boolean;
 }
 
 /** SVG drawing of the spectrum cursor, regions and the region being drawn. */
-export function RoiOverlay({ t, state, cursorSize, draft, hover }: Props) {
+export function RoiOverlay({ t, state, cursorSize, draft, hover, hideRois }: Props) {
   return (
     <g className="roi-overlay">
       {state.rois
-        .filter((r) => r.visible)
+        .filter((r) => r.visible && !hideRois)
         .map((r) => (
           <RoiShape key={r.id} t={t} roi={r} selected={r.id === state.selected} />
         ))}

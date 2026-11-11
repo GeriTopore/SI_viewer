@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { putBack, useUndo } from "./undo";
 
 /** A square region of an image whose FFT the FFT panel can show, in
  * full-resolution pixels (top-left corner and side). */
@@ -33,13 +34,15 @@ interface FftBoxesStore {
   addBox: (view: string, geometry: BoxGeometry) => string;
   updateBox: (view: string, id: string, patch: Partial<FftBox>) => void;
   removeBox: (view: string, id: string) => void;
+  /** The user deletes a box: it can be undone. */
+  deleteBox: (view: string, id: string) => void;
   /** Forget the boxes of views whose key starts with one of ``ids`` (e.g. rebinned data). */
   reset: (ids: string[]) => void;
 }
 
 let nextId = 1;
 
-export const useFftBoxes = create<FftBoxesStore>((set) => {
+export const useFftBoxes = create<FftBoxesStore>((set, get) => {
   const update = (view: string, fn: (s: ViewFftBoxes) => Partial<ViewFftBoxes>) =>
     set((st) => {
       const cur = st.byView[view] ?? EMPTY;
@@ -67,6 +70,14 @@ export const useFftBoxes = create<FftBoxesStore>((set) => {
         selected: s.selected === id ? null : s.selected,
         source: s.source === id ? null : s.source,
       })),
+    deleteBox: (view, id) => {
+      const boxes = get().byView[view]?.boxes ?? [];
+      const i = boxes.findIndex((b) => b.id === id);
+      if (i < 0) return;
+      const box = boxes[i];
+      get().removeBox(view, id);
+      useUndo.getState().push(box.name, () => update(view, (s) => ({ boxes: putBack(s.boxes, box, i) })));
+    },
     reset: (ids) =>
       set((st) => ({
         byView: Object.fromEntries(

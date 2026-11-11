@@ -92,7 +92,8 @@ export interface LabelStyle {
 }
 
 export interface FigureStyle {
-  cols: number;
+  /** Columns, or the number of panels in each row (in order). */
+  cols: number | number[];
   /** Between panels and around the figure, in output pixels. */
   spacing: number;
   padding: number;
@@ -130,24 +131,31 @@ export interface FigureLayout {
 }
 
 /** Size of the figure and the place of each panel: ``sizes`` (of the rendered
- * panels) fitted into equal cells in ``cols`` columns. */
+ * panels) fitted into equal cells, in ``cols`` columns or in rows of the
+ * given lengths (a shorter row is centred). */
 export function figureLayout(
-  sizes: { w: number; h: number }[], cols: number, spacing: number, padding: number,
+  sizes: { w: number; h: number }[], cols: number | number[], spacing: number, padding: number,
 ): FigureLayout {
   const cellW = Math.max(...sizes.map((b) => b.w));
   const cellH = Math.max(...sizes.map((b) => b.h));
-  const rows = Math.ceil(sizes.length / cols);
+  const lengths = Array.isArray(cols)
+    ? cols
+    : Array.from({ length: Math.ceil(sizes.length / cols) }, (_, r) => Math.min(cols, sizes.length - r * cols));
+  const width = Math.max(...lengths);
+  // Row and column of each panel.
+  const place = lengths.flatMap((n, r) => Array.from({ length: n }, (_, c) => ({ r, c: c + (width - n) / 2 })));
   const rects = sizes.map((b, i) => {
-    const x0 = padding + (i % cols) * (cellW + spacing);
-    const y0 = padding + Math.floor(i / cols) * (cellH + spacing);
+    const { r, c } = place[i] ?? { r: lengths.length, c: 0 };
+    const x0 = padding + c * (cellW + spacing);
+    const y0 = padding + r * (cellH + spacing);
     const k = Math.min(cellW / b.w, cellH / b.h);
     const w = b.w * k;
     const h = b.h * k;
     return { x: x0 + (cellW - w) / 2, y: y0 + (cellH - h) / 2, w, h };
   });
   return {
-    width: 2 * padding + cols * cellW + (cols - 1) * spacing,
-    height: 2 * padding + rows * cellH + (rows - 1) * spacing,
+    width: 2 * padding + width * cellW + (width - 1) * spacing,
+    height: 2 * padding + lengths.length * cellH + (lengths.length - 1) * spacing,
     cellW,
     cellH,
     rects,

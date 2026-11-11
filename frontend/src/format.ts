@@ -58,7 +58,7 @@ export function kindLabel(d: DatasetSummary): string {
   if (isThickness(d)) return d.thickness?.output === "absolute" ? "nm" : "t/λ";
   if (isZlpShift(d)) return "eV";
   if (d.survey) return "Survey";
-  if (d.origin === "composition") return "at%";
+  if (d.origin === "fitted") return "Fit";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.
   const role = d.eels ? (d.eels.role === "low_loss" ? "LL" : "HL") : null;
@@ -105,6 +105,7 @@ export function datasetTooltip(d: DatasetSummary, parentTitle?: string): string 
       : "background removed";
     return `${base}\nBackground removed${parentTitle ? ` from ${parentTitle}` : ""}: ${what}`;
   }
+  if (d.origin === "line-scan") return `${base}\nLine scan cut along a line${parentTitle ? ` of ${parentTitle}` : ""}`;
   if (isDeconvolved(d)) {
     const c = d.deconvolution;
     const how = !c
@@ -126,8 +127,11 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
   if (isZlpShift(d)) return `${base}\nEnergy shift applied by zero-loss alignment${parentTitle ? ` to ${parentTitle}` : ""}`;
   if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
-  if (d.origin === "fitted") return `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;
-  if (d.origin === "composition") return `${base}\nComposition (at%) per pixel: Cliff-Lorimer on the fitted maps`;
+  if (d.origin === "fitted") {
+    return d.quantity === "at%"
+      ? `${base}\nComposition (at%) per pixel from the fitted maps`
+      : `${base}\nIntensity from fitting every pixel (model fit of the summed spectrum)`;
+  }
   if (d.is_element_map) return `${base}\nMap stored in the file (may be processed, e.g. quantified or filtered)`;
   if (d.origin === "aligned-average") return `${base}\nAverage of the stack's frames after drift correction`;
   if (d.alignment?.active) {

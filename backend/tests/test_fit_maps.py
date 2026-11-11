@@ -78,10 +78,19 @@ def test_fit_maps_job(client_si):
     fitted = _maps(file, "fitted")
     assert set(fitted) == {"Cu", "Fe", "Pt"}
     assert fitted["Pt"]["title"] == "Pt Lα (fit)" and fitted["Pt"]["signal_shape"] == [64, 64]
-    comp = _maps(file, "composition")
-    assert set(comp) == {"Fe", "Pt"}  # Cu excluded
+    assert fitted["Pt"]["quantities"] == ["counts", "at%"] and fitted["Pt"]["quantity"] == "counts"
+    assert fitted["Cu"]["quantities"] == ["counts"]  # Cu excluded
+    counts_fe = _array(client.get(f"/api/datasets/{fitted['Fe']['id']}/frame"))
+
+    # The switch shows at% on every map that has it (a new revision).
+    r = client.put(f"/api/datasets/{si['id']}/fit-quantity", json={"quantity": "at%"})
+    assert r.status_code == 200, r.text
+    comp = _maps(r.json()["file"], "fitted")
+    assert comp["Fe"]["quantity"] == "at%" and comp["Fe"]["title"] == "Fe at%"
+    assert comp["Fe"]["revision"] > fitted["Fe"]["revision"] and comp["Cu"]["quantity"] == "counts"
     fe = _array(client.get(f"/api/datasets/{comp['Fe']['id']}/frame"))
     pt = _array(client.get(f"/api/datasets/{comp['Pt']['id']}/frame"))
+    assert not np.allclose(np.nan_to_num(fe), counts_fe)
     total = fe + pt
     assert np.allclose(total[np.isfinite(total)], 100, atol=1e-3)
     # The film between particles (few counts) is masked by default.
@@ -89,10 +98,16 @@ def test_fit_maps_job(client_si):
     # Pt-rich core vs Fe-rich shell of the particle at x=40, y=45 (r=13).
     assert np.nanmean(pt[43:47, 38:42]) > np.nanmean(pt[40:50, 50:52]) + 15
 
-    # Running again replaces the previous results.
-    job = _wait(client, client.post(f"/api/datasets/{si['id']}/fit-maps", json={}).json())
+    # Running again replaces the previous results, still showing at%.
+    job = _wait(client, client.post(f"/api/datasets/{si['id']}/fit-maps", json=body).json())
     file = job["result"]["file"]
-    assert set(_maps(file, "fitted")) == {"Cu", "Fe", "Pt"} and _maps(file, "composition") == {}
+    again = _maps(file, "fitted")
+    assert set(again) == {"Cu", "Fe", "Pt"} and again["Fe"]["quantity"] == "at%"
+    # Without composition there is no at%.
+    job = _wait(client, client.post(f"/api/datasets/{si['id']}/fit-maps", json={"quant": {"composition": False}}).json())
+    file = job["result"]["file"]
+    assert all(d["quantities"] == ["counts"] for d in _maps(file, "fitted").values())
+    assert client.put(f"/api/datasets/{si['id']}/fit-quantity", json={"quantity": "at%"}).status_code == 422
 
     # Deleting a fitted map leaves the element ticked (and its raw map).
     file = client.delete(f"/api/datasets/{_maps(file, 'fitted')['Fe']['id']}").json()["file"]

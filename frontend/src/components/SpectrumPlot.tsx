@@ -137,6 +137,9 @@ export function SpectrumPlot({
 
   // Read inside uPlot hooks, which are created once per layout.
   const labelBoxes = useRef<LabelBox[]>([]);
+  const numberBoxes = useRef<NumberBox[]>([]);
+  // A limit or the width of the selected window, being typed.
+  const [typing, setTyping] = useState<(NumberBox & { id: string; left: number; top: number }) | null>(null);
   // Counts-axis range set by dragging the axis; null = auto-range to the data.
   const manualY = useRef<{ min: number; max: number } | null>(null);
   const live = useRef({
@@ -241,7 +244,7 @@ export function SpectrumPlot({
         draw: [
           (u) => {
             const l = live.current;
-            labelBoxes.current = drawOverlays(u, l.markers, visibleWindows(l), l.selectedId, l.xUnits);
+            [labelBoxes.current, numberBoxes.current] = drawOverlays(u, l.markers, visibleWindows(l), l.selectedId, l.xUnits);
           },
         ],
       },
@@ -291,6 +294,16 @@ export function SpectrumPlot({
     /** Click (no drag): select the narrowest window under the pointer, else none. */
     const clickWindow = (px: number) => live.current.onSelectWindow?.(windowAt(px));
 
+    /** The annotation number under the pointer, with where it is: canvas pixels. */
+    const numberAt = (e: MouseEvent) => {
+      if (!live.current.onEditWindow) return null;
+      const canvas = plot.root.querySelector("canvas")!.getBoundingClientRect();
+      const dpr = devicePixelRatio || 1;
+      const [cx, cy] = [(e.clientX - canvas.left) * dpr, (e.clientY - canvas.top) * dpr];
+      const box = numberBoxes.current.find((b) => cx >= b.x0 && cx <= b.x1 && cy >= b.y0 && cy <= b.y1);
+      return box ? { box, canvas, dpr } : null;
+    };
+
     // Shift-drag draws a window (live while dragging); other drags zoom.
     let down = false;
     let downX = 0;
@@ -304,6 +317,10 @@ export function SpectrumPlot({
     const onMove = (e: MouseEvent) => {
       if (!down) {
         // Pointer over an editable window: edges resize, inside moves.
+        if (numberAt(e)) {
+          plot.over.style.cursor = "text";
+          return;
+        }
         const part = e.shiftKey ? null : partAt(plotX(e))?.part;
         plot.over.style.cursor = part === "in" ? "grab" : part ? "ew-resize" : "";
         return;
@@ -382,6 +399,17 @@ export function SpectrumPlot({
     };
     const onEditDown = (e: MouseEvent) => {
       if (!live.current.onEditWindow || e.button !== 0 || e.shiftKey || !plot.over.contains(e.target as Node)) return;
+      // A click on the selected window's limit or width: type it.
+      const hitNumber = numberAt(e);
+      const chosen = selected();
+      if (hitNumber && chosen) {
+        const { box, canvas, dpr } = hitNumber;
+        const wrap = plot.root.parentElement!.getBoundingClientRect();
+        e.stopPropagation();
+        e.preventDefault();
+        setTyping({ ...box, id: chosen.id, left: canvas.left - wrap.left + box.x0 / dpr, top: canvas.top - wrap.top + box.y0 / dpr });
+        return;
+      }
       const px = plotX(e);
       const hit = partAt(px);
       if (!hit) return;
@@ -538,6 +566,36 @@ export function SpectrumPlot({
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedId, onSelectWindow]);
 
+  /** Apply a typed limit or width to the window being typed in: snapped to a
+   * channel and kept inside the spectrum and the window's limits (a width
+   * keeps the centre: to the nearest channel count that can). */
+  const commitTyped = (text: string) => {
+    const t = typing;
+    setTyping(null);
+    const v = Number(text);
+    const w = windows.find((x) => x.id === t?.id);
+    if (!t || !w || text.trim() === "" || !Number.isFinite(v) || x.length < 2) return;
+    const step = Math.abs(x[1] - x[0]);
+    const first = Math.max(Math.min(x[0], x[x.length - 1]), w.min ?? -Infinity);
+    const last = Math.min(Math.max(x[0], x[x.length - 1]), w.max ?? Infinity);
+    const snap = (e: number) => x[0] + Math.round((e - x[0]) / step) * step;
+    let lo = Math.min(w.lo, w.hi);
+    let hi = Math.max(w.lo, w.hi);
+    if (t.part === "lo") lo = Math.min(Math.max(snap(v), first), hi - step);
+    else if (t.part === "hi") hi = Math.max(Math.min(snap(v), last), lo + step);
+    else {
+      // About the centre: the channel count changes by an even number, so
+      // the centre stays exactly where it was.
+      const n = Math.round((hi - lo) / step);
+      let m = Math.max(1, Math.round(v / step));
+      if ((m - n) % 2) m += m === 1 || m + 1 - v / step <= v / step - (m - 1) ? 1 : -1;
+      const half = ((m - n) / 2) * step;
+      [lo, hi] = [Math.max(lo - half, first), Math.min(hi + half, last)];
+    }
+    if (hi - lo < step) return;
+    onEditWindow?.(t.id, { lo, hi }, true);
+  };
+
   /** Full energy range and an automatic counts range. */
   const resetScales = (plot: uPlot) => {
     manualY.current = null;
@@ -638,6 +696,23 @@ export function SpectrumPlot({
       {legend}
       <div className="spectrum-plot-wrap">
         <div ref={wrapRef} className="spectrum-plot" />
+        {typing && (
+          <input
+            className="window-number"
+            type="number"
+            autoFocus
+            defaultValue={typing.value}
+            aria-label={typing.part === "width" ? "Window width" : typing.part === "lo" ? "Window start" : "Window end"}
+            style={{ left: typing.left, top: typing.top, borderColor: typing.color }}
+            onFocus={(e) => e.currentTarget.select()}
+            onBlur={(e) => commitTyped(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") setTyping(null);
+            }}
+          />
+        )}
         {(loading || error) && (
           <div className={`image-message${error ? " error" : ""}`}>
             {loading && !error && <span className="spinner" aria-hidden />}
@@ -664,7 +739,7 @@ export function SpectrumPlot({
               {" · drag to zoom"}
               {onWindow && " · Shift-drag for a new energy window"}
               {" · drag an axis to zoom it, Shift-drag to pan"}
-              {onWindow && showWindows && selectedId && " · drag a window's edges or inside to edit · right-click a window for more · Esc"}
+              {onWindow && showWindows && selectedId && " · drag a window's edges or inside to edit, or click its numbers to type them · right-click a window for more · Esc"}
               {hasBands && " · drag the Background and Signal bands' edges or inside to move them"}
               {onMarkerClick && markers.length > 0 && " · click a line label to map it"}
             </span>
@@ -673,6 +748,18 @@ export function SpectrumPlot({
       </div>
     </div>
   );
+}
+
+/** A number of the selected window's annotation (canvas pixels): its start,
+ * end or width, as shown. */
+interface NumberBox {
+  part: "lo" | "hi" | "width";
+  value: number;
+  color: string;
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
 }
 
 interface LabelBox {
@@ -716,10 +803,10 @@ function hatch(color: string, dpr: number): CanvasPattern {
 
 /** Energy window bands, X-ray line markers (labels staggered to avoid
  * overlap) and the selected window's annotation. Returns the marker label
- * boxes, in canvas pixels, for click hit-testing. */
+ * boxes and the annotation's numbers, in canvas pixels, for click hit-testing. */
 function drawOverlays(
   u: uPlot, markers: Marker[], windows: PlotWindow[], selectedId: string | null, units: string,
-): LabelBox[] {
+): [LabelBox[], NumberBox[]] {
   const boxes: LabelBox[] = [];
   const ctx = u.ctx;
   const { left, top, width, height } = u.bbox;
@@ -819,16 +906,17 @@ function drawOverlays(
   ctx.globalAlpha = 1;
 
   const chosen = windows.find((w) => w.id === selectedId);
-  if (chosen) drawAnnotation(u, chosen, boxes, units);
+  const numbers = chosen ? drawAnnotation(u, chosen, boxes, units) : [];
   ctx.restore();
-  return boxes;
+  return [boxes, numbers];
 }
 
 /** The selected window's width above a dotted double arrow across
  * it, and its two limits: an arrow pointing in to a tick on each edge, with
  * the limit's energy beside the arrow (inside the window when there is no room
  * outside it). */
-function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: string) {
+function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: string): NumberBox[] {
+  const numbers: NumberBox[] = [];
   const ctx = u.ctx;
   const { left, top, width } = u.bbox;
   const right = left + width;
@@ -837,7 +925,7 @@ function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: strin
   const hi = Math.max(w.lo, w.hi);
   const pa = u.valToPos(lo, "x", true);
   const pb = u.valToPos(hi, "x", true);
-  if (pb < left || pa > right) return;
+  if (pb < left || pa > right) return numbers;
 
   // Energies to the channel width.
   const xs = u.data[0];
@@ -862,9 +950,14 @@ function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: strin
   for (const b of boxes) if (b.x1 > cx - tw / 2 - 6 * dpr && b.x0 < cx + tw / 2 + 6 * dpr) ty = Math.max(ty, b.y1 + 2 * dpr);
   const ay = Math.round(ty + px + 10 * dpr);
 
-  const label = (s: string, x: number, y: number, align: "left" | "right" | "center") => {
+  const label = (s: string, x: number, y: number, align: "left" | "right" | "center", part: NumberBox["part"]) => {
     const tw2 = ctx.measureText(s).width;
     const x0 = align === "left" ? x : align === "right" ? x - tw2 : x - tw2 / 2;
+    const value = part === "lo" ? lo : part === "hi" ? hi : hi - lo;
+    numbers.push({
+      part, value: Number(value.toFixed(digits)), color: w.color,
+      x0: x0 - 2 * dpr, x1: x0 + tw2 + 2 * dpr, y0: y - px / 2 - 2 * dpr, y1: y + px / 2 + 2 * dpr,
+    });
     ctx.globalAlpha = 0.8;
     ctx.fillStyle = panel;
     ctx.fillRect(x0 - 2 * dpr, y - px / 2 - 2 * dpr, tw2 + 4 * dpr, px + 4 * dpr);
@@ -877,7 +970,7 @@ function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: strin
   ctx.strokeStyle = w.color;
   ctx.fillStyle = w.color;
 
-  label(text, cx, ty + px / 2, "center");
+  label(text, cx, ty + px / 2, "center", "width");
 
   const head = Math.min(5 * dpr, (eb - ea) / 2);
   const hw = 3 * dpr;
@@ -908,13 +1001,13 @@ function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: strin
   const L = 24 * dpr;
   const gap = 5 * dpr;
   const arrowH = 5 * dpr;
-  const inside: { s: string; align: "left" | "right" }[] = [];
+  const inside: { s: string; align: "left" | "right"; part: "lo" | "hi" }[] = [];
   for (const side of [-1, 1] as const) {
     const edge = side < 0 ? pa : pb;
     const s = `${fmt(side < 0 ? lo : hi)}${unit}`;
     const room = side < 0 ? edge - left : right - edge; // outside the window
     if (edge < left || edge > right) {
-      inside.push({ s, align: side < 0 ? "left" : "right" });
+      inside.push({ s, align: side < 0 ? "left" : "right", part: side < 0 ? "lo" : "hi" });
       continue;
     }
     // Tick on the limit.
@@ -938,16 +1031,17 @@ function drawAnnotation(u: uPlot, w: PlotWindow, boxes: LabelBox[], units: strin
       ctx.fill();
     }
     if (room >= L + gap + ctx.measureText(s).width + 2 * dpr) {
-      label(s, edge + side * (L + gap), ay, side < 0 ? "right" : "left");
-    } else inside.push({ s, align: side < 0 ? "left" : "right" });
+      label(s, edge + side * (L + gap), ay, side < 0 ? "right" : "left", side < 0 ? "lo" : "hi");
+    } else inside.push({ s, align: side < 0 ? "left" : "right", part: side < 0 ? "lo" : "hi" });
   }
   // Labels that don't fit outside go inside, under the arrow row.
   let row = 0;
-  for (const { s, align } of inside) {
+  for (const { s, align, part } of inside) {
     const x = align === "left" ? ea + gap : eb - gap;
     const overlap = row > 0 || (inside.length > 1 && eb - ea < 2 * ctx.measureText(s).width + 4 * gap);
-    label(s, x, ay + (px + 6 * dpr) * (overlap ? ++row : 1), align);
+    label(s, x, ay + (px + 6 * dpr) * (overlap ? ++row : 1), align, part);
   }
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
+  return numbers;
 }

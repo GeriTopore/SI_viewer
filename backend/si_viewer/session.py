@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import threading
 import uuid
@@ -67,6 +68,16 @@ class NotRebinnable(ValueError):
     """Rebinning was asked of a dataset that isn't a (2D) spectrum image."""
 
 
+# Order of the operations recorded on datasets, across datasets: a saved
+# project replays them in this order (see ``Dataset.ops``).
+_OP_SEQ = itertools.count(1)
+
+
+def _op(record: dict, seq: int | None = None) -> dict:
+    """``record`` with its place in the order of operations."""
+    return {**record, "seq": next(_OP_SEQ) if seq is None else seq}
+
+
 def _rebin_in_place(dataset: Dataset, scale: list[int]) -> None:
     """HyperSpy rebin of ``dataset`` by ``scale`` (natural axis order),
     replacing its loaded data and recording what was binned."""
@@ -84,7 +95,7 @@ def _rebin_in_place(dataset: Dataset, scale: list[int]) -> None:
     dataset.replace_signal(signal)  # frees the unbinned data
     dataset.kind = classify(signal)
     dataset.rebinned.append(label)
-    dataset.ops.append({"op": "rebin", "scale": [int(f) for f in scale]})
+    dataset.ops.append(_op({"op": "rebin", "scale": [int(f) for f in scale]}))
 
 
 def _new_id() -> str:
@@ -412,6 +423,14 @@ class FileEntry:
     label: str | None = None
     # The experiment (folder) it was opened in.
     experiment_id: str | None = None
+    # Opened from a saved analysis without its raw file: its datasets are the
+    # data stored in the analysis.
+    raw_missing: bool = False
+    # Its raw file's fingerprint when the analysis was saved (raw_missing).
+    fingerprint: dict | None = None
+    # Opened from a copy of the raw file embedded in a saved analysis (``path``
+    # is that copy): where the raw file was ({"path", "fingerprint"}).
+    saved_ref: dict | None = None
 
     def role(self, session: "Session") -> str | None:
         """What the file is in its experiment: "Survey", "ADF", "EELS LL",
@@ -443,6 +462,8 @@ class FileEntry:
             "id": self.id,
             "path": str(self.path),
             "name": self.label or self.path.name,
+            "raw_missing": self.raw_missing,
+            "embedded": self.saved_ref is not None,
             "experiment": experiment.summary() if experiment else None,
             "role": self.role(session) if experiment else None,
             "datasets": [session.datasets[d].summary() for d in self.dataset_ids],
@@ -1519,6 +1540,7 @@ class Session:
         for d, signal in zip(datasets, originals):
             if self.datasets.get(d.id) is not d or d.signal is not signal:
                 raise ValueError(f"{d.title} changed while its zero-loss peak was aligned")
+        seq = next(_OP_SEQ)  # one operation on the whole group
         if not in_place:
             # The aligned spectra as new datasets under their sources, linked
             # as the sources are; the sources are left as they are.
@@ -1526,7 +1548,7 @@ class Session:
             for d, signal in zip(datasets, result.signals):
                 new = self.copy_as(d, "zlp-aligned", f"{d.title} (ZLP aligned)", signal=signal)
                 new.zlp_aligned.append(options.label)
-                new.ops.append({"op": "zlp-align", "options": options.model_dump()})
+                new.ops.append(_op({"op": "zlp-align", "options": options.model_dump()}, seq))
                 made.append(new)
             if len(made) > 1:
                 self._join(made)
@@ -1536,12 +1558,45 @@ class Session:
             d.replace_signal(signal)
             d.kind = classify(signal)
             d.zlp_aligned.append(options.label)
-            d.ops.append({"op": "zlp-align", "options": options.model_dump()})
+            d.ops.append(_op({"op": "zlp-align", "options": options.model_dump()}, seq))
         for d in datasets:
             self._remake_after_zlp(d, shift)
         if ll.eels_group is not None:
             self._refresh_group(ll.eels_group)  # linked ones are ordered by their energy offset
         return self.set_zlp_shift(ll, result.shifts)
+
+    def shift_energy(self, ds: Dataset, shift: float, in_place: bool = True, record: bool = True) -> Dataset:
+        """ZLP alignment by hand: move the energy axis of the EELS spectrum
+        image (or LineScan) ``ds`` by ``shift`` (its units; positive: the
+        spectra move up), with what was made from it. Not ``in_place``: a
+        shifted copy, a new dataset under ``ds`` (origin "zlp-aligned").
+        Returns the dataset shifted. ``record``: add it to ``ops``."""
+        import math
+
+        from .processing.zlp import round_energy
+
+        if ds.kind is not DatasetKind.SPECTRUM_IMAGE or technique_of(ds.loaded_signal) != "EELS":
+            raise ValueError(f"{ds.title} is not an EELS spectrum image")
+        if ds.insitu is not None:
+            raise ValueError(f"{ds.title} is a frame of an in-situ series: the next frame would undo the shift")
+        if not math.isfinite(shift) or shift == 0:
+            raise ValueError("Enter a shift other than 0")
+        label = f"shifted {round_energy(shift):+g} {ds.signal.axes_manager.signal_axes[0].units or ''}".strip()
+        if not in_place:
+            ds.materialise()
+            target = self.copy_as(ds, "zlp-aligned", f"{ds.title} (shifted)")
+        else:
+            target = ds
+        target.materialise()
+        signal = target.signal
+        signal.axes_manager.signal_axes[0].offset += shift
+        target.replace_signal(signal)
+        target.zlp_aligned.append(label)
+        if record:
+            target.ops.append(_op({"op": "energy-shift", "shift": shift}))
+        if in_place:
+            self._remake_after_zlp(target, shift)
+        return target
 
     def _remake_after_zlp(self, d: Dataset, shift: float) -> None:
         """Recompute what was made from ``d`` after its data was aligned, with
@@ -1814,23 +1869,34 @@ class Session:
         ``_rebin_stack``).
 
         Not ``in_place``: ``si`` is left as it is and a copy of it is rebinned
-        instead, a new dataset under it (``origin`` "rebinned"), on its own
-        (without the linked ones or the images on its scan); in-situ series
-        are rebinned in place only. ``with_scan``: the images on the scan
-        are binned too (in place only).
+        instead, a new dataset under it (``origin`` "rebinned"), without the
+        images on its scan; ``with_linked``: the linked EELS spectrum images
+        are copied and rebinned too, the copies linked to each other as the
+        sources are (else it is on its own). In-situ series are rebinned in
+        place only. ``with_scan``: the images on the scan are binned too (in
+        place only).
         """
         if not in_place:
             if si.insitu is not None:
                 raise ValueError(f"{si.title} is an in-situ series: it can only be rebinned in place")
             if si.kind not in (DatasetKind.SPECTRUM_IMAGE, DatasetKind.STACK):
                 raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images and stacks can")
-            self._check_factors(si, factors)
-            copy = self.copy_as(si, "rebinned", f"{si.title} (rebinned)")
+            sources = [si] + (self._same_scan_linked(si) if with_linked and si.kind is DatasetKind.SPECTRUM_IMAGE else [])
+            for d in sources:
+                self._check_factors(d, factors)
+            copies = []
             try:
-                return self.rebin(copy, factors, with_linked=False, time=time, with_scan=False)
+                for d in sources:
+                    copy = self.copy_as(d, "rebinned", f"{d.title} (rebinned)")
+                    copies.append(copy)
+                    self.rebin(copy, factors, with_linked=False, time=time, with_scan=False)
             except Exception:
-                self._remove(copy)
+                for c in copies:
+                    self._remove(c)
                 raise
+            if len(copies) > 1:
+                self._join(copies)
+            return copies
         if si.kind is DatasetKind.STACK:
             if time != 1:
                 raise ValueError(f"{si.title} has no time axis to rebin: only in-situ series do")
@@ -1862,11 +1928,7 @@ class Session:
         natural = am._get_axes_in_natural_order()
         scale = [factors[next(i for i, a in enumerate(axes) if a is ax)] for ax in natural]
         scan = tuple(am.navigation_shape)
-        linked = [
-            d for d in (self.linked_of(si) if with_linked else [])
-            if d.kind is DatasetKind.SPECTRUM_IMAGE and d.is_line_scan == si.is_line_scan
-            and tuple(d.signal.axes_manager.navigation_shape) == scan  # else no longer the same scan
-        ]
+        linked = self._same_scan_linked(si) if with_linked else []
         for d in linked:
             d_axes = list(d.signal.axes_manager._axes)
             if len(d_axes) != len(factors):
@@ -1914,6 +1976,16 @@ class Session:
         for d in linked:
             rebinned += self.rebin(d, factors, with_linked=False, time=time)
         return rebinned
+
+    def _same_scan_linked(self, si: Dataset) -> list[Dataset]:
+        """The EELS spectrum images linked to ``si`` still on its scan (the
+        ones rebinned with it)."""
+        scan = tuple(si.signal.axes_manager.navigation_shape)
+        return [
+            d for d in self.linked_of(si)
+            if d.kind is DatasetKind.SPECTRUM_IMAGE and d.is_line_scan == si.is_line_scan
+            and tuple(d.signal.axes_manager.navigation_shape) == scan  # else no longer the same scan
+        ]
 
     @staticmethod
     def _check_factors(ds: Dataset, factors: list[int]) -> None:
@@ -1980,7 +2052,7 @@ class Session:
             + [f"{_defined(ax.name) or f'axis {i}'}×{f}" for i, (ax, f) in enumerate(zip(natural, scale)) if f > 1]
         )
         ds.rebinned.append(label)
-        ds.ops.append({"op": "rebin-series", "scale": [int(f) for f in scale], "time": int(time)})
+        ds.ops.append(_op({"op": "rebin-series", "scale": [int(f) for f in scale], "time": int(time)}))
         series.schedule_ahead(k)
 
     def set_map_options(self, si: Dataset, options: dict) -> None:
@@ -2125,7 +2197,7 @@ class Session:
                 stack.loaded_signal, applied["stack"], applied["average"], applied["info"]["square"],
             )
             new = self.copy_as(stack, "aligned", f"{stack.title} (aligned)", signal=aligned)
-            new.ops.append({"op": "align", "info": applied["info"]})
+            new.ops.append(_op({"op": "align", "info": applied["info"]}))
             avg = Dataset(
                 id=_new_id(), file_id=stack.file_id, signal=mean, kind=DatasetKind.IMAGE,
                 origin="aligned-average", derived_from=new.id, parent_id=new.id,
@@ -2142,7 +2214,7 @@ class Session:
         stack.aligned_signal = aligned
         stack.alignment = applied["info"]
         stack.signal = aligned
-        stack.ops.append({"op": "align", "info": applied["info"]})
+        stack.ops.append(_op({"op": "align", "info": applied["info"]}))
         self._view_changed(stack)
         for d in self._averages(stack):
             self._remove(d)
@@ -2171,7 +2243,7 @@ class Session:
             return
         stack.signal = stack.original_signal
         stack.alignment = stack.aligned_signal = stack.original_signal = None
-        stack.ops.append({"op": "unalign"})
+        stack.ops.append(_op({"op": "unalign"}))
         self._view_changed(stack)
         for d in self._averages(stack):
             self._remove(d)

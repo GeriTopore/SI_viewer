@@ -312,6 +312,16 @@ export function DatasetList() {
           <span className="file-name" title={file.path} onClick={() => enterWorkspace(file.id)}>
             {file.role ?? file.name}
           </span>
+          {file.raw_missing && (
+            <span className="raw-missing-tag" title={`${file.path} not found or changed: its saved data is shown`}>
+              no raw data
+            </span>
+          )}
+          {file.embedded && (
+            <span className="raw-embedded-tag" title={`${file.path}: the copy embedded in the analysis`}>
+              embedded
+            </span>
+          )}
           <button className="icon-button" title="Close file" onClick={() => closeFile(file.id)}>
             ×
           </button>

@@ -23,6 +23,11 @@ interface ZlpStore {
   /** ``inPlace`` false: the aligned spectra become new datasets, the low loss's selected. */
   run: (ll: DatasetSummary, inPlace?: boolean) => Promise<void>;
   cancel: (id: string) => Promise<void>;
+  /** A shift by hand being typed, per dataset: its spectra are drawn that far along. */
+  preview: Record<string, number>;
+  setPreview: (id: string, shift: number | null) => void;
+  /** Apply a shift by hand (no low loss to align to). Throws on failure. */
+  shiftEnergy: (d: DatasetSummary, shift: number, inPlace: boolean) => Promise<void>;
 }
 
 /** Settings kept in energy units follow the data when its axis moves by ``shift``: a fixed
@@ -64,6 +69,27 @@ export const useZlp = create<ZlpStore>((set, get) => {
     byId: {},
     jobs: {},
     startError: {},
+    preview: {},
+    setPreview: (id, shift) =>
+      set((s) => {
+        const preview = { ...s.preview };
+        if (shift) preview[id] = shift;
+        else delete preview[id];
+        return { preview };
+      }),
+    shiftEnergy: async (d, shift, inPlace) => {
+      const r = await api.shiftEnergy(d.id, shift, inPlace);
+      get().setPreview(d.id, null);
+      const { replaceFile, select } = useDatasets.getState();
+      replaceFile(r.file);
+      if (inPlace) {
+        followAxis([d.id], shift);
+        useLayers.getState().notify("Energy axis shifted.");
+      } else {
+        select(r.dataset.id);
+        useLayers.getState().notify(`${r.dataset.title} added to the dataset pane.`);
+      }
+    },
     patch: (ll, patch) => set((s) => ({ byId: { ...s.byId, [ll.id]: { ...(s.byId[ll.id] ?? DEFAULTS), ...patch } } })),
 
     run: async (ll, inPlace = true) => {
@@ -89,7 +115,7 @@ export const useZlp = create<ZlpStore>((set, get) => {
           (job.result.partner_files ?? []).forEach((f) => replaceFile(f));
           if (inPlace) {
             followAxis(job.result.aligned ?? [], job.result.shift ?? 0);
-            useLayers.getState().notify("Zero-loss peak aligned.");
+            useLayers.getState().notify("ZLP aligned.");
           } else {
             const first = job.result.aligned?.[0];
             if (first) useDatasets.getState().select(first);

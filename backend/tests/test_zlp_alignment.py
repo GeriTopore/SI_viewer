@@ -519,3 +519,47 @@ def test_alignment_as_new_datasets(client, tmp_path):
     ax = s.axes_manager.signal_axes[0]
     peak = ax.offset + ax.scale * np.asarray(s.data).argmax(axis=-1)
     assert np.abs(peak).max() <= ax.scale
+
+
+# ---------- ZLP alignment by hand (a core loss without a low loss) ----------
+
+
+def test_a_core_loss_is_shifted_by_hand(client, tmp_path):
+    c = _centres()
+    hl = _si(_open(client, _save(tmp_path, _core_loss(c), "hl")))
+    before = _dataset(client, hl).signal.axes_manager.signal_axes[0].offset
+    data = np.array(_dataset(client, hl).signal.data)
+    wm = _post(client, f"/api/datasets/{hl['id']}/window-maps", lo=440, hi=450)["dataset"]
+
+    r = _post(client, f"/api/datasets/{hl['id']}/energy-shift", shift=2.5)
+    assert r["dataset"]["id"] == hl["id"] and r["dataset"]["revision"] > hl["revision"]
+    s = _dataset(client, hl)
+    assert s.signal.axes_manager.signal_axes[0].offset == pytest.approx(before + 2.5)
+    np.testing.assert_array_equal(s.signal.data, data)  # the counts are where they were
+    assert s.zlp_aligned == ["shifted +2.5 eV"] and s.ops[-1]["op"] == "energy-shift"
+    assert _dataset(client, wm["id"]).window["lo"] == pytest.approx(442.5)  # the window moved with it
+
+    # As a new dataset: the source stays.
+    r = _post(client, f"/api/datasets/{hl['id']}/energy-shift", shift=-1, in_place=False)
+    copy = r["dataset"]
+    assert copy["parent_id"] == hl["id"] and copy["title"].endswith("(shifted)")
+    assert _dataset(client, copy["id"]).signal.axes_manager.signal_axes[0].offset == pytest.approx(before + 1.5)
+    assert _dataset(client, hl).signal.axes_manager.signal_axes[0].offset == pytest.approx(before + 2.5)
+
+    assert client.post(f"/api/datasets/{hl['id']}/energy-shift", json={"shift": 0}).status_code == 422
+
+
+def test_a_shift_by_hand_is_redone_when_an_analysis_opens(client, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from si_viewer.app import create_app
+
+    hl = _si(_open(client, _save(tmp_path, _core_loss(_centres()), "hl")))
+    _post(client, f"/api/datasets/{hl['id']}/energy-shift", shift=3)
+    r = client.post("/api/project/save", json={"path": str(tmp_path / "a.hspy")})
+    assert r.status_code == 200, r.text
+    other = TestClient(create_app())
+    r = other.post("/api/project/open", json={"path": r.json()["path"]})
+    assert r.status_code == 200, r.text
+    a, b = _dataset(client, hl), other.app.state.session.get_dataset(hl["id"])
+    assert b.signal.axes_manager.signal_axes[0].offset == pytest.approx(a.signal.axes_manager.signal_axes[0].offset)

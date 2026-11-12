@@ -247,8 +247,8 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       body: <InsituAlignSection d={d} />,
     },
     canEstimateThickness(d) && {
-      id: "zlp", title: "Zero-loss alignment",
-      tip: "Shift every spectrum so its zero-loss peak is at 0 eV; linked core losses follow",
+      id: "zlp", title: "ZLP alignment",
+      tip: "Shift every spectrum so its zero-loss peak is at 0 eV; linked core losses follow. Without a low loss: shift by hand",
       body: <ZlpSection d={d} />,
     },
     {

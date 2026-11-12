@@ -18,30 +18,59 @@ const GOS: { id: EelsGos; label: string; title: string }[] = [
   { id: "hydrogenic", label: "Hydrogenic", title: "K and L edges only" },
 ];
 
-/** An energy typed in eV; empty means none. Committed on Enter or on leaving the field. */
-function OptionalEnergy({ value, placeholder, label, onCommit, disabled }: {
-  value: number | null; placeholder: string; label: string; onCommit: (v: number | null) => void; disabled?: boolean;
+/** An energy typed in eV; empty means none (``fallback`` is used, shown as
+ * the placeholder). Committed on Enter or on leaving the field. The arrows
+ * step from the value shown, the fallback when empty. */
+function OptionalEnergy({ value, fallback, label, onCommit, disabled }: {
+  value: number | null; fallback: number | null; label: string; onCommit: (v: number | null) => void; disabled?: boolean;
 }) {
   const [text, setText] = useState(value === null ? "" : String(value));
   useEffect(() => setText(value === null ? "" : String(value)), [value]);
   const commit = () => {
     const v = Number(text);
     if (text.trim() === "") onCommit(null);
-    else if (Number.isFinite(v)) onCommit(v);
-    else setText(value === null ? "" : String(value));
+    else if (!Number.isFinite(v)) setText(value === null ? "" : String(value));
+    // The fallback itself is no override (focusing an empty field fills it in).
+    else if (value === null && fallback !== null && Math.abs(v - fallback) < 1e-9) {
+      setText("");
+      onCommit(null);
+    } else onCommit(v);
+  };
+  // Empty: start from the fallback, so the arrows step from it (not from 0).
+  const fill = (input: HTMLInputElement) => {
+    if (input.value !== "" || fallback === null) return;
+    const v = String(Number(fallback.toFixed(3)));
+    input.value = v;
+    setText(v);
   };
   return (
     <input
       type="number"
+      step="any"
       value={text}
-      placeholder={placeholder}
+      placeholder={fallback === null ? "" : formatValue(fallback)}
       aria-label={label}
       disabled={disabled}
+      onMouseDown={(e) => fill(e.currentTarget)}
+      onFocus={(e) => fill(e.currentTarget)}
       onChange={(e) => setText(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
     />
   );
+}
+
+/** Each element's edge that carries its intensity and onset in exSpy's model
+ * (of its subshells inside the fitted range, the one whose name sorts last,
+ * e.g. Mn_L3 of Mn_L1/L2/L3), as the table lists them before a fit. */
+function mainEdges(ds: DatasetSummary, lo: number, hi: number): Map<string, { edge: string; onset: number }> {
+  const out = new Map<string, { edge: string; onset: number }>();
+  for (const s of ds.edges?.subshells ?? []) {
+    if (s.onset < lo || s.onset > hi) continue;
+    const cur = out.get(s.element);
+    if (!cur || s.name > cur.edge) out.set(s.element, { edge: s.name, onset: s.onset });
+  }
+  return out;
 }
 
 /** Quantify tab, EELS: fit one spectrum with exSpy's model (a power-law
@@ -119,14 +148,23 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
     setBusy(false);
   };
 
-  // A typed onset is kept with the settings and refitted at once.
+  // A typed onset is kept with the settings (and refitted at once if fitted).
   const setOnset = (element: string, value: number | null) => {
     const onsets = { ...options.onsets };
     if (value === null) delete onsets[element];
     else onsets[element] = value;
     setOptions(ds.id, { onsets });
-    void runFit({ onsets });
+    if (fit) void runFit({ onsets });
   };
+
+  // A row per element chosen (the table is there before a fit): its main
+  // edge, and what a fit found for it, if fitted.
+  const main = mainEdges(ds, options.lo ?? e0, options.hi ?? e1);
+  const tableRows = elements.map((element) => {
+    const fitted = fit?.result.rows.find((r) => r.element === element);
+    const edge = fitted?.edge ?? main.get(element)?.edge ?? null;
+    return { element, edge, onset: fitted?.onset ?? main.get(element)?.onset ?? null, fitted };
+  });
 
   // Every spectrum fitted, a row per element of each.
   const saveTable = () =>
@@ -195,7 +233,7 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
           <span className="q-inline bg-range">
             <OptionalEnergy
               value={options.lo}
-              placeholder={formatValue(e0)}
+              fallback={axis ? e0 : null}
               label="Fit from"
               disabled={busy}
               onCommit={(lo) => setOptions(ds.id, { lo })}
@@ -203,7 +241,7 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
             –
             <OptionalEnergy
               value={options.hi}
-              placeholder={formatValue(e1)}
+              fallback={axis ? e1 : null}
               label="Fit to"
               disabled={busy}
               onCommit={(hi) => setOptions(ds.id, { hi })}
@@ -305,46 +343,53 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
             </div>
           </section>
 
-          <section>
-            <table className="q-table">
-              <thead>
-                <tr>
-                  <th>Edge</th>
-                  <th title="Onset of the edge (eV); type one where the database's is off">Onset</th>
-                  <th>Intensity</th>
-                  <th>±</th>
-                  <th>at%</th>
+        </>
+      )}
+
+      {tableRows.length > 0 && (
+        <section>
+          <table className="q-table">
+            <thead>
+              <tr>
+                <th>Edge</th>
+                <th title="Onset of the edge (eV); type one where the database's is off">Onset</th>
+                <th>Intensity</th>
+                <th>±</th>
+                <th>at%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows.map((r) => (
+                <tr key={r.element}>
+                  <td title={r.edge ? undefined : "No edge in the fitted range"}>
+                    {r.element} {r.edge ? edgeLabel(r.edge.split("_")[1] ?? "") : "–"}
+                  </td>
+                  <td>
+                    <OptionalEnergy
+                      value={options.onsets[r.element] ?? null}
+                      fallback={r.onset}
+                      label={`Onset of ${r.element}`}
+                      disabled={busy || !r.edge}
+                      onCommit={(v) => v !== (options.onsets[r.element] ?? null) && setOnset(r.element, v)}
+                    />
+                  </td>
+                  <td className="num">{r.fitted ? formatValue(r.fitted.intensity) : ""}</td>
+                  <td className="num">{r.fitted ? (r.fitted.std === null ? "–" : formatValue(r.fitted.std)) : ""}</td>
+                  <td className="num">
+                    {r.fitted ? (r.fitted.atomic_percent === null ? "–" : r.fitted.atomic_percent.toFixed(1)) : ""}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {fit.result.rows.map((r) => (
-                  <tr key={r.element}>
-                    <td>
-                      {r.element} {edgeLabel(r.edge.split("_")[1] ?? "")}
-                    </td>
-                    <td>
-                      <OptionalEnergy
-                        value={options.onsets[r.element] ?? null}
-                        placeholder={formatValue(r.onset)}
-                        label={`Onset of ${r.element}`}
-                        disabled={busy}
-                        onCommit={(v) => v !== (options.onsets[r.element] ?? null) && setOnset(r.element, v)}
-                      />
-                    </td>
-                    <td className="num">{formatValue(r.intensity)}</td>
-                    <td className="num">{r.std === null ? "–" : formatValue(r.std)}</td>
-                    <td className="num">{r.atomic_percent === null ? "–" : r.atomic_percent.toFixed(1)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              ))}
+            </tbody>
+          </table>
+          {fit && (
             <p className="muted small">
               <button className="link-button" onClick={saveTable} title="Save this table as CSV">
                 Save CSV
               </button>
             </p>
-          </section>
-        </>
+          )}
+        </section>
       )}
 
       {isSi && !lineScan && <EelsFitMaps ds={ds} />}

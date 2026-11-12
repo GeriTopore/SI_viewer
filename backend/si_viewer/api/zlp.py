@@ -61,4 +61,32 @@ def post_zlp_alignment(dataset_id: str, body: ZlpBody, request: Request) -> dict
             "shift": result.mean_shift,
         }
 
-    return request.app.state.jobs.submit("zlp-alignment", f"Zero-loss alignment of {ll.title}", run).summary()
+    return request.app.state.jobs.submit("zlp-alignment", f"ZLP alignment of {ll.title}", run).summary()
+
+
+class ShiftBody(BaseModel):
+    # Energy added to the axis (its units): positive moves the spectra up.
+    shift: float
+    # False: a shifted copy, a new dataset under it.
+    in_place: bool = True
+
+
+@router.post("/api/datasets/{dataset_id}/energy-shift")
+def post_energy_shift(dataset_id: str, body: ShiftBody, request: Request) -> dict:
+    """Shift the energy axis of an EELS spectrum image (or LineScan) by a
+    given amount: ZLP alignment by hand, for a core loss without a low loss.
+    Windows, maps and background removals made from it move with it. Not
+    ``in_place``: a shifted copy is made under it. Returns the dataset (the
+    copy if one was made) and its file."""
+    from .eds import _with_file
+
+    session = request.app.state.session
+    try:
+        ds = session.get_dataset(dataset_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    try:
+        made = session.shift_energy(ds, body.shift, body.in_place)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _with_file(request, made)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -33,6 +35,10 @@ def open_file(body: OpenRequest, request: Request) -> dict:
     session = _session(request)
     if body.experiment_id is not None and body.experiment_id not in session.experiments:
         raise HTTPException(404, f"Unknown experiment id: {body.experiment_id}")
+    from ..project import is_project
+
+    if is_project(body.path):
+        raise HTTPException(422, f"{Path(body.path).name} is a saved analysis: open it with Open analysis")
     try:
         entry = session.open_file(body.path, body.experiment_id)
     except FileNotFoundError:

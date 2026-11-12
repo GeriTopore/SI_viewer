@@ -223,7 +223,8 @@ def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
     sums that many recorded frames). Returns the spectrum image and
     its file, and the linked ones and their files (``partners``,
     ``partner_files``; empty without any). Not ``in_place``: a copy is
-    rebinned instead, and ``dataset`` is that new dataset."""
+    rebinned instead, and ``dataset`` is that new dataset; the linked ones are
+    copied and rebinned with it (``partners``: their copies)."""
     ds = _dataset(request, dataset_id)
     try:
         made = request.app.state.session.rebin(ds, body.factors, time=body.time, in_place=body.in_place)
@@ -232,7 +233,7 @@ def rebin_dataset(dataset_id: str, body: RebinBody, request: Request) -> dict:
     except ValueError as e:
         raise HTTPException(422, str(e))
     if not body.in_place:
-        return _with_linked(request, made[0], [])
+        return _with_linked(request, made[0], made[1:])
     return _with_linked(request, ds, request.app.state.session.linked_of(ds))
 
 

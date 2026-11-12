@@ -956,7 +956,8 @@ button.primary:disabled {
   border-bottom: 1px solid var(--border);
 }
 
-.fb-path {
+.fb-path,
+.fb-name-input {
   flex: 1;
   min-width: 0;
   padding: 5px 8px;
@@ -968,6 +969,7 @@ button.primary:disabled {
 }
 
 .fb-path:focus,
+.fb-name-input:focus,
 .fb-list:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
@@ -1058,6 +1060,7 @@ button.primary:disabled {
 
 .fb-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   flex: none;
 }
@@ -1731,6 +1734,16 @@ button.primary:disabled {
 
 .field-error {
   margin: 0 0 6px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* A notice above a form (e.g. "No ZLP available"). */
+.field-warning {
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: var(--danger-bg);
   color: var(--danger);
   font-size: 12px;
 }
@@ -5049,4 +5062,30 @@ kbd {
   border-radius: 12px;
   font-size: 16px;
   font-weight: 600;
+}
+
+/* A file opened from a saved analysis without its raw data. */
+.raw-missing-tag {
+  flex: none;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--danger);
+}
+
+.raw-embedded-tag {
+  flex: none;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--muted);
+}
+
+.fb-locate {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -503,7 +503,7 @@ export interface ShiftsCheck {
 }
 
 
-type Versioned = { revision: number; filter_rev: number; data_rev?: number; insitu?: { view?: { mode: string } | null } | null };
+type Versioned = { revision: number; filter_rev: number; data_rev?: number; insitu?: { view?: { mode: string; start: number; end: number } | null } | null };
 
 /** Changes whenever the data shown for a dataset does (recomputed, rebinned,
  * filtered or replaced by the next frame), for cache keys. */
@@ -512,10 +512,13 @@ export const dataVersion = (d: Versioned) => `${d.revision}.${d.filter_rev}.${d.
 export type FitQuantity = "counts" | "at%";
 
 /** Like ``dataVersion`` but unchanged by a new frame: contrast is redone when
- * it changes. An in-situ sum is on another scale than a frame or a mean, so
- * switching to or from it changes it too. */
-export const contrastVersion = (d: Versioned) =>
-  `${d.revision}.${d.filter_rev}${d.insitu?.view?.mode === "sum" ? ".sum" : ""}`;
+ * it changes. An in-situ sum is on another scale than a frame or a mean, and
+ * grows with the frames summed, so switching to or from it, or changing its
+ * range, changes it too. */
+export const contrastVersion = (d: Versioned) => {
+  const v = d.insitu?.view;
+  return `${d.revision}.${d.filter_rev}${v?.mode === "sum" ? `.sum${v.start}-${v.end}` : ""}`;
+};
 
 /** Options of a spectrum fit (exSpy EDS model). */
 export interface FitOptions {
@@ -647,7 +650,21 @@ export interface FileSummary {
   experiment: ExperimentSummary | null;
   /** What the file is in its experiment ("Survey", "ADF", "EELS LL", …). */
   role: string | null;
+  /** Opened from a saved analysis without its raw file (its stored data). */
+  raw_missing?: boolean;
+  /** Opened from a copy of its raw file embedded in a saved analysis. */
+  embedded?: boolean;
   datasets: DatasetSummary[];
+}
+
+/** How much a saved analysis holds: raw data referenced, or the raw datasets' data stored too. */
+export type SaveLevel = "link" | "results" | "raw";
+
+/** A raw file of a saved analysis that can't be found. */
+export interface MissingRaw {
+  id: string;
+  name: string;
+  path: string;
 }
 
 export interface FsEntry {
@@ -837,6 +854,33 @@ export const api = {
   health: () => request<Health>("/api/health"),
   renderPlot,
   listFiles: () => request<FileSummary[]>("/api/files"),
+  /** ``fileIds``: the files saved (and what they link to). */
+  saveProject: (
+    path: string, views: Record<string, unknown>, overwrite: boolean, level: SaveLevel, fileIds: string[],
+  ) =>
+    request<{ path: string }>("/api/project/save", {
+      method: "POST",
+      body: JSON.stringify({ path, views, overwrite, level, file_ids: fileIds }),
+    }),
+  /** Bytes a save of ``fileIds`` would store at each level (before
+   * compression), and the files it would hold (those and what they link to). */
+  projectEstimate: (fileIds: string[]) =>
+    request<Record<SaveLevel, number> & { file_ids: string[] }>("/api/project/estimate", {
+      method: "POST",
+      body: JSON.stringify({ file_ids: fileIds }),
+    }),
+  /** ``locations``: where raw files that moved are (file id -> path). */
+  openProject: (path: string, locations: Record<string, string> = {}) =>
+    request<{ files: FileSummary[]; file_ids: string[]; views: Record<string, unknown>; warnings: string[] }>("/api/project/open", {
+      method: "POST",
+      body: JSON.stringify({ path, locations }),
+    }),
+  /** The raw files that have to be located before ``path`` opens. */
+  checkProject: (path: string, locations: Record<string, string> = {}) =>
+    request<{ missing: MissingRaw[] }>("/api/project/check", {
+      method: "POST",
+      body: JSON.stringify({ path, locations }),
+    }),
   /** Where dropped files and folders are on disk (null: not found). */
   locate: (items: DroppedItem[], hints: string[]) =>
     request<{ paths: (string | null)[] }>("/api/fs/locate", { method: "POST", body: JSON.stringify({ items, hints }) }),
@@ -924,6 +968,7 @@ export const api = {
       body: JSON.stringify({ quantity }),
     }),
   /** ``time``: frames per binned frame of an in-situ series. */
+  /** Not ``inPlace``: copies are rebinned (the linked ones' too). */
   rebin: (id: string, factors: number[], time = 1, inPlace = true) =>
     request<DatasetAndFile>(`/api/datasets/${id}/rebin`, {
       method: "POST",
@@ -981,6 +1026,13 @@ export const api = {
     request<JobSummary>(`/api/datasets/${id}/zlp-alignment`, {
       method: "POST",
       body: JSON.stringify({ options, in_place: inPlace }),
+    }),
+  /** ZLP alignment by hand: move the energy axis of an EELS spectrum image by
+   * ``shift`` (with what was made from it); not ``inPlace``: a shifted copy. */
+  shiftEnergy: (id: string, shift: number, inPlace = true) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/energy-shift`, {
+      method: "POST",
+      body: JSON.stringify({ shift, in_place: inPlace }),
     }),
   startFitMaps: (id: string, options: FitOptions, quant: QuantSpec) =>
     request<JobSummary>(`/api/datasets/${id}/fit-maps`, { method: "POST", body: JSON.stringify({ options, quant }) }),

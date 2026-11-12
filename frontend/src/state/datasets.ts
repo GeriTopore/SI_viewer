@@ -52,6 +52,8 @@ interface DatasetsState {
   openExample: (id: string, title: string) => Promise<void>;
   closeFile: (fileId: string) => Promise<void>;
   closeAll: () => Promise<void>;
+  /** Show ``files``, every open file (after an analysis was opened next to them). */
+  adoptFiles: (files: FileSummary[]) => void;
   /** Replace a dataset's summary (after loading, calibration, …). */
   updateDataset: (summary: DatasetSummary) => void;
   /** Replace a file's datasets (maps added, removed or recomputed). */
@@ -549,6 +551,12 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       for (const f of get().files) await get().closeFile(f.id);
     },
 
+    adoptFiles: (files) => {
+      const sorted = files.map(sortFile);
+      assignElementColours(sorted);
+      set({ files: sorted, errors: [] });
+    },
+
     replaceFile: (file) => {
       const sorted = sortFile(file);
       assignElementColours([sorted]);
@@ -592,6 +600,8 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       const r = await api.rebin(d.id, factors, time, inPlace);
       get().replaceFile(r.file);
       if (!inPlace) {
+        // Copies of linked ones may be in other files.
+        if (r.dataset.eels?.linked.length) await get().syncFiles();
         get().select(r.dataset.id);
         return;
       }

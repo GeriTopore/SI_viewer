@@ -142,6 +142,13 @@ export function SpectrumPlot({
   const [typing, setTyping] = useState<(NumberBox & { id: string; left: number; top: number }) | null>(null);
   // Counts-axis range set by dragging the axis; null = auto-range to the data.
   const manualY = useRef<{ min: number; max: number } | null>(null);
+  // The energy axis of the last build (to tell a moved axis from new data),
+  // and its energy zoom when it was taken down.
+  const lastX = useRef<ArrayLike<number> | null>(null);
+  const lastZoom = useRef<{ min: number; max: number } | null>(null);
+  // The zoom just set on a new build, which uPlot applies later: the data
+  // update that follows the build must not read the scale before it does.
+  const builtZoom = useRef<{ min: number; max: number } | null>(null);
   const live = useRef({
     markers, windows, selectedId, showWindows, onSelectWindow, onWindow, onEditWindow, onWindowMenu,
     onWindowDoubleClick, onMarkerClick, series, xUnits,
@@ -165,6 +172,12 @@ export function SpectrumPlot({
     const el = wrapRef.current!;
     manualY.current = null;
     const saved = zoomKey ? zoomMemory.get(zoomKey) : undefined;
+    // The axis only moved (a shift being previewed): the zoom stays exactly where it was.
+    const prev = lastX.current;
+    const moved =
+      !!prev && prev.length === x.length && x.length > 1 && Math.abs(prev[1] - prev[0] - (x[1] - x[0])) < 1e-9 * Math.abs(x[1] - x[0]);
+    lastX.current = x;
+    const kept = moved ? lastZoom.current : null;
     const yRange: uPlot.Range.Function = (_u, lo, hi) => {
       if (manualY.current) return [manualY.current.min, manualY.current.max];
       if (lo == null || hi == null) return log ? [1, 10] : [0, 1];
@@ -251,8 +264,13 @@ export function SpectrumPlot({
     };
     const plot = new uPlot(opts, toData(), el);
     plotRef.current = plot;
-    if (saved && x.length > 1 && saved.max > x[0] && saved.min < x[x.length - 1]) {
-      plot.setScale("x", { min: Math.max(saved.min, x[0]), max: Math.min(saved.max, x[x.length - 1]) });
+    builtZoom.current = null;
+    if (kept) {
+      plot.setScale("x", kept);
+      builtZoom.current = kept;
+    } else if (saved && x.length > 1 && saved.max > x[0] && saved.min < x[x.length - 1]) {
+      builtZoom.current = { min: Math.max(saved.min, x[0]), max: Math.min(saved.max, x[x.length - 1]) };
+      plot.setScale("x", builtZoom.current);
     }
 
     const step = x.length > 1 ? x[1] - x[0] : 1;
@@ -537,6 +555,11 @@ export function SpectrumPlot({
       ro.disconnect();
       document.removeEventListener("mousemove", onEditMove);
       document.removeEventListener("mouseup", onEditUp);
+      const { min, max } = plot.scales.x;
+      const eps = x.length > 1 ? (x[1] - x[0]) * 0.5 : 0;
+      // Zoomed in (not the whole axis): kept if the next axis only moves.
+      lastZoom.current =
+        min != null && max != null && (min > x[0] + eps || max < x[x.length - 1] - eps) ? { min, max } : null;
       plot.destroy();
       plotRef.current = null;
     };
@@ -546,7 +569,8 @@ export function SpectrumPlot({
     // Keep the current energy zoom when only the data changes.
     const p = plotRef.current;
     if (!p) return;
-    const { min, max } = p.scales.x;
+    const { min, max } = builtZoom.current ?? p.scales.x;
+    builtZoom.current = null;
     p.setData(toData(), false);
     p.setScale("x", { min: min ?? x[0], max: max ?? x[x.length - 1] });
   }, [series]); // eslint-disable-line react-hooks/exhaustive-deps

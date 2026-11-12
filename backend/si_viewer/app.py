@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import (
     background, datasets, deconvolution, eds, eels, eels_fit, examples, export, files, fs, insitu, jobs, plot_export, process,
-    registration, thickness, zlp,
+    project, registration, thickness, zlp,
 )
 from .jobs import JobManager
 from .session import Session
@@ -45,6 +45,7 @@ def create_app(session: Session | None = None) -> FastAPI:
     app.include_router(registration.router)
     app.include_router(insitu.router)
     app.include_router(plot_export.router)
+    app.include_router(project.router)
 
     @app.get("/api/health", tags=["meta"])
     def health() -> dict:

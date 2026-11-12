@@ -49,6 +49,8 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
   // A series is binned as it is read: in place only.
   const [inPlaceChoice, setInPlace] = useInPlace("rebin");
   const inPlace = series ? true : inPlaceChoice;
+  // Not in place: the linked ones are copied and rebinned too.
+  const copiesLinked = !inPlace && d.kind === "spectrum_image" && group.length > 0;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -159,6 +161,9 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
           <div className="rebin-in-place">
             <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={busy} what={d.title} />
           </div>
+        )}
+        {copiesLinked && (
+          <p className="muted small rebin-also">Also copied and binned: {group.map((x) => x.title).join(", ")}</p>
         )}
         {inPlace && group.length + onScan.length > 0 && (
           <p className="muted small rebin-also">

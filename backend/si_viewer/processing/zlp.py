@@ -73,12 +73,12 @@ def check_signal(signal) -> None:
     loss ``signal`` can't be aligned."""
     am = signal.axes_manager
     if am.signal_dimension != 1 or am.navigation_size < 2:
-        raise ValueError("Zero-loss alignment needs a spectrum image with more than one spectrum")
+        raise ValueError("ZLP alignment needs a spectrum image with more than one spectrum")
     axis = am.signal_axes[0]
     if not axis.is_uniform or not axis.scale > 0:
-        raise ValueError("Zero-loss alignment needs an energy axis that increases evenly")
+        raise ValueError("ZLP alignment needs an energy axis that increases evenly")
     if axis.size < MIN_CHANNELS:
-        raise ValueError(f"Zero-loss alignment needs at least {MIN_CHANNELS} channels")
+        raise ValueError(f"ZLP alignment needs at least {MIN_CHANNELS} channels")
 
 
 def _title(signal) -> str:

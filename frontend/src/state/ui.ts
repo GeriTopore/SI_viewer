@@ -195,10 +195,14 @@ interface UiState {
   lastExportDir: string;
   setLastExportDir: (dir: string) => void;
   browserOpen: boolean;
+  /** What the file browser is for: data, opening an analysis or saving one. */
+  browserMode: BrowserMode;
   setListMode: (mode: ListMode) => void;
   setLastDir: (dir: string) => void;
-  setBrowserOpen: (open: boolean) => void;
+  setBrowserOpen: (open: boolean, mode?: BrowserMode) => void;
 }
+
+export type BrowserMode = "data" | "open-analysis" | "save-analysis";
 
 export const useUi = create<UiState>((set, get) => ({
   theme: document.documentElement.dataset.theme === "dark" ? "dark" : "light",
@@ -387,6 +391,7 @@ export const useUi = create<UiState>((set, get) => ({
     set({ lastExportDir });
   },
   browserOpen: false,
+  browserMode: "data",
   setListMode: (listMode) => {
     save("si-viewer.listMode", listMode);
     set({ listMode });
@@ -395,5 +400,5 @@ export const useUi = create<UiState>((set, get) => ({
     save("si-viewer.lastDir", lastDir);
     set({ lastDir });
   },
-  setBrowserOpen: (browserOpen) => set({ browserOpen }),
+  setBrowserOpen: (browserOpen, browserMode = "data") => set({ browserOpen, browserMode }),
 }));

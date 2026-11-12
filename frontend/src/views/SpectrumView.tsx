@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useZlp } from "../state/zlp";
 import { fetchSpectrum } from "../api/arrays";
 import { dataVersion, type DatasetSummary } from "../api/client";
 import { ElementsPicker } from "../components/ElementsPicker";
@@ -13,11 +14,13 @@ export const SPECTRUM_COLOR = "#4c8dff";
 /** Energy axis values (channel centres) for a dataset's spectral axis. */
 export function useEnergyAxis(ds: DatasetSummary) {
   const axis = spectralAxis(ds);
+  // A shift by hand being typed (ZLP alignment without a low loss): shown live.
+  const preview = useZlp((s) => s.preview[ds.id] ?? 0);
   const x = useMemo(() => {
     const out = new Float64Array(axis?.size ?? 0);
-    for (let i = 0; i < out.length; i++) out[i] = (axis?.offset ?? 0) + i * (axis?.scale ?? 1);
+    for (let i = 0; i < out.length; i++) out[i] = (axis?.offset ?? 0) + preview + i * (axis?.scale ?? 1);
     return out;
-  }, [axis?.size, axis?.offset, axis?.scale]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [axis?.size, axis?.offset, axis?.scale, preview]); // eslint-disable-line react-hooks/exhaustive-deps
   return { x, label: axis?.name || "Energy", units: axis?.units ?? "" };
 }
 

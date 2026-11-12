@@ -149,7 +149,7 @@ def test_rebin_as_a_new_dataset(client, tmp_path):
     src = session.get_dataset(stack["id"])
     assert src.signal.data.shape == (6, 9, 10) and src.ops == [] and src.rebinned == []  # left as it is
     copy = session.get_dataset(new["id"])
-    assert copy.ops == [{"op": "rebin", "scale": [1, 2, 3]}] and copy.copied_at == 0
+    assert [{k: v for k, v in o.items() if k != "seq"} for o in copy.ops] == [{"op": "rebin", "scale": [1, 2, 3]}] and copy.copied_at == 0
     np.testing.assert_allclose(copy.signal.data, data.astype(np.int64).reshape(6, 3, 3, 5, 2).sum(axis=(2, 4)))
     # Bad factors make no copy.
     n = len(session.files[stack["file_id"]].dataset_ids)
@@ -163,7 +163,7 @@ def test_rebin_in_place_is_recorded(client):
     si = next(d for d in entry["datasets"] if d["kind"] == "spectrum_image")
     client.post(f"/api/datasets/{si['id']}/rebin", json={"factors": [2, 2, 1]})
     ops = client.app.state.session.get_dataset(si["id"]).ops
-    assert ops == [{"op": "rebin", "scale": [2, 2, 1]}]
+    assert [{k: v for k, v in o.items() if k != "seq"} for o in ops] == [{"op": "rebin", "scale": [2, 2, 1]}]
 
 
 def test_rebin_a_spectrum_image_as_a_new_dataset_leaves_the_scan_alone(client):
@@ -177,3 +177,31 @@ def test_rebin_a_spectrum_image_as_a_new_dataset_leaves_the_scan_alone(client):
     files = {d["id"]: d for d in r["file"]["datasets"]}
     assert files[si["id"]]["navigation_shape"] == si["navigation_shape"]
     np.testing.assert_array_equal(_array(client.get(f"/api/datasets/{haadf['id']}/frame")), before)
+
+
+def test_rebin_as_a_new_dataset_copies_the_linked_ones(client, tmp_path):
+    import hyperspy.api as hs
+
+    def eels(name, offset):
+        s = hs.signals.Signal1D(np.random.default_rng(0).uniform(1, 2, (6, 8, 50)).astype(np.float32))
+        s.set_signal_type("EELS")
+        s.axes_manager[-1].offset = offset
+        s.metadata.General.title = name
+        s.save(tmp_path / f"{name}.hspy")
+        r = client.post("/api/files", json={"path": str(tmp_path / f"{name}.hspy")})
+        return next(d for d in r.json()["datasets"] if d["kind"] == "spectrum_image")
+
+    ll, hl = eels("ll", -10), eels("hl", 400)
+    assert client.put(f"/api/datasets/{ll['id']}/eels-role", json={"role": "low_loss"}).status_code == 200
+    assert client.put(f"/api/datasets/{hl['id']}/eels-partner", json={"partner_id": ll["id"]}).status_code == 200
+
+    r = client.post(f"/api/datasets/{hl['id']}/rebin", json={"factors": [2, 2, 1], "in_place": False})
+    assert r.status_code == 200, r.text
+    new, partners = r.json()["dataset"], r.json()["partners"]
+    assert new["parent_id"] == hl["id"] and new["navigation_shape"] == [4, 3]
+    assert len(partners) == 1 and partners[0]["parent_id"] == ll["id"] and partners[0]["navigation_shape"] == [4, 3]
+    # The copies are linked to each other; the sources are left as they were.
+    assert new["eels"]["linked"] == [partners[0]["id"]]
+    session = client.app.state.session
+    assert session.get_dataset(ll["id"]).signal.data.shape == (6, 8, 50)
+    assert [d.id for d in session.linked_of(session.get_dataset(hl["id"]))] == [ll["id"]]

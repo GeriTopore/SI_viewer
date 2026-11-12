@@ -127,7 +127,7 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
     const given = !t ? "" : t.mean_free_path != null ? `, λ ${formatValue(t.mean_free_path)} nm` : t.density != null ? `, density ${formatValue(t.density)} g/cm³` : "";
     return `${base}\nThickness of ${parentTitle ?? "its low loss"}${t ? `: ${threshold}${given}` : ""}`;
   }
-  if (isZlpShift(d)) return `${base}\nEnergy shift applied by zero-loss alignment${parentTitle ? ` to ${parentTitle}` : ""}`;
+  if (isZlpShift(d)) return `${base}\nEnergy shift applied by ZLP alignment${parentTitle ? ` to ${parentTitle}` : ""}`;
   if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "fitted") {

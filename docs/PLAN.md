@@ -1331,7 +1331,7 @@ undone ("Deleted Fe Kα · ⌘/Ctrl Z to undo"), and undoing says what came back
 - `state/undo.ts`, `deleteRois` / `deleteLine` / `deleteBox`; tests in
   `tests/test_undo.py`.
 
-### 4.20 Saving an analysis as a project (M18, planned)
+### 4.20 Saving an analysis as a project (M18)
 
 An analysis (the dataset tree, how each result was made, and what the views
 showed) saved as one HDF5 project file that the app reopens and that HyperSpy
@@ -1418,12 +1418,70 @@ leaves the source as it is and adds the result under it (`origin` e.g.
 node of the tree, saved and deleted like the others. The default is in place
 (as now); the choice is remembered per operation.
 
+**Save and open (M18b, done).** *Save analysis…* (⇧⌘S) and *Open
+analysis…* (⇧⌘O) in the toolbar, through the file browser (a name to save
+as; an existing file asks to be replaced; opening closes what is open).
+`POST /api/project/save {path, views, overwrite}` and `POST
+/api/project/open {path}` (`si_viewer/project.py`). The project is a `.hspy`
+(HDF5; `hs.load` gives the stored results): raw files referenced (absolute
+path, path relative to the project, fingerprint: size, mtime, SHA-1 of the
+first MB); every dataset's settings and `ops` (with a global `seq`) as JSON
+in the `si_viewer` group, with the views (the frontend stores' state about
+the open data). Opening opens the raw files again with their saved ids,
+replays the operations in order, puts the settings back and loads the
+stored datasets.
+
+Deviation from the plan: every dataset not loaded from a raw file (maps,
+fits, background-removed spectra, LineScans, copies, …) is stored as an
+array rather than rebuilt from its recipe (its settings are saved with it);
+so is the frame range an in-situ series showed. Opening is all or nothing:
+raw data not found (next to the project, then where it was) is an error
+before anything is closed; a changed fingerprint is a warning. Not yet:
+saving and opening as jobs (with progress), per-pixel fit models, the
+LineScan exploded view's energy marks (component state).
+
+**Include results (M18c, done).** The save dialog chooses *Link raw data*
+or *Include results*, each with the size it would store (before
+compression; `GET /api/project/estimate`). Include results also stores the
+datasets loaded from raw files as they are now (an aligned stack: as loaded
+and aligned; an in-situ series: the frame or range shown, never the
+series). Opening: a stored file whose raw data can't be found, or whose
+fingerprint changed, is opened from the stored data (`raw_missing`, tagged
+"no raw data" in the tree, with a warning); it can be worked on, and its data
+is stored again at any level. Its in-situ series becomes a plain spectrum
+image (no frames to browse). Not done: ticking which datasets to store.
+
+**Include raw data and Locate (M18d, done).** A third level, *Include raw
+data*, embeds each raw file's bytes (`si_viewer/raw/<file id>`); in-situ
+series are never embedded (their frames are separate files): their results
+are stored instead. Opening prefers the raw file on disk when it is
+unchanged, else the embedded copy (written to a cache folder in the system's
+temporary folder, reused while it is there; the file is tagged "embedded"),
+else the stored data. A file opened from its embedded copy keeps its
+original path as its reference and is embedded again whenever it is saved.
+Raw files that are neither found, embedded nor stored are asked for before
+anything opens (`POST /api/project/check`): the file browser shows *Locate
+<name>*, the file picked is used (`locations`, file id -> path), and the
+others are also looked for in its folder.
+
+**One workspace per analysis.** Save analysis saves the workspace shown
+(an experiment, or a file with the files linked to it; the only one if
+nothing is shown), with the files its datasets are linked to or made from
+(`file_ids` on save and estimate); the views saved are that workspace's.
+The name offered is "<workspace> analysis.hspy". Opening adds the analysis
+next to what is open and shows it (per-dataset view state merged in); it is
+refused while any of its files is open ("… is already open: close it
+first").
+
+Not done (set aside): ticking which datasets to store; autosave and export
+as a folder of `.hspy` files (later).
+
 **Phases.**
 1. M18a: in place / new dataset; operations recorded as structured data.
 2. M18b: save and open: referenced raw data, recipes, the operation log, the
    views; HyperSpy-readable groups.
-3. M18c: stored arrays for slow or unrebuildable results; fingerprint checks
-   and the changed-data warning.
+3. M18c: the "Include results" level (opening without the raw data);
+   fingerprint checks and the changed-data warning.
 4. M18d: embedding raw data; the *Locate…* dialog.
 5. Later: autosave / recovery; export as a folder of `.hspy` files.
 
@@ -1462,7 +1520,7 @@ node of the tree, saved and deleted like the others. The default is in place
 | M15 | Grid panels arranged by hand: drag by the top edge into a row or a new row; PNG export follows | Done |
 | M16 | One workspace per loaded dataset: entering one brings back what it showed | Done |
 | M17 | Undo a deletion (⌘/Ctrl Z): datasets, regions, line profiles, FFT boxes | Done |
-| M18 | Save and open an analysis (HDF5 project, HyperSpy-readable): in place / new dataset for operations (M18a), save and open (M18b), stored arrays and checks (M18c), embedding and relinking (M18d) | In progress (M18a done) |
+| M18 | Save and open an analysis (HDF5 project, HyperSpy-readable): in place / new dataset for operations (M18a), save and open (M18b), stored arrays and checks (M18c), embedding and relinking (M18d) | Done (choosing which datasets to store set aside) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

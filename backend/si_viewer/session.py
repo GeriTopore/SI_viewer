@@ -107,6 +107,21 @@ def _defined(value) -> str:
     return value if isinstance(value, str) and value != "None" else ""
 
 
+def _set_microscope(signal, params: dict) -> None:
+    """exSpy's ``set_microscope_parameters`` (or the same metadata keys for a
+    signal that isn't an EELS spectrum yet)."""
+    if hasattr(signal, "set_microscope_parameters"):
+        signal.set_microscope_parameters(**params)
+        return
+    paths = {
+        "beam_energy": "Acquisition_instrument.TEM.beam_energy",
+        "convergence_angle": "Acquisition_instrument.TEM.convergence_angle",
+        "collection_angle": "Acquisition_instrument.TEM.Detector.EELS.collection_angle",
+    }
+    for k, v in params.items():
+        signal.metadata.set_item(paths[k], v)
+
+
 def si_cube(ds: "Dataset"):
     """A spectrum image's data as (height, width, channels). A line scan has
     one row: (1, positions, channels). A view of the loaded data, not a copy."""
@@ -221,6 +236,9 @@ class Dataset:
     # "window": [lo, hi] (energies), "channels": [c0, c1), "poisson",
     # "components", "explained": [...], and "n" for a denoised SI}.
     pca: dict | None = None
+    # Microscope parameters the user set (EELS: "beam_energy" kV,
+    # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
+    microscope: dict | None = None
     thumbnails: dict[int, bytes] = field(default_factory=dict, repr=False)
     # Derived arrays (projections, sum spectra, …) keyed by name.
     cache: dict[str, object] = field(default_factory=dict, repr=False)
@@ -307,10 +325,27 @@ class Dataset:
         if not signal.metadata.get_item("Sample.elements", None):
             set_elements(signal, list(elements))
 
+    def set_microscope(self, **params: float | None) -> None:
+        """Set EELS microscope parameters (beam_energy kV, convergence_angle
+        and collection_angle mrad; None leaves one as it is) with exSpy's
+        ``set_microscope_parameters``, on every version of the data."""
+        params = {k: float(v) for k, v in params.items() if v is not None}
+        for k, v in params.items():
+            if k not in ("beam_energy", "convergence_angle", "collection_angle"):
+                raise ValueError(f"Unknown microscope parameter {k}")
+            if not (v > 0 and v < 1e4):
+                raise ValueError(f"The {k.replace('_', ' ')} must be a positive number")
+        self.microscope = {**(self.microscope or {}), **params}
+        for s in (self.signal, self.original_signal, self.aligned_signal):
+            if s is not None:
+                _set_microscope(s, self.microscope)
+
     def replace_signal(self, signal) -> None:
         """Swap in recomputed data (new revision, caches cleared)."""
         if self.custom_title:
             signal.metadata.General.title = self.custom_title
+        if self.microscope:
+            _set_microscope(signal, self.microscope)
         self._keep_eels_elements(signal)
         self.signal = signal
         self.revision += 1
@@ -333,7 +368,7 @@ class Dataset:
 
     def summary(self) -> dict:
         from .processing.element_maps import MapOptions
-        from .processing.eels import eels_info
+        from .processing.eels import eels_info, microscope_info
         from .processing.eels_model import edges_info
         from .processing.technique import technique_of
         from .processing.xray import eds_info
@@ -351,6 +386,7 @@ class Dataset:
             "technique_source": self.technique_source if is_spectrum else None,
             "eels": eels_info(self),
             "edges": edges_info(s) if technique == "EELS" else None,
+            "microscope": microscope_info(s) if technique == "EELS" else None,
             # Images of a segmented detector: the segments summed (from the
             # acquisition record), e.g. {"name": "DFS", "segments": [0, 4], ...}.
             "detector": _detector_info(self.loaded_signal),

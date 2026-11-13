@@ -121,6 +121,24 @@ def rename_dataset(dataset_id: str, body: TitleBody, request: Request) -> dict:
     return ds.summary()
 
 
+class MicroscopeBody(BaseModel):
+    beam_energy: float | None = None
+    convergence_angle: float | None = None
+    collection_angle: float | None = None
+
+
+@router.patch("/{dataset_id}/microscope")
+def set_microscope(dataset_id: str, body: MicroscopeBody, request: Request) -> dict:
+    """Set an EELS dataset's beam energy (kV), convergence and collection
+    angles (mrad), as its quantification needs."""
+    ds = _dataset(request, dataset_id)
+    try:
+        ds.set_microscope(**body.model_dump())
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return ds.summary()
+
+
 @router.get("/{dataset_id}/thumbnail")
 def get_thumbnail(dataset_id: str, request: Request, size: int = 256) -> Response:
     dataset = _dataset(request, dataset_id)

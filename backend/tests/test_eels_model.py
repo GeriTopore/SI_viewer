@@ -289,3 +289,25 @@ def test_atomic_percent_maps():
     at = M.atomic_percent_maps({"A": np.array([1.0, -2.0, 0.0, np.nan]), "B": np.array([3.0, 4.0, 0.0, 2.0])})
     assert np.allclose(at["A"][:2], [25, 0]) and np.allclose(at["B"][[0, 1, 3]], [75, 100, 100])
     assert np.isnan(at["A"][2]) and np.isnan(at["B"][2])
+
+
+def test_microscope_parameters_set_in_the_info_tab(client, eels_cuzn, tmp_path):
+    """Parameters missing from the file are set (with exSpy) and then fit;
+    they are kept with a saved analysis."""
+    ds = _elements(client, _si(_open(client, eels_cuzn)), ["Cu"])
+    session = client.app.state.session
+    signal = session.get_dataset(ds["id"]).signal
+    del signal.metadata.Acquisition_instrument.TEM.convergence_angle
+    assert client.get(f"/api/datasets/{ds['id']}").json()["microscope"]["convergence_angle"] is None
+    assert _fit(client, ds, **HYDROGENIC).status_code == 422
+    assert client.patch(f"/api/datasets/{ds['id']}/microscope", json={"convergence_angle": -1}).status_code == 422
+    r = client.patch(f"/api/datasets/{ds['id']}/microscope", json={"convergence_angle": 21.5})
+    assert r.status_code == 200 and r.json()["microscope"]["convergence_angle"] == 21.5
+    assert r.json()["microscope"]["beam_energy"]  # the others left as they were
+    assert _fit(client, ds, **HYDROGENIC).status_code == 200
+
+    saved = client.post("/api/project/save", json={"path": str(tmp_path / "a.hspy"), "views": {}}).json()["path"]
+    other = TestClient(create_app())
+    assert other.post("/api/project/open", json={"path": saved}).status_code == 200
+    again = other.app.state.session.get_dataset(ds["id"]).signal
+    assert again.metadata.Acquisition_instrument.TEM.convergence_angle == 21.5

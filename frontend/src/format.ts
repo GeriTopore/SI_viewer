@@ -53,7 +53,7 @@ export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
 
 export function kindLabel(d: DatasetSummary): string {
   if (isWindowMap(d)) return "Window";
-  if (d.origin === "pca") return d.pca?.name ?? "PCA";
+  if (d.origin === "pca") return "Decomp";
   if (d.origin === "pca-factors") return "Factors";
   if (d.dpc?.output === "colour") return "DPC";
   if (d.dpc?.output === "idpc") return "iDPC";

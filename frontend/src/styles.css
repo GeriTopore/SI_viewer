@@ -5320,3 +5320,20 @@ kbd {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+
+/* Info tab, EELS: the microscope settings row and its dialog. */
+.microscope-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+}
+.field-warning {
+  color: var(--danger, #e5484d);
+}
+.microscope-dialog {
+  width: min(380px, calc(100vw - 32px));
+}
+.microscope-dialog .axes td:nth-child(2) {
+  width: 40%;
+}

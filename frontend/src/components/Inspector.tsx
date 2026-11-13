@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { api, type DatasetSummary, type EelsRole, type Technique } from "../api/client";
+import { api, type DatasetSummary, type EelsRole, type MicroscopeInfo, type Technique } from "../api/client";
 import { useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { EditableTitle } from "./RenameInput";
+import { ALGORITHMS, algorithmOf } from "../state/pca";
 import { RegionInfo, useSelectedRegion } from "./RegionInfo";
 import { ExportDialog } from "./ExportDialog";
 import { bytesLabel, filterLabel, formatValue, hasTechnique, isLineScan, isThickness, isZlpShift, kindLabel, shapeLabel } from "../format";
@@ -27,8 +28,17 @@ export function Inspector() {
             ? d.kind === "spectrum" ? "Thickness profile" : "Thickness map"
             : isZlpShift(d)
               ? d.kind === "spectrum" ? "ZLP shift profile" : "ZLP shift map"
-              : isLineScan(d) ? "LineScan" : d.kind === "spectrum_image" ? "Spectrum image" : d.kind === "spectrum" ? "Spectrum" : kindLabel(d)}
+              : d.origin === "pca" ? "Decomposition"
+                : isLineScan(d) ? "LineScan" : d.kind === "spectrum_image" ? "Spectrum image" : d.kind === "spectrum" ? "Spectrum" : kindLabel(d)}
         </dd>
+        {d.origin === "pca" && d.pca && (
+          <>
+            <dt>Method</dt>
+            <dd title={`HyperSpy decomposition algorithm "${algorithmOf(d)}"`}>
+              {ALGORITHMS.find((a) => a.id === algorithmOf(d))?.label.replace(" (slow)", "") ?? algorithmOf(d)}
+            </dd>
+          </>
+        )}
         {hasTechnique(d) && (
           <>
             <dt>Signal</dt>
@@ -63,6 +73,14 @@ export function Inspector() {
           {d.dtype}, {bytesLabel(d.nbytes)}
           <span className="muted"> · {d.lazy ? "on disk" : "in memory"}</span>
         </dd>
+        {d.microscope && (
+          <>
+            <dt>Microscope</dt>
+            <dd>
+              <MicroscopeRow key={d.id} d={d} />
+            </dd>
+          </>
+        )}
         {d.rebinned.length > 0 && (
           <>
             <dt>Rebinned</dt>
@@ -87,6 +105,120 @@ export function Inspector() {
       {d.insitu?.view && <SeriesInfo d={d} />}
       <AxesTable key={d.id} d={d} />
       <SaveButtons d={d} />
+    </div>
+  );
+}
+
+const MICROSCOPE: [keyof MicroscopeInfo, string, string][] = [
+  ["beam_energy", "Beam energy", "kV"],
+  ["convergence_angle", "Convergence angle", "mrad"],
+  ["collection_angle", "Collection angle", "mrad"],
+];
+
+/** EELS: the microscope parameters its quantification needs, in short
+ * ("200 kV · α 25 · β 50 mrad"), and "Edit…" opening a dialog to set them. */
+function MicroscopeRow({ d }: { d: DatasetSummary }) {
+  const m = d.microscope!;
+  const [editing, setEditing] = useState(false);
+  const v = (x: number | null) => (x === null ? "?" : formatValue(x));
+  const missing = MICROSCOPE.filter(([k]) => m[k] === null).map(([, label]) => label.toLowerCase());
+  return (
+    <span className="microscope-row">
+      {missing.length === 3 ? (
+        <span className="field-warning">Not set</span>
+      ) : (
+        <span className={missing.length ? "field-warning" : undefined} title={missing.length ? `Missing: ${missing.join(", ")}` : undefined}>
+          {v(m.beam_energy)} kV · α {v(m.convergence_angle)} · β {v(m.collection_angle)} mrad
+        </span>
+      )}
+      <button className="link-button" onClick={() => setEditing(true)} title="Set the beam energy and the convergence and collection angles">
+        Edit…
+      </button>
+      {editing && <MicroscopeDialog d={d} onClose={() => setEditing(false)} />}
+    </span>
+  );
+}
+
+/** Set an EELS dataset's beam energy and convergence and collection angles. */
+function MicroscopeDialog({ d, onClose }: { d: DatasetSummary; onClose: () => void }) {
+  const m = d.microscope!;
+  const [draft, setDraft] = useState(() =>
+    Object.fromEntries(MICROSCOPE.map(([k]) => [k, m[k] === null ? "" : String(m[k])])) as Record<keyof MicroscopeInfo, string>,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    const params: Partial<MicroscopeInfo> = {};
+    for (const [k, label] of MICROSCOPE) {
+      const t = draft[k].trim();
+      if (t === "") continue;
+      const x = Number(t);
+      if (!Number.isFinite(x) || x <= 0) return setError(`The ${label.toLowerCase()} must be a positive number`);
+      if (x !== m[k]) params[k] = x;
+    }
+    if (!Object.keys(params).length) return onClose();
+    setBusy(true);
+    try {
+      useDatasets.getState().updateDataset(await api.setMicroscope(d.id, params));
+      onClose();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !busy && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onClose]);
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !busy && onClose()}>
+      <div className="modal rebin-dialog microscope-dialog" role="dialog" aria-label={`Microscope settings of ${d.title}`}>
+        <h2>Microscope settings</h2>
+        <p className="muted small rebin-subtitle">{d.title}</p>
+        <table className="axes">
+          <thead>
+            <tr>
+              <th>Parameter</th>
+              <th>Value</th>
+              <th>Units</th>
+            </tr>
+          </thead>
+          <tbody>
+            {MICROSCOPE.map(([k, label, units], i) => (
+              <tr key={k}>
+                <td>{label}</td>
+                <td>
+                  <input
+                    className="cell-input"
+                    autoFocus={i === 0}
+                    inputMode="decimal"
+                    value={draft[k]}
+                    placeholder="not set"
+                    aria-label={label}
+                    onChange={(e) => setDraft((x) => ({ ...x, [k]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      e.stopPropagation();
+                      if (e.key === "Enter") void save();
+                      else if (e.key === "Escape") onClose();
+                    }}
+                  />
+                </td>
+                <td>{units}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {error && <p className="field-error">{error}</p>}
+        <div className="rebin-actions">
+          <button className="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="primary" onClick={save} disabled={busy}>
+            Save
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

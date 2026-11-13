@@ -54,7 +54,7 @@ FIELDS = (
     "id", "file_id", "is_element_map", "origin", "element", "parent_id", "window", "background",
     "thickness", "deconvolution", "quantity", "source_frame", "map_options", "rebinned", "zlp_aligned",
     "ops", "copied_at", "filters", "alignment", "technique_source", "eels_role", "eels_role_source",
-    "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca",
+    "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope",
 )
 # Bytes of a raw file hashed for its fingerprint.
 FINGERPRINT_BYTES = 1 << 20
@@ -541,6 +541,8 @@ def open_project(
                 setattr(ds, k, rec[k])
         if rec.get("custom_title"):
             ds.signal.metadata.General.title = rec["custom_title"]
+        if rec.get("microscope"):
+            ds.set_microscope(**rec["microscope"])
         if rec.get("filters"):
             ds.filter_rev += 1
         if ds.insitu is not None and rec.get("insitu"):

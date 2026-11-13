@@ -87,6 +87,13 @@ export interface EelsInfo {
   collection_angle: number | null;
 }
 
+/** EELS microscope parameters: beam energy (kV), convergence and collection angles (mrad). */
+export interface MicroscopeInfo {
+  beam_energy: number | null;
+  convergence_angle: number | null;
+  collection_angle: number | null;
+}
+
 /** An ionisation edge of an element inside a spectrum's energy range. */
 export interface EelsSubshell {
   /** e.g. "Mn_L3". */
@@ -198,6 +205,8 @@ export interface DatasetSummary {
   eels: EelsInfo | null;
   /** EELS spectra and spectrum images only. */
   edges: EdgesInfo | null;
+  /** EELS: the microscope parameters its quantification needs (null: not in the metadata). */
+  microscope: MicroscopeInfo | null;
   /** Images of a segmented detector: the segments summed into it, as
    * recorded at acquisition (Velox), e.g. DFS 0 and 4; null otherwise. */
   detector: DetectorInfo | null;
@@ -1010,6 +1019,8 @@ export const api = {
     }),
   /** Say by hand that a spectrum image is a low or core loss; every changed file comes back. */
   /** Give a dataset a name of the user's (kept when its data is recomputed). */
+  setMicroscope: (id: string, params: Partial<MicroscopeInfo>) =>
+    request<DatasetSummary>(`/api/datasets/${id}/microscope`, { method: "PATCH", body: JSON.stringify(params) }),
   rename: (id: string, title: string) =>
     request<DatasetSummary>(`/api/datasets/${id}/title`, { method: "PUT", body: JSON.stringify({ title }) }),
   setEelsRole: (id: string, role: EelsRole) =>

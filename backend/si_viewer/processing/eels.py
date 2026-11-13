@@ -95,6 +95,17 @@ def eels_info(ds) -> dict | None:
     }
 
 
+def microscope_info(signal) -> dict:
+    """The microscope parameters an EELS quantification needs (None where
+    the metadata has none): beam energy (kV), convergence and collection
+    angles (mrad)."""
+    return {
+        "beam_energy": _number(signal, "Acquisition_instrument.TEM.beam_energy"),
+        "convergence_angle": _number(signal, "Acquisition_instrument.TEM.convergence_angle"),
+        "collection_angle": _number(signal, "Acquisition_instrument.TEM.Detector.EELS.collection_angle"),
+    }
+
+
 # ---------- compatibility ----------
 
 

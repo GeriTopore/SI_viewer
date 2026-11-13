@@ -1,5 +1,5 @@
 import type { StoreApi, UseBoundStore } from "zustand";
-import { api, type SaveLevel } from "../api/client";
+import { api, type JobSummary, type SaveLevel } from "../api/client";
 import { useBackground } from "./background";
 import { layoutPane, paneFiles, useDatasets, workspaceOf } from "./datasets";
 import { useDeconvolution } from "./deconvolution";
@@ -103,11 +103,32 @@ export async function saveAnalysis(
 /** Open the analysis at ``path`` next to what is open, and show it. Throws
  * if it can't (nothing is opened then). */
 export async function openAnalysis(path: string, locations: Record<string, string> = {}): Promise<void> {
-  const { files, file_ids, views, warnings } = await api.openProject(path, locations);
+  const { files, file_ids, views, warnings, job } = await api.openProject(path, locations);
   const store = useDatasets.getState();
   store.adoptFiles(files);
   if (file_ids[0]) store.enterWorkspace(file_ids[0]);
   restoreViews(views);
   const name = path.split("/").pop();
-  useLayers.getState().notify(warnings.length ? `Opened ${name} · ${warnings.join(" · ")}` : `Opened ${name}`);
+  const layers = useLayers.getState();
+  layers.notify(warnings.length ? `Opened ${name} · ${warnings.join(" · ")}` : `Opened ${name}`);
+  if (job) void finishOpening(job, `Loading ${name}`);
+}
+
+/** Follow the job that redoes an opened analysis's drift corrections, with
+ * a progress bar, and show the aligned stacks when it is done. */
+async function finishOpening(job: JobSummary, label: string): Promise<void> {
+  const { setProgress, notify } = useLayers.getState();
+  setProgress({ label, fraction: job.progress });
+  while (job.status === "queued" || job.status === "running") {
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      job = await api.getJob(job.id);
+      setProgress({ label: job.message ? `${label} · ${job.message}` : label, fraction: job.progress });
+    } catch {
+      /* backend busy or restarted: try again */
+    }
+  }
+  setProgress(null);
+  if (job.status === "done") (job.result?.files ?? []).forEach((f) => useDatasets.getState().replaceFile(f));
+  else if (job.status === "failed") notify(`Could not redo the drift corrections: ${job.error}`);
 }

@@ -22,6 +22,10 @@ export interface LayerData {
   width: number;
   height: number;
   bin: number;
+  /** Brightness of each pixel (same size as ``data``): the colour is scaled
+   * by it, 0 at 0 and full at ``shadeHi`` (e.g. a DPC image's magnitude). */
+  shade?: Float32Array;
+  shadeHi?: number;
 }
 
 export interface LayerDraw {
@@ -44,6 +48,9 @@ precision highp float;
 precision highp sampler2D;
 uniform sampler2D u_data;
 uniform sampler2D u_lut;
+uniform sampler2D u_shade;
+uniform bool u_shaded;
+uniform float u_shadeHi;
 uniform vec2 u_canvas;
 uniform vec2 u_center;
 uniform float u_zoom;
@@ -69,6 +76,7 @@ void main() {
   int n = int(clamp(ceil(fp), 1.0, 4.0));
   float sum = 0.0;
   float cnt = 0.0;
+  float shade = 0.0;
   for (int i = 0; i < 4; i++) {
     if (i >= n) break;
     for (int j = 0; j < 4; j++) {
@@ -76,18 +84,23 @@ void main() {
       vec2 s = t + ((vec2(float(i), float(j)) + 0.5) / float(n) - 0.5) * fp;
       ivec2 p = clamp(ivec2(floor(s)), ivec2(0), u_texSize - 1);
       float v = texelFetch(u_data, p, 0).r;
-      if (!isnan(v) && !isinf(v)) { sum += v; cnt += 1.0; }
+      if (!isnan(v) && !isinf(v)) {
+        sum += v;
+        cnt += 1.0;
+        if (u_shaded) shade += texelFetch(u_shade, p, 0).r;
+      }
     }
   }
   if (cnt == 0.0) { outColor = u_first ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(0.0); return; }
   float x = clamp((sum / cnt - u_lo) / max(u_hi - u_lo, 1e-30), 0.0, 1.0);
   x = pow(x, u_gamma);
   vec3 c = texture(u_lut, vec2(x * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+  if (u_shaded) c *= clamp(shade / cnt / max(u_shadeHi, 1e-30), 0.0, 1.0);
   outColor = vec4(c * u_opacity, 1.0);
 }`;
 
 const UNIFORMS = [
-  "u_data", "u_lut", "u_canvas", "u_center", "u_zoom", "u_bin", "u_texSize",
+  "u_data", "u_lut", "u_shade", "u_shaded", "u_shadeHi", "u_canvas", "u_center", "u_zoom", "u_bin", "u_texSize",
   "u_lo", "u_hi", "u_gamma", "u_opacity", "u_first", "u_bg",
 ] as const;
 
@@ -95,6 +108,8 @@ export const VIEWPORT_BG = [0.06, 0.067, 0.082, 1] as const;
 
 interface LayerTexture {
   tex: WebGLTexture;
+  /** The brightness, if the layer has one. */
+  shade: WebGLTexture | null;
   source: LayerData;
 }
 
@@ -128,6 +143,7 @@ export class ImageRenderer {
     for (const [key, l] of this.layers) {
       if (!keep.has(key)) {
         gl.deleteTexture(l.tex);
+        if (l.shade) gl.deleteTexture(l.shade);
         this.layers.delete(key);
       }
     }
@@ -135,13 +151,21 @@ export class ImageRenderer {
       let entry = this.layers.get(key);
       if (entry?.source === data) continue;
       if (!entry) {
-        entry = { tex: makeTexture(gl, gl.NEAREST), source: data };
+        entry = { tex: makeTexture(gl, gl.NEAREST), shade: null, source: data };
         this.layers.set(key, entry);
       }
       entry.source = data;
       gl.bindTexture(gl.TEXTURE_2D, entry.tex);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, data.width, data.height, 0, gl.RED, gl.FLOAT, data.data);
+      if (data.shade) {
+        entry.shade ??= makeTexture(gl, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_2D, entry.shade);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, data.width, data.height, 0, gl.RED, gl.FLOAT, data.shade);
+      } else if (entry.shade) {
+        gl.deleteTexture(entry.shade);
+        entry.shade = null;
+      }
     }
   }
 
@@ -171,6 +195,7 @@ export class ImageRenderer {
     gl.uniform4f(loc.u_bg, ...VIEWPORT_BG);
     gl.uniform1i(loc.u_data, 0);
     gl.uniform1i(loc.u_lut, 1);
+    gl.uniform1i(loc.u_shade, 2);
 
     let first = true;
     for (const layer of layers) {
@@ -181,6 +206,12 @@ export class ImageRenderer {
       gl.bindTexture(gl.TEXTURE_2D, entry.tex);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, this.lut(layer.display.colormap));
+      gl.uniform1i(loc.u_shaded, entry.shade ? 1 : 0);
+      if (entry.shade) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, entry.shade);
+        gl.uniform1f(loc.u_shadeHi, source.shadeHi ?? 1);
+      }
       gl.uniform1f(loc.u_bin, source.bin);
       gl.uniform2i(loc.u_texSize, source.width, source.height);
       gl.uniform1f(loc.u_lo, layer.display.lo);
@@ -201,7 +232,10 @@ export class ImageRenderer {
 
   dispose() {
     const gl = this.gl;
-    for (const l of this.layers.values()) gl.deleteTexture(l.tex);
+    for (const l of this.layers.values()) {
+      gl.deleteTexture(l.tex);
+      if (l.shade) gl.deleteTexture(l.shade);
+    }
     for (const t of this.luts.values()) gl.deleteTexture(t);
     gl.deleteProgram(this.program);
     gl.getExtension("WEBGL_lose_context")?.loseContext();

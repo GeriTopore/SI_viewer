@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "rea
 import type { Frame } from "../api/arrays";
 import { contrastVersion, type DatasetSummary } from "../api/client";
 import { allDatasets, initialColormap, planeSize, setMapColour, useDatasets } from "../state/datasets";
-import { DEFAULT_COLORMAP, useDisplay } from "../state/display";
+import { useDisplay } from "../state/display";
 import { DEFAULT_LAYER, baseLayerKey, useLayers } from "../state/layers";
 import { useViewerImage } from "../state/viewerImage";
-import { isColour, swatchBackground } from "../viewer/colormaps";
+import { isColour } from "../viewer/colormaps";
 import type { DisplayParams } from "../viewer/renderer";
 import { imageGeometry, type ImageGeometry } from "../views/geometry";
 import { autoContrast, useImageDisplay } from "../views/useImageDisplay";
@@ -51,6 +51,8 @@ export interface BaseImage {
   dataset?: DatasetSummary;
   /** Version of the data in ``frame``: contrast is redone when it changes. */
   version?: string;
+  /** The colormap it starts with (e.g. a DPC stack's circular one). */
+  colormap?: () => string;
 }
 
 interface Props {
@@ -59,6 +61,10 @@ interface Props {
   base: BaseImage | null;
   /** Highlighted image datasets, drawn on top of the base in colour. */
   images: DatasetSummary[];
+  /** Other stacks shown with the base, at the same frame (their frames come
+   * from the view): a layer each, before the images, with the contrast kept
+   * under ``displayKey``. */
+  stacks?: StackLayer[];
   geometry: ImageGeometry;
   loading?: string | null;
   error?: string | null;
@@ -103,13 +109,41 @@ interface Props {
   scanFactor?: number;
 }
 
+/** A stack shown next to the base stack (see ``stacks``), or one frame of a
+ * stack shown as a panel of its own (several from one dataset, each with its
+ * own ``key``, e.g. a PCA's components). */
+export interface StackLayer {
+  dataset: DatasetSummary;
+  /** Layer key (default: the dataset's id). */
+  key?: string;
+  /** Panel label (default: the dataset's title). */
+  label?: string;
+  displayKey: string;
+  frame: Frame | null;
+  /** Contrast is redone when this changes (not for the next frame). */
+  version?: string;
+  /** Its panel can be closed (deselecting the dataset); default true. */
+  removable?: boolean;
+}
+
+/** One layer of the view besides the base: a stack's frame or a map. */
+interface Entry {
+  key: string;
+  dataset: DatasetSummary;
+  label: string;
+  frame: Frame | null;
+  displayKey: string;
+  stack: boolean;
+  removable: boolean;
+}
+
 const BASE = "base";
 /** Key of the base layer in ``requestActive`` / ``onActiveChange``. */
 export const BASE_LAYER = BASE;
 
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
-  viewKey, base, images, geometry, loading, error, children, empty, interaction, renderOverlay,
+  viewKey, base, images: maps, stacks = [], geometry, loading, error, children, empty, interaction, renderOverlay,
   lineTool, fftTool, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
   scanFactor = 1,
 }: Props) {
@@ -121,23 +155,42 @@ export function LayeredViewer({
   const layerProps = useLayers((s) => s.props);
   const setProps = useLayers((s) => s.setProps);
 
-  const frames = useOverlayFrames(images);
+  const overlayFrames = useOverlayFrames(maps);
+  // The stacks come first (their frames are given), then the maps.
+  const entries: Entry[] = [
+    ...stacks.map((s) => ({
+      key: s.key ?? s.dataset.id, dataset: s.dataset, label: s.label ?? s.dataset.title, frame: s.frame,
+      displayKey: s.displayKey, stack: true, removable: s.removable ?? true,
+    })),
+    ...maps.map((d) => ({
+      key: d.id, dataset: d, label: d.title, frame: overlayFrames[d.id] ?? null, displayKey: d.id, stack: false,
+      removable: true,
+    })),
+  ];
+  const entryOf = (key: string) => entries.find((e) => e.key === key);
+  // The datasets shown (once each).
+  const images = [...new Map(entries.map((e) => [e.dataset.id, e.dataset])).values()];
+  const displayKeyOf = (key: string) => entryOf(key)?.displayKey ?? key;
+  const isStack = (key: string) => !!entryOf(key)?.stack;
   const baseDataset = base?.dataset;
   const baseDisplay = useImageDisplay(
     base?.key ?? `${viewKey}:none`,
     base?.frame ?? null,
-    baseDataset ? () => initialColormap(baseDataset) : undefined,
+    base?.colormap ?? (baseDataset ? () => initialColormap(baseDataset) : undefined),
     base?.version ?? (baseDataset && contrastVersion(baseDataset)),
   );
 
   // Each image gets auto contrast (and its element colour) once its data
   // arrives, and again when it's filtered.
   useEffect(() => {
-    for (const d of images) {
-      const f = frames[d.id];
+    for (const d of maps) {
+      const f = overlayFrames[d.id];
       if (f) autoContrast(d.id, f, contrastVersion(d), () => initialColormap(d));
     }
-  }, [frames, images]);
+    for (const s of stacks) {
+      if (s.frame) autoContrast(s.displayKey, s.frame, s.version ?? contrastVersion(s.dataset), () => initialColormap(s.dataset));
+    }
+  }); // every render: cheap, it only acts when a version changes
 
   const baseProps = layerProps[baseLayerKey(viewKey)] ?? DEFAULT_LAYER;
   // Survey images show where their spectrum image was taken.
@@ -148,12 +201,12 @@ export function LayeredViewer({
     ...(base
       ? [{ key: BASE, label: base.label, frame: base.frame, display: baseDisplay.display, ...baseProps }]
       : []),
-    ...images.map((d) => ({
-      key: d.id,
-      label: d.title,
-      frame: frames[d.id] ? stretch(frames[d.id], scanFactor) : null,
-      display: displays[d.id],
-      ...(layerProps[d.id] ?? DEFAULT_LAYER),
+    ...entries.map((e) => ({
+      key: e.key,
+      label: e.label,
+      frame: e.frame ? stretch(e.frame, scanFactor) : null,
+      display: displays[e.displayKey],
+      ...(layerProps[e.key] ?? DEFAULT_LAYER),
     })),
   ];
 
@@ -163,7 +216,7 @@ export function LayeredViewer({
   const gridPref = useUi((s) => (gridContext ? s.gridMode[gridContext] : null));
   const setGridMode = useUi((s) => s.setGridMode);
   const sizes = layers.map((l) => {
-    const d = l.key === BASE ? undefined : images.find((x) => x.id === l.key);
+    const d = l.key === BASE ? undefined : entryOf(l.key)?.dataset;
     if (!d) return { geometry, w: geometry.width, h: geometry.height };
     const [w0, h0] = planeSize(d);
     const [w, h] = [w0 * scanFactor, h0 * scanFactor]; // stretched over the base
@@ -175,7 +228,7 @@ export function LayeredViewer({
   const mode: GridMode = canSwitch
     ? !sameSize
       ? "grid"
-      : (gridPref ?? (gridContext === "images" ? "grid" : "merged"))
+      : (gridPref ?? (gridContext === "si" ? "merged" : "grid"))
     : "merged";
   const grid = mode === "grid";
   // Every layer gets a panel: switching to the grid shows any hidden ones again.
@@ -189,9 +242,9 @@ export function LayeredViewer({
 
   // The toolbar edits the focused image if it's in the view, else the base.
   const [active, setActive] = useState<string>(BASE);
-  const imageIds = images.map((d) => d.id).join(",");
+  const imageIds = entries.map((e) => e.key).join(",");
   useEffect(() => {
-    if (focusId && images.some((d) => d.id === focusId)) setActive(focusId);
+    if (focusId && entries.some((e) => e.key === focusId)) setActive(focusId);
   }, [focusId, imageIds]); // eslint-disable-line react-hooks/exhaustive-deps
   const activeLayer = layers.find((l) => l.key === active) ?? layers[0];
   // Tell the view which layer is edited (not on mount), and honour its requests.
@@ -207,20 +260,20 @@ export function LayeredViewer({
   useEffect(() => {
     if (!requestActive || !layerKeys.split(",").includes(requestActive.key)) return;
     setActive(requestActive.key);
-    if (requestActive.key !== BASE) setFocus(requestActive.key);
+    if (requestActive.key !== BASE) setFocus(entryOf(requestActive.key)?.dataset.id ?? requestActive.key);
   }, [requestActive]); // eslint-disable-line react-hooks/exhaustive-deps
   const activate = (key: string) => {
     setActive(key);
-    if (key !== BASE) setFocus(key);
+    if (key !== BASE) setFocus(entryOf(key)?.dataset.id ?? key);
     onActive.current?.(key);
   };
   const isBase = activeLayer?.key === BASE;
-  const activeDataset = isBase ? baseDataset : images.find((d) => d.id === activeLayer?.key);
+  const activeDataset = isBase ? baseDataset : activeLayer && entryOf(activeLayer.key)?.dataset;
 
   const onDisplayChange = (patch: Partial<DisplayParams>) => {
     if (!activeLayer) return;
-    const key = isBase ? base!.key : activeLayer.key;
-    if (activeDataset && patch.colormap && isColour(patch.colormap)) {
+    const key = isBase ? base!.key : displayKeyOf(activeLayer.key);
+    if (activeDataset && !isStack(activeLayer.key) && patch.colormap && isColour(patch.colormap)) {
       // A solid colour on an element map becomes that element's colour.
       setMapColour(activeDataset, patch.colormap);
       const rest = { ...patch };
@@ -306,7 +359,7 @@ export function LayeredViewer({
   ];
   if (tabs.length) {
     // The layer's own pixels (not stretched over the scan).
-    const own = isBase ? (base?.frame ?? null) : activeLayer ? (frames[activeLayer.key] ?? null) : null;
+    const own = isBase ? (base?.frame ?? null) : activeLayer ? (entryOf(activeLayer.key)?.frame ?? null) : null;
     tabs.push({
       id: "histogram" as const,
       label: "Histogram",
@@ -330,7 +383,7 @@ export function LayeredViewer({
   };
 
   // The layer list appears as soon as any map is shown.
-  const showPanel = images.length > 0;
+  const showPanel = entries.length > 0;
   const panel = showPanel ? (
     <LayersPanel
       layers={layers.map((l) => ({
@@ -339,17 +392,18 @@ export function LayeredViewer({
         visible: l.visible,
         opacity: l.opacity,
         display: l.display,
-        removable: l.key !== BASE,
+        removable: l.key !== BASE && (entryOf(l.key)?.removable ?? true),
       }))}
       active={activeLayer?.key ?? BASE}
       onActivate={activate}
       onChange={(id, patch) => setProps(id === BASE ? baseLayerKey(viewKey) : id, patch)}
       onColour={(id, colour) => {
-        const d = id === BASE ? baseDataset : images.find((x) => x.id === id);
-        if (d) setMapColour(d, colour);
+        const d = id === BASE ? baseDataset : entryOf(id)?.dataset;
+        if (d && isStack(id)) setDisplay(displayKeyOf(id), { colormap: colour });
+        else if (d) setMapColour(d, colour);
         else baseDisplay.setDisplay({ colormap: colour });
       }}
-      onRemove={(id) => id !== BASE && deselect(id)}
+      onRemove={(id) => id !== BASE && (entryOf(id)?.removable ?? true) && deselect(entryOf(id)?.dataset.id ?? id)}
       opacity={!grid}
     />
   ) : null;
@@ -373,21 +427,20 @@ export function LayeredViewer({
         <div className="layer-toolbar">
           {lineTool === undefined && (
             <div className="segmented tool-buttons" role="group" aria-label="Image tool">
-              {(["pan", "line", "fft"] as const).map((t) => (
+              {/* A tool is switched on and off; with none on, dragging pans. */}
+              {(["line", "fft"] as const).map((t) => (
                 <button
                   key={t}
                   className={imageTool === t ? "active" : undefined}
                   aria-pressed={imageTool === t}
-                  onClick={() => setImageTool(t)}
+                  onClick={() => setImageTool(imageTool === t ? "pan" : t)}
                   title={
-                    t === "pan"
-                      ? "Pan (or hold Space / middle-drag with any tool)"
-                      : t === "line"
-                        ? "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it"
-                        : FFT_TOOL_TITLE
+                    (t === "line"
+                      ? "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it"
+                      : FFT_TOOL_TITLE) + " · click again to pan"
                   }
                 >
-                  {t === "pan" ? "✋" : t === "line" ? "╱" : "FFT"}
+                  {t === "line" ? "╱" : "FFT"}
                 </button>
               ))}
             </div>
@@ -416,15 +469,6 @@ export function LayeredViewer({
             </div>
           )}
           <FitQuantitySwitch ds={baseDataset ? [baseDataset, ...images] : images} />
-          {showPanel && activeLayer && (
-            <span className="editing-chip" title="Layer being edited (pick another in the Layers panel)">
-              <span
-                className="editing-swatch"
-                style={{ background: swatchBackground(activeLayer.display?.colormap ?? DEFAULT_COLORMAP) }}
-              />
-              {activeLayer.label}
-            </span>
-          )}
           <ContrastControls
             frame={activeLayer?.frame ?? null}
             display={activeLayer?.display}
@@ -468,7 +512,9 @@ export function LayeredViewer({
                   )}
                 </>
               )}
-              onRemove={(key) => (key === BASE ? null : () => deselect(key))}
+              onRemove={(key) =>
+                key === BASE || !(entryOf(key)?.removable ?? true) ? null : () => deselect(entryOf(key)?.dataset.id ?? key)
+              }
               empty="No images to show"
               scanFactor={scanFactor}
             />

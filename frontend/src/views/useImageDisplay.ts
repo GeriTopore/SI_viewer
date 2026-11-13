@@ -15,7 +15,8 @@ export function autoContrast(key: string, frame: Frame, version = "", colormap?:
   const seen = contrastedFor.get(key);
   contrastedFor.set(key, version);
   if (display[key] && (seen === undefined || seen === version)) return;
-  const [lo, hi] = autoRange(sortedSample(frame.data));
+  // A direction drawn with its magnitude as brightness (DPC): the whole circle.
+  const [lo, hi] = frame.shade ? [-180, 180] : autoRange(sortedSample(frame.data));
   if (display[key]) setDisplay(key, { lo, hi });
   else initDisplay(key, { lo, hi, gamma: 1, colormap: colormap?.() ?? DEFAULT_COLORMAP });
 }

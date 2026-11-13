@@ -46,7 +46,14 @@ export function MainView() {
     case "stack":
       // Drift correction of this stack fills the viewer while it is open.
       if (alignOpen === primary.id) return <AlignmentWorkspace key={key} ds={primary} />;
-      return <StackView key={key} ds={primary} images={images} />;
+      return (
+        <StackView
+          key={key}
+          ds={primary}
+          images={images}
+          others={selected.filter((d) => d.kind === "stack" && d.id !== primary.id)}
+        />
+      );
     case "spectrum":
       return <SpectrumView key={key} ds={primary} />;
     case undefined: {

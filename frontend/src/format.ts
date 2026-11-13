@@ -53,6 +53,10 @@ export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
 
 export function kindLabel(d: DatasetSummary): string {
   if (isWindowMap(d)) return "Window";
+  if (d.origin === "pca") return "PCA";
+  if (d.origin === "pca-factors") return "Factors";
+  if (d.dpc?.output === "colour") return "DPC";
+  if (d.dpc?.output === "idpc") return "iDPC";
   if (isBackgroundRemoved(d)) return "BG sub";
   if (isDeconvolved(d)) return "Deconv";
   if (isThickness(d)) return d.thickness?.output === "absolute" ? "nm" : "t/λ";

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from ..jobs import Job
 from ..project import ProjectError, estimate, is_project, missing_raw, open_project, save_project
 
 router = APIRouter(tags=["project"])
@@ -90,21 +91,35 @@ def post_open(body: OpenBody, request: Request) -> dict:
     again, the operations redone, the results it stored. Returns every open
     file (``files``), the ones of the analysis (``file_ids``), the views
     saved with it and warnings (raw files changed or not found). 422
-    (nothing changed) if a raw file can't be found or is open already."""
+    (nothing changed) if a raw file can't be found or is open already.
+    Drift corrections are redone after, as a job (``job``, or None); its
+    result's ``files`` are the files it changed."""
     from pathlib import Path
+
+    from ..project import finish_open
 
     session = request.app.state.session
     path = Path(body.path).expanduser()
     before = set(session.files)
+    deferred = []
     try:
-        views, warnings = open_project(session, path, body.locations)
+        views, warnings = open_project(session, path, body.locations, defer=deferred)
     except ProjectError as e:
         for file_id in [f for f in session.files if f not in before]:
             session.close_file(file_id)
         raise HTTPException(422, str(e))
+    job = None
+    if deferred:
+        def run(job: Job) -> dict:
+            done = finish_open(session, deferred, job.report)
+            file_ids = {session.datasets[i].file_id for i in done if i in session.datasets}
+            return {"files": [session.files[f].summary(session) for f in file_ids if f in session.files]}
+
+        job = request.app.state.jobs.submit("open-analysis", f"Opening {path.name}", run).summary()
     return {
         "files": [f.summary(session) for f in session.files.values()],
         "file_ids": [f for f in session.files if f not in before],
         "views": views,
         "warnings": warnings,
+        "job": job,
     }

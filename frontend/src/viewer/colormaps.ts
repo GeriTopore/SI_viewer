@@ -20,6 +20,8 @@ const STOPS: Record<string, string[]> = {
     "#8a8678", "#a59c74", "#c3b369", "#e1cc55", "#fee838",
   ],
   hot: ["#000000", "#800000", "#ff0000", "#ff8000", "#ffff00", "#ffffff"],
+  // Circular (hue round the wheel, back to red): directions, e.g. of a DPC field.
+  hsv: ["#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff", "#ff0000"],
   // Diverging (matplotlib RdBu): negative red, zero white, positive blue.
   rdbu: [
     "#67001f", "#b2182b", "#d6604d", "#f4a582", "#fddbc7", "#f7f7f7",

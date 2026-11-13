@@ -54,17 +54,17 @@ export function AlignmentSummary({ ds, calX }: { ds: DatasetSummary; calX: AxisC
             </dd>
           </>
         )}
+        <dt>Save</dt>
+        <dd className="align-save">
+          <button onClick={() => downloadUrl(alignmentShiftsUrl(ds.id))}>Shifts (CSV)</button>
+          <button
+            onClick={() => downloadUrl(alignmentNpyUrl(ds.id))}
+            title="(frames, 2): the x and y shift that aligns each frame, in this stack's pixels; NaN for frames left out"
+          >
+            Shifts (.npy)
+          </button>
+        </dd>
       </dl>
-      <div className="align-save">
-        <span className="muted small">Save</span>
-        <button onClick={() => downloadUrl(alignmentShiftsUrl(ds.id))}>Shifts (CSV)</button>
-        <button
-          onClick={() => downloadUrl(alignmentNpyUrl(ds.id))}
-          title="(frames, 2): the x and y shift that aligns each frame, in this stack's pixels; NaN for frames left out"
-        >
-          Shifts (.npy)
-        </button>
-      </div>
     </div>
   );
 }

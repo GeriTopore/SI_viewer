@@ -54,11 +54,84 @@ function SliderNumber({
 // Mask changes are stored with the session this long after the last one.
 const SAVE_MS = 400;
 
-/** Opens the alignment workspace for ``d`` (selecting it in the viewer). */
+/** Opens the alignment workspace for ``d`` (shown on its own in the viewer). */
 export function openAlignment(d: DatasetSummary) {
-  const { selection, clickDataset } = useDatasets.getState();
-  if (!selection.includes(d.id)) clickDataset(d);
+  const { selection, select } = useDatasets.getState();
+  if (selection[0] !== d.id) select(d.id);
   useAlignment.getState().open(d.id, d.navigation_shape[0] ?? 1);
+}
+
+/** The other stacks a drift measured on ``d`` applies to (same frames). */
+function usePartners(d: DatasetSummary) {
+  const [partners, setPartners] = useState<{ id: string; title: string }[]>([]);
+  useEffect(() => {
+    let live = true;
+    api
+      .registrationPartners(d.id)
+      .then((p) => live && setPartners(p))
+      .catch(() => live && setPartners([]));
+    return () => {
+      live = false;
+    };
+  }, [d.id]);
+  return partners;
+}
+
+/** Align ``d`` with the shifts already measured on another stack recorded
+ * with it (e.g. a DPC stack with the HAADF's): shifted and cropped as it is. */
+function AlignFromMeasured({ d }: { d: DatasetSummary }) {
+  const files = useDatasets((s) => s.files);
+  const replaceFile = useDatasets((s) => s.replaceFile);
+  const [sources, setSources] = useState<{ id: string; title: string }[]>([]);
+  const [source, setSource] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api
+      .alignmentSources(d.id)
+      .then((s) => {
+        if (!live) return;
+        setSources(s);
+        setSource((cur) => (s.some((o) => o.id === cur) ? cur : s[0]?.id ?? ""));
+      })
+      .catch(() => live && setSources([]));
+    return () => {
+      live = false;
+    };
+  }, [d.id, files]);
+  if (!sources.length) return null;
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      replaceFile((await api.alignFrom(d.id, source)).file);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <label className="q-row" title="The stack whose measured shifts are used">
+        <span>Shifts of</span>
+        <select value={source} onChange={(e) => setSource(e.target.value)}>
+          {sources.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="process-actions">
+        <button onClick={run} disabled={busy || !source} title="Shift and crop the frames as the chosen stack's">
+          {busy ? "Aligning…" : "Align from measured shifts"}
+        </button>
+      </div>
+      {error && <p className="field-error">{error}</p>}
+    </>
+  );
 }
 
 /** Process tab: drift correction of a stack, step by step. The steps'
@@ -67,11 +140,30 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
   const a = useStackAlignment(d.id);
   const isOpen = useAlignment((s) => s.openId === d.id);
   const n = d.navigation_shape[0] ?? 1;
+  const partners = usePartners(d);
+  // The stack the drift is measured on (this one or one recorded with it).
+  const [measureOn, setMeasureOn] = useState(d.id);
+  useEffect(() => setMeasureOn(d.id), [d.id]);
+  const files = useDatasets((s) => s.files);
 
   if (!isOpen || !a) {
     const applied = d.alignment;
+    const chosen = measureOn === d.id ? d : files.flatMap((f) => f.datasets).find((x) => x.id === measureOn) ?? d;
     return (
-      <>
+      <section className="q-form">
+        {partners.length > 0 && !a?.session && (
+          <label className="q-row" title="The stack the drift is measured on; its shifts can be applied to the others at the end">
+            <span>Measure on</span>
+            <select value={measureOn} onChange={(e) => setMeasureOn(e.target.value)}>
+              <option value={d.id}>{d.title}</option>
+              {partners.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.title}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {applied && (
           <p className="small q-elements">
             Drift-corrected: {applied.frames.length} of {applied.loaded_frames} frames, cropped to {applied.square[2]} ×{" "}
@@ -79,12 +171,13 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
           </p>
         )}
         <div className="process-actions">
-          <button className="process-rebin" onClick={() => openAlignment(d)} disabled={n < 2}>
+          <button className="process-rebin" onClick={() => openAlignment(a?.session ? d : chosen)} disabled={n < 2}>
             {a?.session ? `Resume aligning (${ALIGN_STEPS.find((s) => s.id === a.step)?.label})…` : "Align frames…"}
           </button>
           {applied && <RemoveAlignment d={d} />}
         </div>
-      </>
+        {!applied && !a?.session && <AlignFromMeasured d={d} />}
+      </section>
     );
   }
   switch (a.step) {
@@ -105,12 +198,14 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inPlace, setInPlace] = useInPlace("align");
+  const partners = usePartners(d);
+  const [toAll, setToAll] = useState(false);
   const apply = async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.applyAlignment(d.id, inPlace);
-      replaceFile(r.file);
+      const r = await api.applyAlignment(d.id, inPlace, toAll ? partners.map((p) => p.id) : []);
+      r.files.forEach(replaceFile);
       if (!inPlace) useDatasets.getState().select(r.aligned_id);
       close();
     } catch (e) {
@@ -124,8 +219,14 @@ function ResultControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
     <section className="q-form">
       <h4 className="process-heading">Step 4 · Result</h4>
       <BadFrames d={d} a={a} hint="Mark bad under the frame" />
-      <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={busy} what={d.title} />
-      {inPlace && d.alignment && <p className="muted small process-note">Replaces the current alignment.</p>}
+      {partners.length > 0 && (
+        <label className="q-check" title={`Also shift ${partners.map((p) => p.title).join(", ")} by the drift measured on ${d.title}`}>
+          <input type="checkbox" checked={toAll} disabled={busy} onChange={(e) => setToAll(e.target.checked)} />
+          Apply to all {partners.length + 1} stacks
+        </label>
+      )}
+      <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={busy} what={toAll ? "the stacks" : d.title} />
+      {inPlace && (d.alignment || toAll) && <p className="muted small process-note">Replaces any current alignment.</p>}
       <div className="align-save">
         <span className="muted small">Save</span>
         <button onClick={() => downloadUrl(registrationShiftsUrl(d.id))} disabled={!a.session?.shifts}>

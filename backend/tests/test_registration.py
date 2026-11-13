@@ -568,3 +568,37 @@ def test_apply_as_a_new_stack(stack):
     # Deleting it takes its average with it.
     assert client.delete(f"/api/datasets/{new['id']}").status_code == 200
     assert [session.datasets[i].title for i in session.files[ds["file_id"]].dataset_ids] == ["drift"]
+
+
+def test_apply_the_shifts_to_the_other_stacks(tmp_path):
+    """Shifts measured on one stack applied to another of the same frames
+    (e.g. the detector segments recorded with a HAADF stack)."""
+    client = TestClient(create_app())
+    frames = _drifting_stack(SHIFTS)
+    folder = tmp_path / "run"
+    folder.mkdir()
+    tifffile.imwrite(folder / "a.tif", frames)
+    tifffile.imwrite(folder / "b.tif", frames * 2)
+    tifffile.imwrite(folder / "c.tif", frames[:, :50, :50])  # other frame size
+    r = client.post("/api/files/folder", json={"path": str(folder)}).json()
+    ids = {}
+    for p in r["paths"]:
+        f = client.post("/api/files", json={"path": p, "experiment_id": r["experiment"]["id"]}).json()
+        ids[p.rsplit("/", 1)[1]] = f["datasets"][0]["id"]
+    a, b, c = ids["a.tif"], ids["b.tif"], ids["c.tif"]
+
+    url = f"/api/datasets/{a}/registration"
+    assert [p["id"] for p in client.get(f"{url}/partners").json()] == [b]
+    client.post(url, json={})
+    assert _wait(client, client.post(f"{url}/shifts").json())["status"] == "done"
+    client.post(f"{url}/correct", json={"outliers": {"method": "none", "off_diagonal": 2}})
+    assert client.post(f"{url}/apply", json={"also": [c]}).status_code == 422
+    r = client.post(f"{url}/apply", json={"also": [b]})
+    assert r.status_code == 200, r.text
+    assert r.json()["also"] == [{"id": b, "aligned_id": b}]
+
+    session = client.app.state.session
+    sa, sb = session.get_dataset(a), session.get_dataset(b)
+    assert sb.alignment is not None and sb.alignment["square"] == sa.alignment["square"]
+    np.testing.assert_allclose(np.asarray(sb.signal.data), 2 * np.asarray(sa.signal.data), rtol=1e-4, atol=1e-2)
+    assert sb.ops[-1]["op"] == "align"

@@ -54,7 +54,7 @@ FIELDS = (
     "id", "file_id", "is_element_map", "origin", "element", "parent_id", "window", "background",
     "thickness", "deconvolution", "quantity", "source_frame", "map_options", "rebinned", "zlp_aligned",
     "ops", "copied_at", "filters", "alignment", "technique_source", "eels_role", "eels_role_source",
-    "eels_group", "eels_linked", "derived_from", "custom_title", "survey",
+    "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca",
 )
 # Bytes of a raw file hashed for its fingerprint.
 FINGERPRINT_BYTES = 1 << 20
@@ -410,14 +410,18 @@ def missing_raw(project: dict, base: Path, locations: dict | None = None) -> lis
     ]
 
 
-def open_project(session, path: str | Path, locations: dict | None = None) -> tuple[dict, list[str]]:
+def open_project(
+    session, path: str | Path, locations: dict | None = None, defer: list | None = None,
+) -> tuple[dict, list[str]]:
     """Open the project at ``path`` into ``session`` (which should be empty:
     ids are reused). Returns (views, warnings: raw files changed or not
     found). ``locations``: where raw files that moved are (file id -> path;
     the others are also looked for in their folders). A raw file that can't
     be found, or has changed, is opened from its embedded copy, else from the
     data stored. ProjectError if a raw file that is neither can't be found
-    (nothing is opened)."""
+    (nothing is opened). ``defer``: a list to put the slow operations to
+    redo in (drift corrections, and what came after them on the same stack)
+    instead of redoing them: ``finish_open`` redoes them later."""
     from .session import Dataset, DatasetKind, Experiment, FileEntry
 
     path = Path(path).expanduser().resolve()
@@ -503,6 +507,16 @@ def open_project(session, path: str | Path, locations: dict | None = None) -> tu
         ((op.get("seq", 0), rec["id"], op) for rec in raw for op in rec.get("ops", [])),
         key=lambda t: (t[0], t[1]),
     )
+    if defer is not None:
+        # A stack's drift correction is slow to redo, and its average is
+        # stored: redone later, with what followed it on that stack.
+        first_align = {}
+        for seq, ds_id, op in steps:
+            if op["op"] == "align":
+                first_align.setdefault(ds_id, seq)
+        later = [t for t in steps if t[1] in first_align and t[0] >= first_align[t[1]]]
+        steps = [t for t in steps if t not in later]
+        defer.extend((ds_id, op) for _, ds_id, op in later)
     done_seq = set()
     for seq, ds_id, op in steps:
         ds = session.datasets[ds_id]
@@ -519,7 +533,8 @@ def open_project(session, path: str | Path, locations: dict | None = None) -> tu
     for rec in raw:
         ds = session.datasets[rec["id"]]
         for k in ("map_options", "rebinned", "zlp_aligned", "ops", "filters", "custom_title", "technique_source"):
-            setattr(ds, k, rec[k])
+            if k in rec:
+                setattr(ds, k, rec[k])
         if rec.get("custom_title"):
             ds.signal.metadata.General.title = rec["custom_title"]
         if rec.get("filters"):
@@ -545,7 +560,7 @@ def open_project(session, path: str | Path, locations: dict | None = None) -> tu
                 signal = quantities[rec.get("quantity") or next(iter(quantities))]
             ds = Dataset(id=i, file_id=fe["id"], signal=signal, kind=DatasetKind(rec["kind"]))
             for k in FIELDS:
-                if k not in ("id", "file_id"):
+                if k not in ("id", "file_id") and k in rec:  # fields added since keep their defaults
                     setattr(ds, k, rec[k])
             ds.quantities = quantities
             if aligned is not None:
@@ -559,6 +574,29 @@ def open_project(session, path: str | Path, locations: dict | None = None) -> tu
             session.files[fe["id"]].dataset_ids = [i for i in fe["dataset_ids"] if i in session.datasets]
     _restore_groups(session, project.get("eels_groups", {}), datasets)
     return views, warnings
+
+
+def finish_open(session, deferred: list, report=None) -> list[str]:
+    """Redo the operations ``open_project`` deferred (``(dataset id, op)``
+    in order), on the stacks still open. A drift correction keeps the
+    average stored with the analysis. ``report(fraction, message)`` is called
+    before each. Returns the ids of the stacks redone."""
+    done = []
+    for k, (ds_id, op) in enumerate(deferred):
+        ds = session.datasets.get(ds_id)
+        if ds is None:
+            continue  # closed meanwhile
+        if report is not None:
+            report(k / len(deferred), f"Aligning {ds.title}")
+        ops = list(ds.ops)  # as saved: not recorded again
+        if op["op"] == "align":
+            session.restore_alignment(ds, realigned(ds, op["info"]))
+        else:
+            _replay(session, ds, op, False)
+        ds.ops = ops
+        if ds_id not in done:
+            done.append(ds_id)
+    return done
 
 
 def _adopt_ids(session, entry, file_id: str, dataset_ids: list[str]) -> None:
@@ -628,18 +666,15 @@ def _replay(session, ds, op: dict, repeat: bool) -> None:
         session.remove_alignment(ds)
 
 
-def realigned(stack, info: dict) -> dict:
+def realigned(stack, info: dict, signed: bool = False) -> dict:
     """``RegistrationSession.applied()`` for ``stack`` remade from a saved
     alignment ``info``: each frame shifted by minus its drift (as the package's
-    ``generateShiftedImage``), cropped to the saved square."""
-    from rigidregistration.utils import generateShiftedImage
-
+    ``generateShiftedImage``), cropped to the saved square. ``signed``: data
+    of either sign (see ``shifted``)."""
     stack.materialise()
     frames = np.asarray(stack.loaded_signal.data)
     d = info["drift"]
-    aligned = np.stack([
-        generateShiftedImage(frames[f].astype(np.float64), -y, -x) for f, x, y in zip(d["frames"], d["x"], d["y"])
-    ]).astype(np.float32)
+    aligned = shifted(frames, d["frames"], [-y for y in d["y"]], [-x for x in d["x"]], signed)
     average = aligned.mean(axis=0)
     x, y, w, h = info["square"]
     return {
@@ -647,6 +682,25 @@ def realigned(stack, info: dict) -> dict:
         "average": np.ascontiguousarray(average[y:y + h, x:x + w]),
         "info": info,
     }
+
+
+def shifted(frames, which, rows, cols, signed: bool = False) -> np.ndarray:
+    """Frames ``which`` of ``frames`` shifted by (``rows``, ``cols``) pixels
+    each (subpixel, in Fourier space), as float32: the package's
+    ``generateShiftedImage(frame, rows, cols)`` (the modulus of the shifted
+    image), in single precision and on every core. ``signed``: the real
+    part instead (for data of either sign, e.g. a DPC deflection)."""
+    import scipy.fft as sf
+
+    n0, n1 = frames.shape[1:]
+    k0, k1 = np.fft.fftfreq(n0), np.fft.fftfreq(n1)
+    out = np.empty((len(which), n0, n1), np.float32)
+    for i, (f, r, c) in enumerate(zip(which, rows, cols)):
+        spectrum = sf.fft2(np.asarray(frames[f], np.float32), workers=-1)
+        spectrum *= np.outer(np.exp(-2j * np.pi * r * k0), np.exp(-2j * np.pi * c * k1)).astype(np.complex64)
+        image = sf.ifft2(spectrum, workers=-1)
+        out[i] = image.real if signed else np.abs(image)
+    return out
 
 
 def _restore_view(session, path: Path, ds, rec: dict) -> None:

@@ -205,9 +205,40 @@ def get_average(dataset_id: str, request: Request, crop: bool = True) -> Respons
     return array_response(_frame_error(s.average, crop))
 
 
+def _partners(request: Request, ds: Dataset) -> list[Dataset]:
+    """The other stacks the drift measured on ``ds`` applies to: same number
+    of frames and frame size as loaded, in the same file or experiment (e.g.
+    the detector segments recorded with a HAADF stack)."""
+    session = request.app.state.session
+    entry = session.file_of(ds)
+    files = [entry]
+    if entry.experiment_id is not None:
+        files = [f for f in session.files.values() if f.experiment_id == entry.experiment_id]
+    shape = tuple(ds.loaded_signal.data.shape)
+    out = []
+    for f in files:
+        for i in f.dataset_ids:
+            d = session.datasets[i]
+            if d is ds or d.kind is not DatasetKind.STACK or d.origin != "file" or d.insitu is not None:
+                continue
+            if tuple(d.loaded_signal.data.shape) == shape:
+                out.append(d)
+    return out
+
+
+@router.get("/api/datasets/{dataset_id}/registration/partners")
+def get_partners(dataset_id: str, request: Request) -> list[dict]:
+    """The other stacks a drift measured on this one can be applied to (see
+    ``_partners``): id and title."""
+    ds = _stack(request, dataset_id)
+    return [{"id": d.id, "title": d.title} for d in _partners(request, ds)]
+
+
 class ApplyBody(BaseModel):
     # False: the aligned frames become a new stack under this one.
     in_place: bool = True
+    # Other stacks to apply the same shifts to (see ``_partners``).
+    also: list[str] = []
 
 
 @router.post("/api/datasets/{dataset_id}/registration/apply")
@@ -220,11 +251,57 @@ def post_apply(dataset_id: str, request: Request, body: ApplyBody | None = None)
     s = _session(request, dataset_id)
     session = request.app.state.session
     in_place = body is None or body.in_place
-    avg = session.apply_alignment(ds, _frame_error(s.applied), in_place)
+    also = [] if body is None else body.also
+    partners = {d.id: d for d in _partners(request, ds)}
+    unknown = [i for i in also if i not in partners]
+    if unknown:
+        raise HTTPException(422, f"Can't apply these shifts to {unknown[0]}: not a stack of the same frames")
+    applied = _frame_error(s.applied)
+    avg = session.apply_alignment(ds, applied, in_place)
+    # The same drift, shifted onto each of the others (as Apply would have).
+    from ..project import realigned
+
+    others = []
+    for i in also:
+        o = partners[i]
+        o_avg = session.apply_alignment(o, _frame_error(realigned, o, applied["info"]), in_place)
+        others.append({"id": o.id, "aligned_id": o.id if in_place else o_avg.derived_from})
+    files = dict.fromkeys(session.file_of(d).id for d in [ds, *(partners[i] for i in also)])
     return {
         "dataset": ds.summary(), "average": avg.summary(), "file": session.file_of(ds).summary(session),
         "aligned_id": ds.id if in_place else avg.derived_from,
+        "also": others,
+        "files": [session.files[f].summary(session) for f in files],
     }
+
+
+@router.get("/api/datasets/{dataset_id}/alignment/sources")
+def get_alignment_sources(dataset_id: str, request: Request) -> list[dict]:
+    """The drift-corrected stacks whose measured shifts this stack can be
+    aligned with (e.g. the HAADF, for a DPC stack): id and title."""
+    ds = _stack(request, dataset_id)
+    return [{"id": d.id, "title": d.title} for d in request.app.state.session.measured_shifts(ds)]
+
+
+class AlignFromBody(BaseModel):
+    source: str
+
+
+@router.post("/api/datasets/{dataset_id}/alignment/from")
+def post_align_from(dataset_id: str, body: AlignFromBody, request: Request) -> dict:
+    """Align the stack with the shifts measured on ``source``: its frames
+    shifted and cropped as ``source``'s."""
+    ds = _stack(request, dataset_id)
+    session = request.app.state.session
+    try:
+        source = session.get_dataset(body.source)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {body.source}")
+    try:
+        session.align_from(ds, source)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"dataset": ds.summary(), "file": session.file_of(ds).summary(session)}
 
 
 class AlignmentView(BaseModel):

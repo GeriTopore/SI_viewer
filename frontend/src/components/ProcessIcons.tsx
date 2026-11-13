@@ -98,6 +98,23 @@ const ICONS: Record<string, () => ReactNode> = {
       <path d="M15 20L19 16L23 20M15 28L19 32L23 28" stroke={ACCENT} />
     </>
   ),
+  // A four-segment detector with the direct beam shifted off its centre.
+  dpc: () => (
+    <>
+      <circle cx="24" cy="24" r="19" />
+      <circle cx="24" cy="24" r="9" />
+      <path d="M24 5V15M24 33V43M5 24H15M33 24H43" />
+      <circle cx="29" cy="20" r="7.5" fill={ACCENT} fillOpacity="0.35" stroke={ACCENT} />
+    </>
+  ),
+  // A scree plot: the components' share falling, the first few kept.
+  pca: () => (
+    <>
+      <path d="M6 6V42H44" />
+      <path d="M12 42V10M19 42V22M26 42V31" stroke={ACCENT} strokeWidth="4" strokeLinecap="butt" />
+      <path d="M33 42V36M40 42V38" strokeWidth="4" strokeLinecap="butt" />
+    </>
+  ),
   // A peak with plural-scattering bumps made single.
   deconvolution: () => (
     <>

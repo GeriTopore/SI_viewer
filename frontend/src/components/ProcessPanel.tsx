@@ -15,6 +15,8 @@ import { DeconvolutionSection } from "./DeconvolutionSection";
 import { canDeconvolve } from "../state/deconvolution";
 import { canEstimateThickness } from "../state/thickness";
 import { ZlpSection } from "./ZlpSection";
+import { DpcSection, canMakeDpc } from "./DpcSection";
+import { PcaSection, hasPcaSection } from "./PcaSection";
 import { ProcessIcon } from "./ProcessIcons";
 import { GridIcon, ListIcon } from "./DatasetList";
 
@@ -56,7 +58,10 @@ function useProcessTarget(): DatasetSummary | undefined {
     // A member of the linked group in the viewer is processed when focused.
     if (focused && shownSi?.eels?.linked.includes(focused.id)) return focused;
     if (shownSi) return shownSi;
-    return (focused?.parent_id && byId.get(focused.parent_id)) || focused;
+    // A map under a spectrum image is processed with it; a stack (e.g. a PCA's
+    // components) has processes of its own.
+    if (focused && focused.kind !== "stack") return (focused.parent_id && byId.get(focused.parent_id)) || focused;
+    return focused;
   }, [files, selection, focusId]);
 }
 
@@ -229,11 +234,16 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
   const mode = useUi((s) => s.processMode);
   // The processes that apply, in workflow order.
   const processes = ([
-    d.kind === "stack" && {
+    d.kind === "stack" && d.origin !== "pca" && {
       id: "align", title: "Align frames", tip: "Register the frames to remove drift, then average them",
       body: <AlignSection d={d} />,
     },
-    canRebin(d) && {
+    canMakeDpc(d) && {
+      id: "dpc", title: "DPC / iDPC",
+      tip: "Differential phase contrast from the four quadrants of a segmented detector, and its integral",
+      body: <DpcSection d={d} />,
+    },
+    canRebin(d) && d.origin !== "pca" && {
       id: "rebin", title: "Rebin", tip: "Sum neighbouring pixels or channels; overwrites the loaded data",
       body: (
         <button className="process-rebin" onClick={() => setRebinOpen(true)}>
@@ -437,6 +447,13 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       id: "deconvolution", title: "Deconvolution",
       tip: "Remove plural scattering (or sharpen) with the low loss; makes a new spectrum image",
       body: <DeconvolutionSection d={d} />,
+    },
+    hasPcaSection(d) && {
+      id: "pca", title: d.origin === "pca" ? "PCA denoising" : "PCA",
+      tip: d.origin === "pca"
+        ? "Rebuild the spectrum image from its first components; makes a new spectrum image"
+        : "Principal component analysis over an energy window: the components' maps and spectra",
+      body: <PcaSection d={d} />,
     },
   ] as (Process | false)[]).filter((x): x is Process => !!x);
 

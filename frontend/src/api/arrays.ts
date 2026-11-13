@@ -31,6 +31,9 @@ export interface Frame {
   width: number;
   height: number;
   bin: number;
+  /** Brightness of each pixel (see ``LayerData.shade``): a DPC image's magnitude. */
+  shade?: Float32Array;
+  shadeHi?: number;
 }
 
 export async function fetchFrame(
@@ -45,6 +48,41 @@ export async function fetchFrame(
   const { data, shape } = await fetchArray(`/api/datasets/${datasetId}/frame?${q}`, signal);
   return { data, height: shape[0], width: shape[1], bin: params.bin ?? 1 };
 }
+
+/** A DPC image (or a frame of a DPC stack, or its projection): the direction
+ * of the deflection, with its magnitude as the brightness (up to the 99.5th
+ * percentile at full). */
+export async function fetchDpcFrame(
+  datasetId: string,
+  params: { index?: number; projection?: string; bin?: number } = {},
+  signal?: AbortSignal,
+): Promise<Frame> {
+  const q = new URLSearchParams();
+  if (params.index !== undefined) q.set("index", String(params.index));
+  if (params.projection) q.set("projection", params.projection);
+  if (params.bin && params.bin > 1) q.set("bin", String(params.bin));
+  const { data, shape } = await fetchArray(`/api/datasets/${datasetId}/dpc/frame?${q}`, signal);
+  const [, height, width] = shape;
+  const n = height * width;
+  const shade = data.subarray(n, 2 * n);
+  const sorted = Float32Array.from(shade).sort();
+  const shadeHi = sorted[Math.min(n - 1, Math.floor(n * 0.995))] || 1;
+  return { data: data.subarray(0, n), height, width, bin: params.bin ?? 1, shade, shadeHi };
+}
+
+/** The spectrum of component ``index`` (0-based) of a PCA, with its energy axis. */
+export async function fetchPcaFactor(
+  pcaId: string, index: number, signal?: AbortSignal,
+): Promise<{ data: Float32Array; offset: number; scale: number; units: string }> {
+  const { data, meta } = await fetchArray(`/api/datasets/${pcaId}/pca/factor?index=${index}`, signal);
+  return { data, offset: Number(meta.offset), scale: Number(meta.scale), units: String(meta.units ?? "") };
+}
+
+/** A stack's frame (or projection) as shown: a DPC stack's in colour. */
+export const fetchStackFrame = (
+  d: { id: string; dpc?: { output: string } | null },
+  params: { index?: number; projection?: string; bin?: number },
+) => (d.dpc?.output === "colour" ? fetchDpcFrame(d.id, params) : fetchFrame(d.id, params));
 
 /** The ADF image of the frame (or range) an in-situ series holds, at the ADF's
  * own resolution (finer than the scan for a sub-scan). */

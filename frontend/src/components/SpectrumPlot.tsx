@@ -764,7 +764,7 @@ export function SpectrumPlot({
               {onWindow && " · Shift-drag for a new energy window"}
               {" · drag an axis to zoom it, Shift-drag to pan"}
               {onWindow && showWindows && selectedId && " · drag a window's edges or inside to edit, or click its numbers to type them · right-click a window for more · Esc"}
-              {hasBands && " · drag the Background and Signal bands' edges or inside to move them"}
+              {hasBands && ` · drag the ${windows.filter((w) => w.kind === "background" || w.kind === "signal").map((w) => w.label).join(" and ")} bands' edges or inside to move them`}
               {onMarkerClick && markers.length > 0 && " · click a line label to map it"}
             </span>
           )}

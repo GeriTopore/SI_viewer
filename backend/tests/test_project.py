@@ -127,9 +127,25 @@ def test_stack_alignment_is_redone(client, tmp_path):
     client.post(url + "/correct", json={"outliers": {"method": "none", "off_diagonal": 2}})
     _ok(client.post(f"{url}/apply", json={}))
     saved = _ok(_save(client, tmp_path / "a.hspy"))["path"]
-    other, _ = _reopen(saved)
+    other, body = _reopen(saved)
+    # Redone after opening, as a job; the stored average is kept.
+    done = _wait(other, body["job"])
+    assert [f["id"] for f in done["result"]["files"]] == [ds["file_id"]]
     _same(client, other)
-    assert other.app.state.session.get_dataset(ds["id"]).alignment is not None
+    stack = other.app.state.session.get_dataset(ds["id"])
+    assert stack.alignment is not None and stack.ops == client.app.state.session.get_dataset(ds["id"]).ops
+
+
+def test_realigned_matches_the_package():
+    from rigidregistration.utils import generateShiftedImage
+
+    from si_viewer.project import shifted
+
+    frames = np.random.default_rng(0).random((3, 32, 40))
+    rows, cols = [1.5, -2.25, 0.0], [-0.7, 3.0, 4.4]
+    out = shifted(frames, [0, 1, 2], rows, cols)
+    for i in range(3):
+        np.testing.assert_allclose(out[i], generateShiftedImage(frames[i], rows[i], cols[i]), atol=1e-5)
 
 
 def test_zero_loss_alignment_is_redone(client, tmp_path):

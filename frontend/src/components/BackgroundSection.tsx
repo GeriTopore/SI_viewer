@@ -24,7 +24,7 @@ const DEFAULT_LBA = 3;
 
 /** A limit of a window, typed in energy units; kept as typed until Enter or
  * leaving the field, then snapped to a channel. */
-function EnergyInput({ value, step, onCommit, label }: {
+export function EnergyInput({ value, step, onCommit, label }: {
   value: number; step: number; onCommit: (v: number) => void; label: string;
 }) {
   const [text, setText] = useState(String(value));

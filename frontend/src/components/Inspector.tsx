@@ -42,6 +42,17 @@ export function Inspector() {
             </dd>
           </>
         )}
+        {d.detector && (
+          <>
+            <dt>Detector</dt>
+            <dd title="Segments summed into this image, as recorded at acquisition">
+              {d.detector.name} segments{" "}
+              {d.detector.segments
+                .map((n, i) => `${d.detector!.polarities[i] === "Negative" ? "−" : ""}${n}`)
+                .join(" + ")}
+            </dd>
+          </>
+        )}
         <dt>Shape</dt>
         <dd>{shapeLabel(d)}</dd>
         <dt>Data</dt>

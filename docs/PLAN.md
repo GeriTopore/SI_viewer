@@ -1485,6 +1485,35 @@ as a folder of `.hspy` files (later).
 4. M18d: embedding raw data; the *Locate…* dialog.
 5. Later: autosave / recovery; export as a folder of `.hspy` files.
 
+### 4.21 Decomposition of spectrum images: PCA (M19), then BSS and diffusion maps
+
+For EELS and EDS spectrum images (raw or background-removed). Guided, step by
+step: decompose, look at the components, then denoise with as many as needed.
+
+1. **Decompose** (Process tab of the SI): an energy window (the whole range by
+   default; drawn on the spectrum, editable as numbers), Poisson weighting (on:
+   counts, Keenan & Kotula), and how many components to keep (32). A job:
+   HyperSpy's `decomposition` (SVD, randomized solver,
+   `normalize_poissonian_noise`) of the window, its loadings and factors
+   stored as datasets; the explained variance is HyperSpy's
+   `explained_variance_ratio` (relative to the components kept). No
+   processing of our own: HyperSpy (and its dependencies) do the work.
+2. **The PCA object** under the SI (origin `pca`): a stack whose frames are the
+   components' maps (frame k = component k + 1), with **PCA factors** under it:
+   the components' spectra (a line scan, components × channels). In the viewer:
+   the frame slider runs through the components; bottom tabs **Component** (the
+   spectrum of the component shown) and **Scree** (explained variance on a log
+   scale; a click sets how many components to keep).
+3. **Denoise**: the SI rebuilt from its first N components (HyperSpy's
+   `get_decomposition_model` of the stored loadings and factors), a
+   new spectrum image under the SI over the window (origin `pca-denoised`).
+   Decompose again replaces the PCA object in place.
+4. Saved with an analysis as derived datasets (no replay).
+
+Later in M19: blind source separation (HyperSpy's `blind_source_separation`
+on the kept components) and diffusion maps (pydiffmap, as in the user's own
+`dm.py`).
+
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
@@ -1521,6 +1550,7 @@ as a folder of `.hspy` files (later).
 | M16 | One workspace per loaded dataset: entering one brings back what it showed | Done |
 | M17 | Undo a deletion (⌘/Ctrl Z): datasets, regions, line profiles, FFT boxes | Done |
 | M18 | Save and open an analysis (HDF5 project, HyperSpy-readable): in place / new dataset for operations (M18a), save and open (M18b), stored arrays and checks (M18c), embedding and relinking (M18d) | Done (choosing which datasets to store set aside) |
+| M19 | Decomposition of spectrum images: PCA with denoising (M19a), blind source separation (M19b), diffusion maps (M19c) | In progress |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

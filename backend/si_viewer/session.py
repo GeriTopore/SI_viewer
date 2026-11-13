@@ -212,6 +212,15 @@ class Dataset:
     # The survey image of a spectrum imaging run: {"regions": the rectangles
     # GMS drew on it (see io/dm_experiment.py)}.
     survey: dict | None = None
+    # DPC images ("dpc"): how they were made: {"inputs": {"A": id, ...},
+    # "normalise", "theta" (degrees), "mirror", "output": "x" |
+    # "y" | "idpc"}.
+    dpc: dict | None = None
+    # PCA (M19a): "pca" (the components' maps, a stack), "pca-factors" (their
+    # spectra) and "pca-denoised" (an SI rebuilt from the first n): {"source_id",
+    # "window": [lo, hi] (energies), "channels": [c0, c1), "poisson",
+    # "components", "explained": [...], and "n" for a denoised SI}.
+    pca: dict | None = None
     thumbnails: dict[int, bytes] = field(default_factory=dict, repr=False)
     # Derived arrays (projections, sum spectra, …) keyed by name.
     cache: dict[str, object] = field(default_factory=dict, repr=False)
@@ -342,6 +351,9 @@ class Dataset:
             "technique_source": self.technique_source if is_spectrum else None,
             "eels": eels_info(self),
             "edges": edges_info(s) if technique == "EELS" else None,
+            # Images of a segmented detector: the segments summed (from the
+            # acquisition record), e.g. {"name": "DFS", "segments": [0, 4], ...}.
+            "detector": _detector_info(self.loaded_signal),
             "origin": self.origin,
             "element": self.element,
             "pixel_fit": self.current_pixel_fits is not None,
@@ -374,6 +386,8 @@ class Dataset:
             },
             "derived_from": self.derived_from,
             "survey": self.survey,
+            "dpc": self.dpc,
+            "pca": self.pca,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -468,6 +482,21 @@ class FileEntry:
             "role": self.role(session) if experiment else None,
             "datasets": [session.datasets[d].summary() for d in self.dataset_ids],
         }
+
+
+def _detector_info(signal) -> dict | None:
+    """The detector segments an image was summed from, if recorded."""
+    det = signal.metadata.get_item("Acquisition_instrument.TEM.Detector")
+    if det is None or not det.has_item("segments"):
+        return None
+    segments = [int(x) for x in det.segments]
+    polarities = list(det.get_item("segment_polarities", [""] * len(segments)))
+    return {
+        "name": str(det.get_item("name", "")),
+        "segments": segments,
+        "polarities": [str(x) for x in polarities],
+        "label": signal.metadata.General.get_item("original_title"),
+    }
 
 
 class Session:
@@ -1598,6 +1627,298 @@ class Session:
             self._remake_after_zlp(target, shift)
         return target
 
+    # ---------- DPC and iDPC from the quadrants of a segmented detector ----------
+
+    def dpc_quadrants(self, inputs: dict[str, str]) -> dict[str, Dataset]:
+        """The four images ``inputs`` (letter -> dataset id) checked: 2D
+        images of one size, each summed from segments of the quadrant its
+        letter stands for (A: 0, B: 1, C: 2, D: 3, from the segment numbers
+        recorded at acquisition). ValueError otherwise."""
+        from .processing.dpc import LETTERS, quadrant
+
+        if sorted(inputs) != list(LETTERS):
+            raise ValueError("Choose an image for each of A, B, C and D")
+        out = {}
+        for q, letter in enumerate(LETTERS):
+            ds = self.get_dataset(inputs[letter])
+            if ds.kind not in (DatasetKind.IMAGE, DatasetKind.STACK):
+                raise ValueError(f"{ds.title} is not an image or a stack")
+            det = _detector_info(ds.loaded_signal)
+            if det is None:
+                raise ValueError(f"{ds.title} has no detector segments recorded")
+            found = quadrant(det["segments"])
+            if found != q:
+                raise ValueError(
+                    f"{ds.title} is segments {', '.join(map(str, det['segments']))} (quadrant {LETTERS[found]}), not {letter}"
+                )
+            out[letter] = ds
+        if len({d.kind for d in out.values()}) != 1:
+            raise ValueError("The four must be all images or all stacks")
+        shapes = {tuple(d.signal.data.shape) for d in out.values()}
+        if len(shapes) != 1:
+            raise ValueError("The four must be of one size (stacks: the same frames, all aligned or none)")
+        return out
+
+    @staticmethod
+    def _dpc_arrays(q: dict[str, Dataset]) -> list[np.ndarray]:
+        """The data of the four quadrant images (or stacks), as shown."""
+        for d in q.values():
+            d.materialise()
+        return [np.asarray(q[k].signal.data, np.float64) for k in "ABCD"]
+
+    def dpc_rotation(self, inputs: dict[str, str], normalise: bool = True) -> dict:
+        """The rotation (and mirror) of the detector found from the data."""
+        from .processing.dpc import differences, find_rotation
+
+        dx, dy = differences(*self._dpc_arrays(self.dpc_quadrants(inputs)), normalise=normalise)
+        if dx.ndim == 3:  # stacks: from their mean (the rotation is the same in every frame)
+            dx, dy = dx.mean(axis=0), dy.mean(axis=0)
+        return find_rotation(dx, dy)
+
+    def make_dpc(
+        self, inputs: dict[str, str], normalise: bool = True, theta: float = 0.0, mirror: bool = False,
+    ) -> list[Dataset]:
+        """Two objects next to the inputs: "DPC", the direction of the
+        deflection (degrees, from A − C and B − D rotated into the image's
+        frame, their means removed; shown in a circular colour map,
+        brightness its magnitude) with
+        "DPC x" and "DPC y" under it, and "iDPC", their integral. Made again
+        in place if made from these inputs before. Returns them (DPC, x, y,
+        iDPC). From four stacks: stacks, each frame from the same frames."""
+        from .processing.dpc import differences, integrate, rotate
+
+        q = self.dpc_quadrants(inputs)
+        a = q["A"]
+        gx, gy = rotate(*differences(*self._dpc_arrays(q), normalise=normalise), theta, mirror)
+        # The mean deflection (segment gains, descan) is not the specimen's.
+        gx = gx - gx.mean(axis=(-2, -1), keepdims=True)
+        gy = gy - gy.mean(axis=(-2, -1), keepdims=True)
+        phase = integrate(gx, gy)
+        angle = np.degrees(np.arctan2(gy, gx))
+        settings = {
+            "inputs": {k: q[k].id for k in "ABCD"}, "normalise": bool(normalise), "theta": float(theta),
+            "mirror": bool(mirror),
+        }
+        with self._lock:
+            earlier = {
+                d.dpc["output"]: d for d in self.datasets.values()
+                if d.origin == "dpc" and d.dpc and d.dpc.get("inputs") == settings["inputs"]
+            }
+        made: list[Dataset] = []
+        colour_id = None
+        for output, title, data in (
+            ("colour", "DPC", angle), ("x", "DPC x", gx), ("y", "DPC y", gy), ("idpc", "iDPC", phase),
+        ):
+            signal = a.signal._deepcopy_with_new_data(np.ascontiguousarray(data, dtype=np.float32))
+            signal.metadata.General.title = title
+            for item in ("Acquisition_instrument.TEM.Detector", "General.original_title"):
+                if signal.metadata.has_item(item):  # not a segment image
+                    parent, name = item.rsplit(".", 1)
+                    delattr(signal.metadata.get_item(parent), name)
+            # x and y under the DPC object; DPC and iDPC objects of their own.
+            parent = colour_id if output in ("x", "y") else None
+            ds = earlier.get(output)
+            if ds is not None:
+                ds.replace_signal(signal)
+                ds.dpc = {**settings, "output": output}
+                ds.parent_id, ds.derived_from = parent, None
+            else:
+                ds = Dataset(
+                    id=_new_id(), file_id=a.file_id, signal=signal, kind=a.kind, origin="dpc",
+                    parent_id=parent, dpc={**settings, "output": output},
+                )
+                with self._lock:
+                    self.datasets[ds.id] = ds
+                    ids = self.files[a.file_id].dataset_ids
+                    # After the inputs in this file, then each after the one before.
+                    prev = [m.id for m in made if m.id in ids]
+                    at = ids.index(prev[-1]) if prev else max(ids.index(x.id) for x in q.values() if x.id in ids)
+                    ids.insert(at + 1, ds.id)
+            if output == "colour":
+                colour_id = ds.id
+            made.append(ds)
+        return made
+
+    # ---------- PCA (M19a) ----------
+
+    @staticmethod
+    def can_decompose(ds: Dataset) -> bool:
+        """An EELS or EDS spectrum image (or line scan) to decompose."""
+        from .processing.technique import technique_of
+
+        return ds.kind is DatasetKind.SPECTRUM_IMAGE and ds.insitu is None and technique_of(ds.signal) in ("EELS", "EDS")
+
+    def pca_channels(self, ds: Dataset, lo: float | None, hi: float | None) -> tuple[int, int]:
+        """The channels [c0, c1) of the energy window lo–hi of ``ds`` (the
+        whole axis where not given). ValueError for fewer than 2 channels."""
+        from .processing.background import EnergyAxis
+
+        axis = EnergyAxis.of(ds.signal)
+        c0 = 0 if lo is None else int(round((lo - axis.offset) / axis.scale))
+        c1 = axis.size if hi is None else int(round((hi - axis.offset) / axis.scale)) + 1
+        c0, c1 = max(0, min(c0, axis.size)), max(0, min(c1, axis.size))
+        if c1 - c0 < 2:
+            raise ValueError("The energy window must hold at least 2 channels")
+        return c0, c1
+
+    def make_pca(
+        self, ds: Dataset, lo: float | None = None, hi: float | None = None, components: int = 32,
+        poisson: bool = True, report=None,
+    ) -> Dataset:
+        """Decompose the spectrum image ``ds`` over the energy window lo–hi
+        with HyperSpy (``decomposition``: SVD, ``normalize_poissonian_noise``
+        if ``poisson``): "PCA" under it, a stack of the components' maps
+        (loadings), with "PCA factors" (their spectra) under that. Made again in
+        place if ``ds`` was decomposed before. Returns the PCA stack."""
+        import hyperspy.api as hs
+
+        from .processing.background import EnergyAxis
+
+        if not self.can_decompose(ds):
+            raise ValueError(f"{ds.title} is not an EELS or EDS spectrum image")
+        c0, c1 = self.pca_channels(ds, lo, hi)
+        ds.materialise()
+        if report:
+            report(0.05, "Decomposing")
+        window = ds.signal.isig[c0:c1].deepcopy()
+        window.change_dtype("float32")
+        k = max(1, min(int(components), window.axes_manager.navigation_size, c1 - c0))
+        window.decomposition(
+            normalize_poissonian_noise=poisson, algorithm="SVD", output_dimension=k, svd_solver="randomized",
+            print_info=False,
+        )
+        lr = window.learning_results
+        h, w = si_cube(ds).shape[:2]
+        loadings = np.ascontiguousarray(lr.loadings[:, :k].T.reshape(k, h, w), dtype=np.float32)
+        factors = np.ascontiguousarray(lr.factors[:, :k].T, dtype=np.float32)
+        explained = lr.explained_variance_ratio[:k]
+        del window, lr
+        if report:
+            report(0.95, "Making the components")
+        axis = EnergyAxis.of(ds.signal)
+        settings = {
+            "source_id": ds.id, "window": [axis.offset + axis.scale * c0, axis.offset + axis.scale * (c1 - 1)],
+            "channels": [c0, c1], "poisson": bool(poisson), "components": k,
+            "explained": [float(v) for v in explained],
+        }
+        comp_axis = {"name": "Component", "size": k, "offset": 1, "scale": 1, "units": "", "navigate": True}
+        nav = [ax.get_axis_dictionary() for ax in ds.signal.axes_manager.navigation_axes[::-1]]  # array order
+        for d in nav:
+            d["navigate"] = False
+        if ds.is_line_scan:
+            nav = [{"name": "y", "size": 1, "offset": 0, "scale": 1, "units": nav[0].get("units", ""), "navigate": False}, *nav]
+        maps = hs.signals.Signal2D(loadings, axes=[comp_axis, *nav])  # (k, 1, w) for a line scan
+        maps.metadata.General.title = "PCA"
+        energy = ds.signal.axes_manager.signal_axes[0].get_axis_dictionary()
+        energy.update(offset=axis.offset + axis.scale * c0, size=c1 - c0, navigate=False)
+        spectra = hs.signals.Signal1D(factors, axes=[comp_axis, energy])
+        spectra.metadata.General.title = "PCA factors"
+
+        with self._lock:
+            earlier = {
+                d.origin: d for d in self.datasets.values()
+                if d.origin in ("pca", "pca-factors") and d.pca and d.pca.get("source_id") == ds.id
+            }
+        made = {}
+        for origin, signal, parent in (("pca", maps, ds.id), ("pca-factors", spectra, None)):
+            parent = parent or made["pca"].id
+            old = earlier.get(origin)
+            if old is not None:
+                old.replace_signal(signal)
+                old.pca = dict(settings)
+                made[origin] = old
+                continue
+            new = Dataset(
+                id=_new_id(), file_id=ds.file_id, signal=signal, kind=classify(signal), origin=origin,
+                parent_id=parent, pca=dict(settings),
+            )
+            with self._lock:
+                self.datasets[new.id] = new
+                ids = self.files[ds.file_id].dataset_ids
+                ids.insert(ids.index(parent) + 1, new.id)
+            made[origin] = new
+        return made["pca"]
+
+    def pca_factors(self, pca: Dataset) -> Dataset:
+        """The "PCA factors" under a PCA stack."""
+        if pca.origin != "pca" or not pca.pca:
+            raise ValueError(f"{pca.title} is not a PCA")
+        for d in self.datasets.values():
+            if d.origin == "pca-factors" and d.parent_id == pca.id:
+                return d
+        raise ValueError(f"{pca.title} has lost its PCA factors")
+
+    def denoise_pca(self, pca: Dataset, n: int) -> Dataset:
+        """The spectrum image the PCA ``pca`` was made from, rebuilt from its
+        first ``n`` components over its energy window (HyperSpy's
+        ``get_decomposition_model`` of the stored loadings and factors): a new
+        spectrum image under the source (or the one made with the same ``n``,
+        remade)."""
+        from hyperspy.learn.mva import LearningResults
+
+        factors = self.pca_factors(pca)
+        source = self.get_dataset(pca.pca["source_id"])
+        k = int(pca.pca["components"])
+        n = max(1, min(int(n), k))
+        c0, c1 = pca.pca["channels"]
+        source.materialise()
+        window = source.signal.isig[c0:c1]
+        loadings = np.asarray(pca.signal.data, np.float32)
+        if loadings.reshape(k, -1).shape[1] != window.axes_manager.navigation_size or factors.signal.data.shape[1] != c1 - c0:
+            raise ValueError(f"{source.title} has changed since it was decomposed: decompose it again")
+        window.learning_results.loadings = loadings.reshape(k, -1).T
+        window.learning_results.factors = np.asarray(factors.signal.data, np.float32).T
+        signal = window.get_decomposition_model(n)
+        signal.change_dtype("float32")
+        signal.learning_results = LearningResults()  # the PCA keeps them, not the denoised SI
+        title = f"{source.title} (PCA, {n})"
+        settings = {**pca.pca, "n": n}
+        with self._lock:
+            earlier = next((
+                d for d in self.datasets.values()
+                if d.origin == "pca-denoised" and d.pca and d.pca.get("source_id") == source.id and d.pca.get("n") == n
+            ), None)
+        if earlier is not None:
+            signal.metadata.General.title = title
+            earlier.replace_signal(signal)
+            earlier.pca = settings
+            return earlier
+        new = self.copy_as(source, "pca-denoised", title, signal=signal)
+        new.pca = settings
+        return new
+
+    def dpc_frame(self, ds: Dataset, index: int = 0, projection: str | None = None, bin: int = 1) -> np.ndarray:
+        """A DPC object's direction (degrees) and magnitude as shown, (2, h,
+        w): of the image, or of frame ``index`` of a stack (``projection``
+        "mean"/"sum": of the mean deflection), mean-binned by ``bin``."""
+        from .processing.frames import bin2d
+
+        x, y = self._dpc_parts(ds)
+        if x.ndim == 3:
+            if projection in ("mean", "sum"):
+                x, y = x.mean(axis=0), y.mean(axis=0)
+            else:
+                if not 0 <= index < len(x):
+                    raise IndexError(f"Frame {index} out of range 0–{len(x) - 1}")
+                x, y = x[index], y[index]
+        x, y = bin2d(x, bin), bin2d(y, bin)
+        return np.stack([np.degrees(np.arctan2(y, x)), np.sqrt(x * x + y * y)]).astype(np.float32)
+
+    def _dpc_parts(self, ds: Dataset) -> tuple[np.ndarray, np.ndarray]:
+        """The DPC x and DPC y under a DPC object."""
+        if ds.origin != "dpc" or not ds.dpc or ds.dpc.get("output") != "colour":
+            raise ValueError(f"{ds.title} is not a DPC image")
+        parts = self._dpc_children(ds)
+        if "x" not in parts or "y" not in parts:
+            raise ValueError(f"{ds.title} has lost its DPC x or DPC y")
+        return np.asarray(parts["x"].signal.data, np.float32), np.asarray(parts["y"].signal.data, np.float32)
+
+    def dpc_magnitude(self, ds: Dataset) -> np.ndarray:
+        """The magnitude of the deflection of a DPC object, √(x² + y²), from
+        the DPC x and DPC y under it."""
+        x, y = self._dpc_parts(ds)
+        return np.sqrt(x * x + y * y)
+
     def _remake_after_zlp(self, d: Dataset, shift: float) -> None:
         """Recompute what was made from ``d`` after its data was aligned, with
         energies ``shift`` further along the axis than before."""
@@ -1737,7 +2058,7 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned"):
+        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised"):
             entry["restore"] = self._tree_places(dataset)
             self._remove_tree(dataset)
             return self._keep_undoable(entry)
@@ -2208,14 +2529,8 @@ class Session:
                 ids.insert(ids.index(new.id) + 1, avg.id)
             return avg
 
-        original = stack.loaded_signal
-        aligned, mean = aligned_signals(original, applied["stack"], applied["average"], applied["info"]["square"])
-        stack.original_signal = original
-        stack.aligned_signal = aligned
-        stack.alignment = applied["info"]
-        stack.signal = aligned
+        mean = self.restore_alignment(stack, applied)
         stack.ops.append(_op({"op": "align", "info": applied["info"]}))
-        self._view_changed(stack)
         for d in self._averages(stack):
             self._remove(d)
         avg = Dataset(
@@ -2228,14 +2543,91 @@ class Session:
             ids.insert(ids.index(stack.id) + 1, avg.id)
         return avg
 
+    def restore_alignment(self, stack: Dataset, applied: dict):
+        """Show ``stack``'s frames aligned as ``applied`` (no op recorded, its
+        average left as it is). Returns the average as a signal."""
+        from .processing.registration import aligned_signals
+
+        original = stack.loaded_signal
+        aligned, mean = aligned_signals(original, applied["stack"], applied["average"], applied["info"]["square"])
+        stack.original_signal = original
+        stack.aligned_signal = aligned
+        stack.alignment = applied["info"]
+        stack.signal = aligned
+        self._view_changed(stack)
+        return mean
+
+    def measured_shifts(self, stack: Dataset) -> list[Dataset]:
+        """The drift-corrected stacks whose measured shifts ``stack`` can be
+        aligned with: the same frames and frame size as loaded, in the same
+        file or experiment (e.g. the HAADF recorded with the segments, for a
+        DPC or iDPC stack made from them); a HAADF first."""
+        if stack.kind is not DatasetKind.STACK:
+            return []
+        entry = self.file_of(stack)
+        files = [entry] if entry.experiment_id is None else [
+            f for f in self.files.values() if f.experiment_id == entry.experiment_id
+        ]
+        shape = tuple(stack.loaded_signal.data.shape)
+        out = [
+            d for f in files for d in (self.datasets[i] for i in f.dataset_ids)
+            if d is not stack and d.kind is DatasetKind.STACK and d.alignment is not None
+            and tuple(d.loaded_signal.data.shape) == shape
+        ]
+        return sorted(out, key=lambda d: "HAADF" not in d.title.upper())
+
+    def align_from(self, stack: Dataset, source: Dataset) -> None:
+        """Align ``stack`` with the shifts measured on ``source`` (see
+        ``measured_shifts``): its frames shifted and cropped as ``source``'s.
+        A DPC object: its DPC x and y aligned, its direction remade from them
+        (a direction is not shifted itself); a DPC stack's data of either sign
+        is shifted as such."""
+        from .project import realigned
+
+        if source not in self.measured_shifts(stack):
+            raise ValueError(f"{source.title}'s shifts don't apply to {stack.title}")
+        info = source.alignment
+        signed = stack.origin == "dpc"
+        if stack.origin == "dpc" and stack.dpc and stack.dpc.get("output") == "colour":
+            parts = self._dpc_children(stack)
+            for p in parts.values():
+                if p.alignment is not None:
+                    self.remove_alignment(p)
+                self.restore_alignment(p, realigned(p, info, signed=True))
+                p.ops.append(_op({"op": "align", "info": info}))
+            x = np.asarray(parts["x"].signal.data, np.float64)
+            y = np.asarray(parts["y"].signal.data, np.float64)
+            angle = np.degrees(np.arctan2(y, x)).astype(np.float32)
+            mean = np.degrees(np.arctan2(y.mean(axis=0), x.mean(axis=0))).astype(np.float32)
+            if stack.alignment is not None:
+                self.remove_alignment(stack)
+            self.restore_alignment(stack, {"stack": angle, "average": mean, "info": info})
+            stack.ops.append(_op({"op": "align", "info": info}))
+            return
+        if stack.alignment is not None:
+            self.remove_alignment(stack)
+        self.apply_alignment(stack, realigned(stack, info, signed=signed))
+
+    def _dpc_children(self, ds: Dataset) -> dict[str, Dataset]:
+        """The DPC x and DPC y under a DPC object."""
+        return {
+            d.dpc["output"]: d for d in self.datasets.values()
+            if d.parent_id == ds.id and d.origin == "dpc" and d.dpc and d.dpc.get("output") in ("x", "y")
+        }
+
     def show_alignment(self, stack: Dataset, active: bool) -> None:
-        """Show a stack's frames aligned or as loaded."""
+        """Show a stack's frames aligned or as loaded (a DPC object's DPC x
+        and y with it)."""
         if stack.alignment is None:
             raise ValueError(f"{stack.title} has no alignment")
         target = stack.aligned_signal if active else stack.original_signal
         if stack.signal is not target:
             stack.signal = target
             self._view_changed(stack)
+        if stack.origin == "dpc" and stack.dpc and stack.dpc.get("output") == "colour":
+            for p in self._dpc_children(stack).values():
+                if p.alignment is not None:
+                    self.show_alignment(p, active)
 
     def remove_alignment(self, stack: Dataset) -> None:
         """Drop a stack's alignment (and its average): back to the frames as loaded."""
@@ -2247,6 +2639,9 @@ class Session:
         self._view_changed(stack)
         for d in self._averages(stack):
             self._remove(d)
+        if stack.origin == "dpc" and stack.dpc and stack.dpc.get("output") == "colour":
+            for p in self._dpc_children(stack).values():
+                self.remove_alignment(p)
 
     def siblings_in_file(self, file_id: str) -> list[Dataset]:
         with self._lock:

@@ -9,13 +9,15 @@ export type RightTab = "info" | "quantify" | "process";
 /** How several images are shown: one composite, or a panel each. */
 export type GridMode = "merged" | "grid";
 /** Kinds of view with their own mode: a spectrum image (with maps), plain images. */
-export type GridContext = "si" | "images";
+export type GridContext = "si" | "images" | "stacks";
 /** Tabs of the pane under the image; a linked EELS spectrum image has one per
  * member of its group, ``eels:<dataset id>`` (ids last for one session only:
  * a stored one that is not shown falls back, see BottomPane). */
-export type BottomTab = "spectrum" | "profile" | "histogram" | "exploded" | "alignment" | `eels:${string}`;
+export type BottomTab =
+  | "spectrum" | "profile" | "histogram" | "exploded" | "alignment" | "pca-component" | "pca-scree" | `eels:${string}`;
 const isBottomTab = (t: string | undefined): t is BottomTab =>
   t === "spectrum" || t === "profile" || t === "histogram" || t === "exploded" || t === "alignment" ||
+  t === "pca-component" || t === "pca-scree" ||
   (!!t && t.startsWith("eels:") && t.length > 5);
 export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
 /** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */
@@ -379,7 +381,7 @@ export const useUi = create<UiState>((set, get) => ({
     save("si-viewer.rightTab", rightTab);
     set({ rightTab });
   },
-  gridMode: { si: loadGridMode("si"), images: loadGridMode("images") },
+  gridMode: { si: loadGridMode("si"), images: loadGridMode("images"), stacks: loadGridMode("stacks") },
   setGridMode: (context, mode) => {
     save(`si-viewer.gridMode.${context}`, mode ?? "auto");
     set((s) => ({ gridMode: { ...s.gridMode, [context]: mode } }));

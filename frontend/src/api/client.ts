@@ -100,6 +100,57 @@ export interface EelsSubshell {
 
 /** EELS spectra and spectrum images: the elements chosen for a model fit and
  * their edges inside the energy range (by onset). */
+/** How DPC images are made from the four quadrant images. */
+export interface DpcSettings {
+  /** The image of each quadrant (A–D). */
+  inputs: Record<string, string>;
+  normalise: boolean;
+  /** Rotation of the detector's axes into the image's (degrees). */
+  theta: number;
+  mirror: boolean;
+}
+
+/** A PCA of a spectrum image: its source, energy window and components. */
+export interface PcaInfo {
+  source_id: string;
+  /** First and last energy of the window. */
+  window: [number, number];
+  channels: [number, number];
+  poisson: boolean;
+  components: number;
+  /** Fraction of the sum of squares of each component. */
+  explained: number[];
+  /** A denoised spectrum image: the components it was rebuilt from. */
+  n?: number;
+}
+
+/** What a PCA is made with. */
+export interface PcaOptions {
+  lo: number | null;
+  hi: number | null;
+  components: number;
+  poisson: boolean;
+}
+
+/** A segment image a DPC can be made from. */
+export interface DpcCandidate {
+  id: string;
+  title: string;
+  segments: number[];
+  quadrant: string;
+  origin: string;
+}
+
+export interface DetectorInfo {
+  name: string;
+  /** Hardware segment numbers. */
+  segments: number[];
+  /** Each segment's sign in the sum ("Positive" / "Negative"). */
+  polarities: string[];
+  /** The reader's name for it, e.g. "DFS(0,4)". */
+  label: string | null;
+}
+
 export interface EdgesInfo {
   elements: string[];
   subshells: EelsSubshell[];
@@ -137,13 +188,17 @@ export interface DatasetSummary {
   eels: EelsInfo | null;
   /** EELS spectra and spectrum images only. */
   edges: EdgesInfo | null;
+  /** Images of a segmented detector: the segments summed into it, as
+   * recorded at acquisition (Velox), e.g. DFS 0 and 4; null otherwise. */
+  detector: DetectorInfo | null;
   /** In-situ series (spectrum image or image stack); null otherwise. */
   insitu: InsituInfo | null;
   /** "computed": an element map made from a spectrum image (window +
    * background); "fitted": from fitting every pixel. */
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
-    | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned";
+    | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc"
+    | "pca" | "pca-factors" | "pca-denoised";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -180,6 +235,10 @@ export interface DatasetSummary {
   derived_from: string | null;
   /** The survey image of a spectrum imaging run: the rectangles GMS drew on it. */
   survey: { regions: SurveyRegion[] } | null;
+  /** DPC images: how they were made. */
+  dpc: (DpcSettings & { output: "colour" | "x" | "y" | "idpc" }) | null;
+  /** PCA (origin "pca", "pca-factors", "pca-denoised"): how it was made. */
+  pca: PcaInfo | null;
   /** EELS spectrum images made by background removal: the settings used
    * (re-run with PUT /background); else null. */
   background: BackgroundInfo | null;
@@ -715,6 +774,10 @@ export interface JobSummary {
     partner_files?: FileSummary[];
     aligned?: string[];
     shift?: number;
+    /** PCA: the PCA stack made. */
+    pca_id?: string;
+    /** Opening an analysis: the files its drift corrections changed. */
+    files?: FileSummary[];
   } | null;
 }
 
@@ -871,7 +934,14 @@ export const api = {
     }),
   /** ``locations``: where raw files that moved are (file id -> path). */
   openProject: (path: string, locations: Record<string, string> = {}) =>
-    request<{ files: FileSummary[]; file_ids: string[]; views: Record<string, unknown>; warnings: string[] }>("/api/project/open", {
+    request<{
+      files: FileSummary[];
+      file_ids: string[];
+      views: Record<string, unknown>;
+      warnings: string[];
+      /** Drift corrections redone after opening. */
+      job: JobSummary | null;
+    }>("/api/project/open", {
       method: "POST",
       body: JSON.stringify({ path, locations }),
     }),
@@ -1059,6 +1129,15 @@ export const api = {
   alignedSum: (id: string, choice: ShiftsChoice) =>
     request<JobSummary>(`/api/datasets/${id}/insitu/aligned-sum`, { method: "POST", body: JSON.stringify(choice) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
+  /** Job: decompose a spectrum image; its result's ``pca_id`` is the PCA made (or remade). */
+  startPca: (id: string, options: PcaOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/pca`, { method: "POST", body: JSON.stringify(options) }),
+  /** The spectrum image rebuilt from a PCA's first ``n`` components (a new SI, ``id``). */
+  denoisePca: (id: string, n: number) =>
+    request<{ id: string; file: FileSummary }>(`/api/datasets/${id}/pca/denoise`, {
+      method: "POST",
+      body: JSON.stringify({ n }),
+    }),
   cancelJob: (id: string) => request<JobSummary>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   startRegistration: (id: string, first: number, last: number) =>
     request<RegistrationSummary>(`/api/datasets/${id}/registration`, {
@@ -1088,11 +1167,53 @@ export const api = {
   registrationResult: (id: string) => request<RegistrationResult>(`/api/datasets/${id}/registration/result`),
   /** Store the result with the stack (shown aligned) and add the average. */
   /** ``inPlace`` false: the aligned frames become a new stack (``aligned_id``) under it. */
-  applyAlignment: (id: string, inPlace = true) =>
-    request<DatasetAndFile & { average: DatasetSummary; aligned_id: string }>(`/api/datasets/${id}/registration/apply`, {
+  /** ``also``: other stacks (see ``registrationPartners``) given the same shifts. */
+  applyAlignment: (id: string, inPlace = true, also: string[] = []) =>
+    request<
+      DatasetAndFile & {
+        average: DatasetSummary;
+        aligned_id: string;
+        also: { id: string; aligned_id: string }[];
+        /** Every file changed. */
+        files: FileSummary[];
+      }
+    >(`/api/datasets/${id}/registration/apply`, {
       method: "POST",
-      body: JSON.stringify({ in_place: inPlace }),
+      body: JSON.stringify({ in_place: inPlace, also }),
     }),
+  /** What a DPC of image ``id`` can be made from, the quadrants chosen, and
+   * the settings of DPC images made from them (if any). */
+  dpcInfo: (id: string) =>
+    request<{
+      candidates: DpcCandidate[];
+      choice: Record<string, string>;
+      settings: DpcSettings | null;
+      /** The detector rotation recorded in the file (degrees), if any. */
+      recorded: number | null;
+    }>(
+      `/api/datasets/${id}/dpc`,
+    ),
+  /** The detector's rotation found from the data (least curl). */
+  dpcRotation: (inputs: Record<string, string>, normalise: boolean) =>
+    request<{ theta: number; mirror: boolean; curl_ratio: number }>("/api/dpc/rotation", {
+      method: "POST",
+      body: JSON.stringify({ inputs, normalise }),
+    }),
+  /** Make (or make again) DPC x, DPC y and iDPC images. */
+  makeDpc: (settings: DpcSettings) =>
+    request<{ ids: Record<"colour" | "x" | "y" | "idpc", string>; files: FileSummary[] }>("/api/dpc", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    }),
+  /** The other stacks a drift measured on ``id`` applies to (same frames and
+   * frame size, same file or experiment). */
+  registrationPartners: (id: string) =>
+    request<{ id: string; title: string }[]>(`/api/datasets/${id}/registration/partners`),
+  /** The drift-corrected stacks whose measured shifts ``id`` can be aligned with (a HAADF first). */
+  alignmentSources: (id: string) => request<{ id: string; title: string }[]>(`/api/datasets/${id}/alignment/sources`),
+  /** Align a stack with the shifts measured on ``source`` (shifted and cropped as it is). */
+  alignFrom: (id: string, source: string) =>
+    request<DatasetAndFile>(`/api/datasets/${id}/alignment/from`, { method: "POST", body: JSON.stringify({ source }) }),
   showAlignment: (id: string, active: boolean) =>
     request<DatasetAndFile>(`/api/datasets/${id}/alignment`, { method: "PUT", body: JSON.stringify({ active }) }),
   removeAlignment: (id: string) => request<DatasetAndFile>(`/api/datasets/${id}/alignment`, { method: "DELETE" }),

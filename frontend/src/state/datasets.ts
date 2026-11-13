@@ -72,8 +72,9 @@ interface DatasetsState {
   rebin: (d: DatasetSummary, factors: number[], time?: number, inPlace?: boolean) => Promise<void>;
   /** Show only this dataset. */
   select: (datasetId: string) => void;
-  /** Plain click in the dataset pane: images toggle in and out of the view;
-   * a spectrum image, stack or spectrum becomes the view. */
+  /** Plain click in the dataset pane: images and stacks toggle in and out of
+   * the view (shown alone when they can't join it); a spectrum image or
+   * spectrum becomes the view. */
   clickDataset: (d: DatasetSummary) => void;
   /** ⌘/Ctrl-click: add to or remove from the highlighted set. */
   toggleSelect: (d: DatasetSummary) => void;
@@ -113,6 +114,27 @@ export const PAIR_COLOURS = 6;
 export type DatasetItem =
   | { type: "dataset"; d: DatasetSummary }
   | { type: "group"; colour: number; ds: DatasetSummary[] };
+
+// Images Velox makes from the segments (in this order).
+const VELOX_DPC = ["A-C", "B-D", "DPC", "iDPC"];
+
+/** The datasets of one level acquired with a segmented detector, per kind
+ * (images, stacks), none unless two segment images: the HAADF (shown first,
+ * on its own) and the linked set, the segment images by name then the images
+ * Velox made from them. */
+function dpcSets(ds: DatasetSummary[]): { haadf: DatasetSummary[]; set: DatasetSummary[] }[] {
+  const out: { haadf: DatasetSummary[]; set: DatasetSummary[] }[] = [];
+  for (const kind of ["image", "stack"]) {
+    const raw = ds.filter((d) => d.kind === kind && d.origin === "file");
+    const segments = raw.filter((d) => d.detector?.segments.length);
+    if (segments.length < 2) continue;
+    const byName = (a: DatasetSummary, b: DatasetSummary) => a.title.localeCompare(b.title);
+    const haadf = raw.filter((d) => !d.detector?.segments.length && /HAADF/i.test(d.title)).sort(byName);
+    const velox = VELOX_DPC.flatMap((t) => raw.filter((d) => d.title === t && !d.detector?.segments.length));
+    out.push({ haadf, set: [...segments.sort(byName), ...velox] });
+  }
+  return out;
+}
 
 /** A rendered stretch of the file list: one file, or the files holding a link
  * group, placed one after the other and boxed. */
@@ -254,6 +276,8 @@ export type RowItem = DatasetItem | { type: "types"; key: string; label: string;
 export interface FileTree {
   rows: RowItem[];
   children: Map<string, RowItem[]>;
+  /** A segmented detector's images: each one's linked images (ids). */
+  dpcLinked: Map<string, string[]>;
 }
 
 /** The dataset ``d`` was made from, if it is in ``ids``. */
@@ -262,15 +286,28 @@ const parentIn = (d: DatasetSummary, ids: Set<string>) => {
   return p && p !== d.id && ids.has(p) ? p : null;
 };
 
+/** Shown in the dataset pane: not a PCA's factors (its window shows them). */
+export const listed = (d: DatasetSummary) => d.origin !== "pca-factors";
+
 export function layoutTree(f: FileSummary, colourOf: Map<string, number>): FileTree {
   const ids = new Set(f.datasets.map((d) => d.id));
   const under = new Map<string | null, DatasetSummary[]>();
+  const dpcLinked = new Map<string, string[]>();
   for (const d of f.datasets) {
+    if (!listed(d)) continue;
     const p = parentIn(d, ids);
     under.set(p, [...(under.get(p) ?? []), d]);
   }
   const level = (ds: DatasetSummary[], parent: string | null): RowItem[] => {
-    const items = layoutFile(ds, colourOf);
+    // A segmented detector's images first: the HAADF, then the segments (linked).
+    const sets = dpcSets(ds);
+    const first = sets.flatMap((x) => [...x.haadf, ...x.set]);
+    const inSet = new Set(first.map((d) => d.id));
+    for (const { set } of sets) for (const d of set) dpcLinked.set(d.id, set.filter((o) => o.id !== d.id).map((o) => o.id));
+    const items: DatasetItem[] = [
+      ...first.map((d): DatasetItem => ({ type: "dataset", d })),
+      ...layoutFile(ds.filter((d) => !inSet.has(d.id)), colourOf),
+    ];
     const byLabel = new Map<string, DatasetSummary[]>();
     for (const it of items) {
       if (it.type !== "dataset") continue;
@@ -298,7 +335,8 @@ export function layoutTree(f: FileSummary, colourOf: Map<string, number>): FileT
   };
   const children = new Map<string, RowItem[]>();
   for (const [p, ds] of under) if (p !== null) children.set(p, level(ds, p));
-  return { rows: level(under.get(null) ?? [], null), children };
+  const rows = level(under.get(null) ?? [], null);
+  return { rows, children, dpcLinked };
 }
 
 /** The datasets in the order the list shows them. With ``collapsed`` (folded
@@ -332,13 +370,14 @@ export function planeSize(d: DatasetSummary): [number, number] {
 
 /** Why ``d`` can't be shown together with ``current``, or null if it can.
  * Images and maps go over a spectrum image (same scan size) or side by side
- * with other images (any size). Anything else is shown alone. */
+ * with other images (any size). Stacks go side by side with other stacks
+ * (one frame slider). Anything else is shown alone. */
 function combineError(current: DatasetSummary[], d: DatasetSummary): string | null {
   if (d.kind === "other") return `${d.title} can't be displayed.`;
   const all = [...current, d];
   const primaries = all.filter((x) => x.kind !== "image");
-  if (primaries.length > 1) {
-    return "Only one spectrum image, stack or spectrum can be shown at a time. Click it without ⌘ to switch.";
+  if (primaries.length > 1 && !primaries.every((x) => x.kind === "stack")) {
+    return "Only one spectrum image or spectrum can be shown at a time (stacks can be shown together). Click it without ⌘ to switch.";
   }
   const images = all.filter((x) => x.kind === "image");
   const primary = primaries[0];
@@ -651,7 +690,9 @@ export const useDatasets = create<DatasetsState>((set, get) => {
         set({ focusId: d.id });
         return;
       }
-      if (d.kind !== "image") {
+      // Images and stacks are added to the view by a click and removed by
+      // another (stacks next to stacks, sharing the frame slider).
+      if (d.kind !== "image" && d.kind !== "stack") {
         if (selection.includes(d.id)) set({ focusId: d.id });
         else get().select(d.id);
         return;
@@ -727,7 +768,8 @@ export const useDatasets = create<DatasetsState>((set, get) => {
 export const canDelete = (d: DatasetSummary) =>
   d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r" ||
   d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan" ||
-  d.origin === "aligned-sum" || d.origin === "rebinned" || d.origin === "zlp-aligned" || d.origin === "aligned";
+  d.origin === "aligned-sum" || d.origin === "rebinned" || d.origin === "zlp-aligned" || d.origin === "aligned" ||
+  d.origin === "dpc" || d.origin === "pca" || d.origin === "pca-factors" || d.origin === "pca-denoised";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);
@@ -738,6 +780,7 @@ export const elementOf = (d: DatasetSummary) => d.element ?? d.title;
 /** Colormap an image starts with: its element colour for element maps. */
 export function initialColormap(d: DatasetSummary): string {
   if (isWindowMap(d)) return useDisplay.getState().ensureWindowColour(d.id);
+  if (d.dpc?.output === "colour") return "hsv"; // a direction: a circular map
   return d.is_element_map ? useDisplay.getState().ensureElementColour(elementOf(d)) : DEFAULT_COLORMAP;
 }
 

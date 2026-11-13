@@ -24,6 +24,8 @@
   --badge-shift: #7c3aed;
   --badge-other: #6b7280;
   --badge-survey: #4f46e5;
+  --badge-dpc: #c026d3;
+  --badge-pca: #0891b2;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -509,6 +511,8 @@ button.primary:disabled {
 .badge-thickness { background: var(--badge-thickness); }
 .badge-shift { background: var(--badge-shift); }
 .badge-survey { background: var(--badge-survey); }
+.badge-dpc { background: var(--badge-dpc); }
+.badge-pca { background: var(--badge-pca); }
 
 .empty-list {
   margin: 0;
@@ -1181,8 +1185,8 @@ button.primary:disabled {
 .contrast-controls {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 12px;
+  flex-wrap: nowrap;
+  gap: 6px;
   min-height: 34px;
 }
 
@@ -1200,10 +1204,14 @@ button.primary:disabled {
   border: 1px solid var(--border);
 }
 
+.colormap-button .colormap-swatch {
+  width: 22px;
+}
+
 .colormap-button {
   display: inline-flex;
   align-items: center;
-  padding: 4px;
+  padding: 3px;
   border: 1px solid transparent;
   border-radius: 4px;
   background: none;
@@ -1249,10 +1257,14 @@ button.primary:disabled {
   font-weight: 600;
 }
 
+/* The one part of the toolbar that gives way when the pane is narrow. */
 .histogram {
   display: flex;
   flex-direction: column;
-  width: 220px;
+  flex: 1 1 150px;
+  min-width: 48px;
+  max-width: 150px;
+  container-type: inline-size;
 }
 
 .histogram canvas {
@@ -1264,6 +1276,13 @@ button.primary:disabled {
   touch-action: none;
 }
 
+/* Hidden when the histogram is too narrow for both numbers. */
+@container (max-width: 100px) {
+  .histogram-labels {
+    visibility: hidden;
+  }
+}
+
 .histogram-labels {
   display: flex;
   justify-content: space-between;
@@ -1271,26 +1290,64 @@ button.primary:disabled {
   color: var(--muted);
 }
 
+/* Auto and Min–max: two small icon buttons, one above the other. */
 .contrast-buttons {
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.contrast-buttons button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.contrast-buttons button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 .gamma {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
+.gamma-track {
+  position: relative;
+  display: inline-flex;
+}
+
 .gamma input[type="range"] {
-  width: 80px;
+  width: 56px;
+}
+
+/* The value typed in: a bubble under the slider's handle. */
+.gamma-bubble {
+  position: absolute;
+  top: calc(100% + 4px);
+  z-index: 30;
+  transform: translateX(-50%);
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .gamma input.gamma-input {
-  width: 52px;
+  width: 56px;
 }
 
 /* Image view */
@@ -1926,25 +1983,25 @@ button.primary:disabled {
   pointer-events: none;
 }
 
+/* One row: tools, view switches, then the contrast (its histogram narrows). */
 .layer-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.layer-toolbar > * {
+  flex: none;
 }
 
 .layer-toolbar .contrast-controls {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
-.editing-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px 2px 4px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  font-weight: 500;
+.stack-bar button {
   white-space: nowrap;
 }
 
@@ -2084,12 +2141,19 @@ button.primary:disabled {
 }
 
 
-.toast {
+.toasts {
   position: fixed;
   left: 50%;
   bottom: 36px;
   transform: translateX(-50%);
   z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.toast {
   max-width: min(560px, calc(100vw - 32px));
   padding: 8px 14px;
   border-radius: 8px;
@@ -2097,6 +2161,27 @@ button.primary:disabled {
   color: #f0f2f5;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   cursor: pointer;
+}
+
+.toast-progress {
+  cursor: default;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 260px;
+}
+
+.toast-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  overflow: hidden;
+}
+
+.toast-bar > div {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
 }
 
 /* ---------- Selection highlight and element colours ---------- */
@@ -4254,11 +4339,14 @@ kbd {
   height: 100%;
   min-height: 0;
   padding: 6px 8px;
+  overflow-y: auto;
 }
 
+/* Square, at most half the width: the facts beside it always have room. */
 .alignment-summary .drift-plot {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   height: 100%;
+  max-width: 50%;
   aspect-ratio: 1;
 }
 
@@ -4267,6 +4355,10 @@ kbd {
   grid-template-columns: auto 1fr;
   gap: 4px 12px;
   align-content: start;
+  align-items: baseline;
+  flex: 1;
+  min-width: 180px;
+  max-width: 460px;
   margin: 0;
   font-size: 12px;
 }
@@ -4285,6 +4377,17 @@ kbd {
   align-items: center;
   gap: 6px;
   margin: 8px 0;
+}
+
+/* The last row of the facts: the buttons side by side, wrapping under each other. */
+.alignment-facts dt:last-of-type {
+  align-self: start;
+  margin-top: 6px;
+  line-height: 24px; /* a button's height: level with the first button */
+}
+
+.alignment-facts .align-save {
+  margin: 6px 0 0;
 }
 
 .align-crop {
@@ -5088,4 +5191,63 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* PCA: the component's spectrum and the scree plot (bottom tabs of a PCA). */
+.pca-plot {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pca-plot svg {
+  display: block;
+}
+
+.pca-line {
+  fill: none;
+  stroke: var(--badge-pca);
+  stroke-width: 1.5;
+}
+
+.pca-scree {
+  cursor: pointer;
+}
+
+.pca-point {
+  fill: var(--panel);
+  stroke: var(--muted);
+  stroke-width: 1.25;
+}
+
+.pca-point.kept {
+  fill: var(--badge-pca);
+  stroke: var(--badge-pca);
+}
+
+.pca-kept-line {
+  stroke: var(--badge-pca);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.pca-kept-line.active {
+  stroke-width: 2.5;
+}
+
+.pca-scree.on-line {
+  cursor: ew-resize;
+}
+
+.pca-current {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.pca-kept-note {
+  position: absolute;
+  right: 18px;
+  bottom: 4px;
 }

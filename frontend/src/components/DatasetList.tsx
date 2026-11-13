@@ -3,7 +3,7 @@ import {
 } from "react";
 import { api, thumbnailUrl, type DatasetSummary, type EelsPartner, type FileSummary } from "../api/client";
 import {
-  allDatasets, canDelete, elementOf, isColourMap, layoutPane, layoutTree, paneFiles, paneKey, setMapColour,
+  allDatasets, canDelete, elementOf, isColourMap, layoutPane, layoutTree, listed, paneFiles, paneKey, setMapColour,
   useDatasets, workspaceOf, type FileTree, type PaneItem, type RowItem,
 } from "../state/datasets";
 import { useLayers } from "../state/layers";
@@ -32,7 +32,7 @@ function countUnder(id: string, tree: FileTree): number {
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
 const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map ? "map" : d.kind}`;
+  `badge badge-${d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
   isBackgroundRemoved(d) || isDeconvolved(d) || d.origin === "line-scan"
@@ -43,7 +43,7 @@ const deleteTitle = (d: DatasetSummary) =>
         (d.origin === "file" ? ". The file on disk is not changed." : "");
 
 export function DatasetList() {
-  const { files, selection, focusId, clickDataset, toggleSelect, closeFile, deleteDataset, enterWorkspace } = useDatasets();
+  const { files, selection, focusId, clickDataset, toggleSelect, select, closeFile, deleteDataset, enterWorkspace } = useDatasets();
   // The workspace being viewed (a top-level entry); the others are entered first.
   const active = useDatasets((s) => s.active);
   const activeKey = active ? (workspaceOf(files, active)?.key ?? null) : null;
@@ -123,11 +123,17 @@ export function DatasetList() {
   // Click: maps/images are added to or removed from the view; a spectrum
   // image, stack or spectrum becomes the view. ⌘/Ctrl-click toggles anything
   // (e.g. removes the spectrum image to leave just its maps). Images can also
-  // be dragged onto the viewer.
+  // be dragged onto the viewer. Shift-click: the view shows just this one.
   // A dataset of another workspace enters that workspace first (bringing back
   // what it showed); the next click acts on the dataset.
-  const activate = (d: DatasetSummary, toggle: boolean) =>
-    elsewhere(d.file_id) ? enterWorkspace(d.file_id) : toggle ? toggleSelect(d) : clickDataset(d);
+  const activate = (d: DatasetSummary, toggle: boolean, only = false) =>
+    elsewhere(d.file_id)
+      ? enterWorkspace(d.file_id)
+      : only
+        ? select(d.id)
+        : toggle
+          ? toggleSelect(d)
+          : clickDataset(d);
   const itemProps = (d: DatasetSummary, className: string) => ({
     role: "button",
     tabIndex: 0,
@@ -135,7 +141,7 @@ export function DatasetList() {
     className: `${className}${highlighted.has(d.id) ? " selected" : ""}${
       highlighted.size > 1 && d.id === focusId && highlighted.has(d.id) ? " focused" : ""
     }`,
-    onClick: (e: MouseEvent) => activate(d, e.metaKey || e.ctrlKey),
+    onClick: (e: MouseEvent) => activate(d, e.metaKey || e.ctrlKey, e.shiftKey),
     onContextMenu: (e: MouseEvent) => {
       e.preventDefault();
       setMenu({ x: e.clientX, y: e.clientY, d });
@@ -153,7 +159,7 @@ export function DatasetList() {
       }
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
-      activate(d, e.metaKey || e.ctrlKey);
+      activate(d, e.metaKey || e.ctrlKey, e.shiftKey);
     },
     draggable: d.kind === "image" && renaming !== d.id && !elsewhere(d.file_id),
     onDragStart: (e: DragEvent) => {
@@ -227,7 +233,7 @@ export function DatasetList() {
           <span className="dataset-title">
             {nodeToggle(d, tree)}
             {isColourMap(d) && <ColourDot d={d} />}
-            <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} />
+            <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} dpc={tree.dpcLinked.get(d.id)} />
             {titleOf(d)}
           </span>
           <span className="dataset-shape">{shapeLabel(d)}</span>
@@ -244,7 +250,7 @@ export function DatasetList() {
           {!inGroup && <span className={badgeClass(d)}>{kindLabel(d)}</span>}
           <span className="dataset-title">
             {isColourMap(d) && <ColourDot d={d} />}
-            <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} />
+            <LinkGlyph d={d} files={files} colour={colourOf.get(d.id)} dpc={tree.dpcLinked.get(d.id)} />
             {titleOf(d)}
           </span>
           <span className="dataset-shape">{shapeLabel(d)}</span>
@@ -459,18 +465,23 @@ function eelsItems(d: DatasetSummary, partners: EelsPartner[] | null, files: Fil
   return items;
 }
 
-/** Chain mark on a spectrum image that is linked with others. */
-function LinkGlyph({ d, files, colour }: { d: DatasetSummary; files: FileSummary[]; colour?: number }) {
-  if (!d.eels?.linked.length) return null;
+/** Chain mark on a spectrum image that is linked with others, or on one of
+ * a segmented detector's images (``dpc``: the images it is linked with). */
+function LinkGlyph({
+  d, files, colour, dpc,
+}: { d: DatasetSummary; files: FileSummary[]; colour?: number; dpc?: string[] }) {
+  const linked = d.eels?.linked.length ? d.eels.linked : dpc ?? [];
+  if (!linked.length) return null;
   const all = allDatasets(files);
-  const named = d.eels.linked.map((id) => {
+  const tint = d.eels?.linked.length ? (colour === undefined ? undefined : `var(--pair-${colour})`) : "var(--badge-dpc)";
+  const named = linked.map((id) => {
     const o = all.find((x) => x.id === id);
     const file = o && files.find((f) => f.id === o.file_id);
     return o ? `${o.title}${file ? ` (${file.name})` : ""}` : "another dataset";
   });
   const text = `Linked to ${named.join(", ")}`;
   return (
-    <span className="link-glyph" title={text} aria-label={text} style={colour === undefined ? undefined : { color: `var(--pair-${colour})` }}>
+    <span className="link-glyph" title={text} aria-label={text} style={tint === undefined ? undefined : { color: tint }}>
       <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
         <path d="M5 7a2 2 0 0 0 2.8 0l2-2a2 2 0 0 0-2.8-2.8l-.7.7" />
         <path d="M7 5a2 2 0 0 0-2.8 0l-2 2A2 2 0 0 0 5 9.8l.7-.7" />
@@ -542,7 +553,7 @@ function ColourDot({ d }: { d: DatasetSummary }) {
 export function DatasetListHeader() {
   const { files, closeAll } = useDatasets();
   const { listMode, setListMode } = useUi();
-  const count = files.reduce((n, f) => n + f.datasets.length, 0);
+  const count = files.reduce((n, f) => n + f.datasets.filter(listed).length, 0);
 
   return (
     <div className="sidebar-header">

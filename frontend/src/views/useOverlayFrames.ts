@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchFrame, type Frame } from "../api/arrays";
+import { fetchDpcFrame, fetchFrame, type Frame } from "../api/arrays";
 import { contrastVersion, dataVersion } from "../api/client";
 import { useLayers } from "../state/layers";
 
@@ -13,6 +13,8 @@ export interface ImageRef {
   revision: number;
   filter_rev: number;
   data_rev?: number;
+  /** DPC images: the colour one is drawn with its magnitude as brightness. */
+  dpc?: { output: string } | null;
 }
 
 /** Frames of the given image datasets (by id), filled in as they arrive. */
@@ -27,7 +29,7 @@ export function useOverlayFrames(images: ImageRef[]): Record<string, Frame> {
       if (frames[d.id]?.key === k) continue;
       let p = cache.get(k);
       if (!p) {
-        p = fetchFrame(d.id);
+        p = d.dpc?.output === "colour" ? fetchDpcFrame(d.id) : fetchFrame(d.id);
         cache.set(k, p);
       }
       const contrast = contrastVersion(d);

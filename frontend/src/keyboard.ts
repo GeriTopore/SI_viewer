@@ -46,6 +46,7 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
       ["⌘/Ctrl O", "Open files"],
       ["⌘/Ctrl Z", "Undo the last deletion (maps, results, regions, lines, FFT boxes)"],
       ["↑ / ↓", "Previous / next dataset"],
+      ["Shift + click", "Dataset: show just that one"],
       ["[ / ]", "Fold or unfold the datasets / right-hand pane"],
       ["?", "Show these shortcuts"],
       ["Esc", "Close a dialog or menu; deselect"],

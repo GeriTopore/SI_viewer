@@ -127,37 +127,80 @@ export function ContrastControls({ frame, display, onChange }: Props) {
 
       <div className="contrast-buttons">
         <button
-          className="secondary small-button"
           disabled={!sample}
           onClick={() => sample && setRange(autoRange(sample), onChange)}
-          title="Clip 0.5 % at each end"
+          title="Auto: clip 0.5 % at each end"
+          aria-label="Auto contrast"
         >
-          Auto
+          <RangeIcon inset />
         </button>
         <button
-          className="secondary small-button"
           disabled={!sample}
           onClick={() => sample && setRange(fullRange(sample), onChange)}
-          title="Full data range"
+          title="Min–max: the full data range"
+          aria-label="Full data range"
         >
-          Min–max
+          <RangeIcon />
         </button>
       </div>
 
-      <label className="gamma" title="Gamma (double-click the slider to reset)">
-        γ
-        <GammaInput gamma={display.gamma} onChange={(gamma) => onChange({ gamma })} />
+      <GammaSlider gamma={display.gamma} value={gammaSlider} onChange={(gamma) => onChange({ gamma })} />
+    </div>
+  );
+}
+
+/** A histogram with the range marked: inside its tails (auto) or at its ends (min–max). */
+function RangeIcon({ inset = false }: { inset?: boolean }) {
+  const [a, b] = inset ? [5, 13] : [1.5, 16.5];
+  return (
+    <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden fill="none" stroke="currentColor" strokeLinecap="round">
+      <path d="M1 9C4 9 6 2 9 2S14 9 17 9" strokeWidth="1.2" />
+      <path d={`M${a} 0.8V9.2M${b} 0.8V9.2`} strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+/** Gamma on a short slider (0.25–4; double-click resets to 1). A click on
+ * the handle without dragging opens a bubble to type any value. */
+function GammaSlider({ gamma, value, onChange }: { gamma: number; value: number; onChange: (gamma: number) => void }) {
+  const [bubble, setBubble] = useState(false);
+  const atDown = useRef<number | null>(null);
+  const wrap = useRef<HTMLLabelElement>(null);
+  useEffect(() => {
+    if (!bubble) return;
+    const onDown = (e: MouseEvent) => !wrap.current?.contains(e.target as Node) && setBubble(false);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [bubble]);
+  return (
+    <label ref={wrap} className="gamma" title="Gamma: click the handle to type a value, double-click to reset">
+      γ
+      <span className="gamma-track">
         <input
           type="range"
           min={-1}
           max={1}
           step={0.01}
-          value={gammaSlider}
-          onChange={(e) => onChange({ gamma: 2 ** (2 * Number(e.target.value)) })}
-          onDoubleClick={() => onChange({ gamma: 1 })}
+          value={value}
+          aria-label="Gamma"
+          onPointerDown={() => (atDown.current = gamma)}
+          onPointerUp={() => {
+            if (atDown.current === gamma) setBubble(true);
+            atDown.current = null;
+          }}
+          onChange={(e) => onChange(2 ** (2 * Number(e.target.value)))}
+          onDoubleClick={() => {
+            setBubble(false);
+            onChange(1);
+          }}
         />
-      </label>
-    </div>
+        {bubble && (
+          <span className="gamma-bubble" style={{ left: `${((value + 1) / 2) * 100}%` }}>
+            <GammaInput gamma={gamma} onChange={onChange} onDone={() => setBubble(false)} />
+          </span>
+        )}
+      </span>
+    </label>
   );
 }
 
@@ -300,27 +343,31 @@ const GAMMA_MIN = 0.01;
 const GAMMA_MAX = 100;
 
 /** Gamma typed in (the slider covers 0.25–4): applied as soon as it is a
- * valid number; the field shows the applied value again on Enter or leaving it. */
-function GammaInput({ gamma, onChange }: { gamma: number; onChange: (gamma: number) => void }) {
+ * valid number; Enter, Esc or leaving the field closes it (``onDone``). */
+function GammaInput({ gamma, onChange, onDone }: { gamma: number; onChange: (gamma: number) => void; onDone: () => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   const edit = (text: string) => {
     setDraft(text);
     const v = Number(text);
     if (text.trim() !== "" && v >= GAMMA_MIN && v <= GAMMA_MAX) onChange(v);
   };
-  const commit = () => setDraft(null);
   return (
     <input
       type="number"
       className="gamma-input"
+      autoFocus
       min={GAMMA_MIN}
       max={GAMMA_MAX}
       step={0.05}
       value={draft ?? Number(gamma.toFixed(2))}
       onChange={(e) => edit(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => e.key === "Enter" && commit()}
-      aria-label="Gamma"
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={onDone}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === "Escape") onDone();
+        e.stopPropagation();
+      }}
+      aria-label="Gamma value"
     />
   );
 }

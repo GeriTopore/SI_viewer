@@ -107,6 +107,15 @@ const ICONS: Record<string, () => ReactNode> = {
       <circle cx="29" cy="20" r="7.5" fill={ACCENT} fillOpacity="0.35" stroke={ACCENT} />
     </>
   ),
+  // Two spectra of different heights, scaled to meet between 0 and 1.
+  normalise: () => (
+    <>
+      <path d="M6 6V42H44" />
+      <path d="M10 8H14M10 38H14" stroke={ACCENT} />
+      <path d="M12 38C17 38 19 14 23 14S29 30 33 30S38 26 43 26" strokeWidth="1.5" />
+      <path d="M12 38C17 38 19 8 23 8S29 28 33 28S38 22 43 22" stroke={ACCENT} />
+    </>
+  ),
   // A scree plot: the components' share falling, the first few kept.
   pca: () => (
     <>

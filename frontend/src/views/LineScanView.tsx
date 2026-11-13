@@ -24,6 +24,8 @@ import { ReduceToggle, memberLabel, memberTabs, useGroup, useLossLog } from "./s
 import { useFitSeries } from "./useFitSeries";
 import { useImageDisplay } from "./useImageDisplay";
 import { useMarkers } from "./si/xray";
+import { NormaliseToggle, useNormBand } from "../components/NormaliseSection";
+import { normaliseSeries, useNormSettings } from "../state/normalise";
 
 const scaled = (data: Float32Array, k: number) => (k === 1 ? data : data.map((v) => v * k));
 
@@ -151,6 +153,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   }, [otherId, otherReady, otherVersion, otherCached]);
 
   const imgDs = other ?? ds;
+  const imgNorm = useNormSettings(imgDs);
   const shown = other ? (otherCached ? otherFrame! : null) : ownShown;
   const imgReady = other ? otherReady : ready;
 
@@ -199,10 +202,16 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   const plotted = useDeconvPreview(ds, bg.series, sel, reduceMode === "mean");
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
-  const bands = useMemo(() => [...bg.bands, ...zlp.windows], [bg.bands, zlp.windows]);
+  const normBand = useNormBand(ds);
+  const bands = useMemo(() => [...bg.bands, ...zlp.windows, ...normBand.bands], [bg.bands, zlp.windows, normBand.bands]);
   // The model fit (Quantify tab) and the elements' edges.
   const fitSeries = useFitSeries(ds, axis.x, reduceMode === "mean", null, st);
-  const withFit = useMemo(() => [...plotted, ...fitSeries], [plotted, fitSeries]);
+  // Normalised (Process tab, the plot's toggle): the spectra alone, each normalised.
+  const norm = useNormSettings(ds);
+  const withFit = useMemo(
+    () => (norm.on ? normaliseSeries(series, axis.x, norm) : [...plotted, ...fitSeries]),
+    [norm, series, axis.x, plotted, fitSeries],
+  );
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(ds, preview, axis.x);
 
@@ -212,7 +221,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
       <label className={`series-chip${st.showWhole ? "" : " off"}`} title="Spectrum summed over every position">
         <input type="checkbox" checked={st.showWhole} onChange={(e) => patch(ds.id, { showWhole: e.target.checked })} />
         <span className="series-swatch" style={{ background: SPECTRUM_COLOR }} />
-        All positions <span className="muted">{n}</span>
+        All positions
       </label>
       <label className={`series-chip${st.showCursor ? "" : " off"}`} title="Spectrum at the cursor row">
         <input type="checkbox" checked={st.showCursor} onChange={(e) => patch(ds.id, { showCursor: e.target.checked })} />
@@ -236,7 +245,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
           <span className="series-swatch" style={{ background: roi.color }} />
           {roi.name}
           <span className="muted">
-            {lo === hi ? lo : `${lo}–${hi}`} · {hi - lo + 1} {hi === lo ? "position" : "positions"}
+            {lo === hi ? lo : `${lo}–${hi}`}
           </span>
           <button
             className="icon-button"
@@ -263,7 +272,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
       series={withFit}
       markers={markers}
       windows={bands}
-      onEditWindow={(id, range, final) => zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
+      onEditWindow={(id, range, final) => normBand.onEdit(id, range) || zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : "Loading LineScan into memory…"}
@@ -272,6 +281,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
         <>
           <ElementsPicker ds={ds} onPreview={setPreview} />
           <ReduceToggle unit="position" />
+          <NormaliseToggle d={ds} />
         </>
       }
       legend={legend}
@@ -321,6 +331,8 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
               rows={rows}
               cols={cols}
               label={imgDs.title}
+              norm={imgNorm}
+              normToggle={<NormaliseToggle d={imgDs} />}
               marksView={marksKey(ds.id)}
               marks={marks}
               onMarksChange={setMarks}

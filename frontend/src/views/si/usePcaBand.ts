@@ -15,7 +15,7 @@ export function usePcaBand(ds: DatasetSummary): {
   const { lo, hi } = st.options;
   const on = st.on && canDecompose(ds) && lo !== null && hi !== null;
   const bands = useMemo<PlotWindow[]>(
-    () => (on ? [{ id: PCA_BAND, kind: "signal", lo: lo!, hi: hi!, color: PCA_COLOUR, label: "PCA" }] : []),
+    () => (on ? [{ id: PCA_BAND, kind: "signal", lo: lo!, hi: hi!, color: PCA_COLOUR, label: "Decomposition" }] : []),
     [on, lo, hi],
   );
   const onEdit = (id: string, r: EnergyRange) => {

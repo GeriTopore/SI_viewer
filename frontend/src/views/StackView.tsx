@@ -229,7 +229,8 @@ export function StackView({ ds, images, others = [] }: {
   // as the base), each a frame of this stack with its own contrast.
   const showGrid = isPca && pcaGrid && projection === "frame";
   const componentKey = (i: number) => (i === 0 ? BASE_LAYER : `${ds.id}#${i}`);
-  const componentLabel = (i: number) => `Component ${i + 1} · ${formatValue((ds.pca?.explained[i] ?? 0) * 100)} %`;
+  const pctOf = (i: number) => (ds.pca?.explained.length ? ` · ${formatValue((ds.pca.explained[i] ?? 0) * 100)} %` : "");
+  const componentLabel = (i: number) => `Component ${i + 1}${pctOf(i)}`;
   const components = showGrid ? Array.from({ length: pcaKept }, (_, i) => i) : [];
   const panelFrame = usePanelFrames(
     [
@@ -258,7 +259,7 @@ export function StackView({ ds, images, others = [] }: {
   // In the grid the component shown is the panel being edited.
   const activeRequest = useMemo(() => (showGrid ? { key: componentKey(index) } : null), [showGrid, index]); // eslint-disable-line react-hooks/exhaustive-deps
   const frameLabel = isPca && projection === "frame"
-    ? `Component ${index + 1} / ${n} · ${formatValue((ds.pca!.explained[index] ?? 0) * 100)} %`
+    ? `Component ${index + 1} / ${n}${pctOf(index)}`
     : (projection === "frame" ? `Frame ${index + 1} / ${n}` : `${projection} of ${n} frames`) +
       (alignment?.active ? " · aligned" : "");
 
@@ -336,6 +337,7 @@ export function StackView({ ds, images, others = [] }: {
                 frame: panelFrame(`${ds.id}#0`),
                 version: String(ds.filter_rev),
                 colormap: () => initialColormap(ds),
+                source: ds,
               }
             : {
                 key: `${ds.id}:${projection}`,
@@ -344,6 +346,7 @@ export function StackView({ ds, images, others = [] }: {
                 // A PCA's maps differ in range: each is auto-contrasted as it is shown.
                 version: isPca && projection === "frame" ? `${ds.filter_rev}:${shown?.index ?? index}` : String(ds.filter_rev),
                 colormap: () => initialColormap(ds),
+                source: ds,
               }
         }
         images={images}
@@ -365,7 +368,7 @@ export function StackView({ ds, images, others = [] }: {
           ...(isPca
             ? [
                 { id: "pca-component" as const, label: "Component", content: <ComponentSpectrum pca={ds} index={index} /> },
-                {
+                ...(ds.pca?.explained.length ? [{
                   id: "pca-scree" as const,
                   label: "Scree",
                   content: (
@@ -378,7 +381,7 @@ export function StackView({ ds, images, others = [] }: {
                       }}
                     />
                   ),
-                },
+                }] : []),
               ]
             : []),
         ]}

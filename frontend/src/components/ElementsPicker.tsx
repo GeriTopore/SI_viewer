@@ -41,9 +41,11 @@ export function ElementsPicker({ ds, onPreview }: Props) {
           setOpen(!open);
         }}
         aria-expanded={open}
+        aria-label="Elements"
         title={ds.edges ? "Choose elements to mark and fit their edges" : "Choose elements to mark their X-ray lines"}
       >
-        Elements{elements.length > 0 && ` (${elements.length})`} ▾
+        <PeriodicTableIcon />
+        {elements.length > 0 && <span className="elements-count">{elements.length}</span>} ▾
       </button>
       {open && (
         <PeriodicTable
@@ -58,5 +60,23 @@ export function ElementsPicker({ ds, onPreview }: Props) {
         />
       )}
     </div>
+  );
+}
+
+/** The periodic table's silhouette (H and He on top, the s and p blocks,
+ * the full rows; the transition metals' gap shortened) with the f block
+ * below, outlined in the accent colour. */
+function PeriodicTableIcon() {
+  const style = { stroke: "var(--accent)", fill: "var(--accent)", fillOpacity: 0.25, strokeWidth: 1.2 };
+  return (
+    <svg className="elements-icon" width="19" height="11" viewBox="-0.5 -0.5 15 8.6" aria-hidden>
+      <path
+        d="M0 0H1.4V1.5H3V3.2H8V1.5H12.6V0H14V5.2H0Z"
+        vectorEffect="non-scaling-stroke"
+        strokeLinejoin="round"
+        {...style}
+      />
+      <rect x="2.5" y="6.2" width="10" height="1.4" vectorEffect="non-scaling-stroke" {...style} />
+    </svg>
   );
 }

@@ -69,6 +69,8 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
     keys: [
       ["C", "Spectrum cursor (arrow keys nudge it, Shift ×10)"],
       ["R / E / P", "Rectangle / ellipse / polygon region"],
+      ["⌘ click", "Spectrum image: a second cursor there (drag to move it)"],
+      ["Shift / ⌥ drag", "Rectangle, ellipse: square / centred on the press (both: both)"],
       ["L", "Line profile"],
       ["Shift + / Shift −", "Selected line: wider / narrower; selected region: bigger / smaller"],
       ["Delete", "Remove the selected region, line or energy window"],

@@ -8,6 +8,8 @@ import { isAbort, spectralAxis } from "./geometry";
 import { useMarkers } from "./si/xray";
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
+import { NormaliseToggle, useNormBand } from "../components/NormaliseSection";
+import { canNormalise, normaliseSeries, useNormSettings } from "../state/normalise";
 
 export const SPECTRUM_COLOR = "#4c8dff";
 
@@ -50,6 +52,14 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
     [data, ds.title, fitSeries],
   );
   const bg = useBackgroundPreview(ds, axis.x, series);
+  // Normalised (Process tab, the plot's checkbox): the spectrum alone, normalised.
+  const norm = useNormSettings(ds);
+  const plotted = useMemo(
+    () => (norm.on && data ? normaliseSeries([series[0]], axis.x, norm) : bg.series),
+    [norm, data, series, axis.x, bg.series],
+  );
+  const normBand = useNormBand(ds);
+  const windows = useMemo(() => [...bg.bands, ...normBand.bands], [bg.bands, normBand.bands]);
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(ds, preview, axis.x);
   return (
@@ -57,15 +67,20 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
       <SpectrumPlot
         name={ds.title}
         x={axis.x}
-        series={bg.series}
-        windows={bg.bands}
-        onEditWindow={bg.onEditBand}
+        series={plotted}
+        windows={windows}
+        onEditWindow={(id, range, final) => normBand.onEdit(id, range) || bg.onEditBand(id, range, final)}
         xLabel={axis.label}
         xUnits={axis.units}
         loading={data ? null : "Loading spectrum…"}
         error={error}
         markers={markers}
-        toolbar={<ElementsPicker ds={ds} onPreview={setPreview} />}
+        toolbar={
+          <>
+            <ElementsPicker ds={ds} onPreview={setPreview} />
+            {canNormalise(ds) && <NormaliseToggle d={ds} />}
+          </>
+        }
       />
     </div>
   );

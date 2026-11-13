@@ -1,20 +1,14 @@
-import type { PixelsSpectrum } from "../api/arrays";
-import { CURSOR_COLOR, useSi, type SiState } from "../state/si";
-import { CURSOR_CHANNEL } from "../views/si/useSiSpectra";
+import { CURSOR2_COLOR, CURSOR_COLOR, CURSOR_SIZES, useSi, type SiState } from "../state/si";
 import { ColourPick } from "./ColourPick";
 
 interface Props {
   si: string;
   state: SiState;
-  spectra: Record<string, PixelsSpectrum>;
-  totalPixels: number;
   wholeColor: string;
 }
 
-const CURSOR_SIZES = [1, 3, 5, 7, 9, 15];
-
 /** Legend chips for the SI spectra: all pixels, the cursor and each region. */
-export function SeriesLegend({ si, state, spectra, totalPixels, wholeColor }: Props) {
+export function SeriesLegend({ si, state, wholeColor }: Props) {
   const { patch, updateRoi, deleteRois, cursorSize, setCursorSize } = useSi();
   const cursor = state.cursor;
 
@@ -23,7 +17,7 @@ export function SeriesLegend({ si, state, spectra, totalPixels, wholeColor }: Pr
       <label className={`series-chip${state.showWhole ? "" : " off"}`} title="Spectrum of every pixel">
         <input type="checkbox" checked={state.showWhole} onChange={(e) => patch(si, { showWhole: e.target.checked })} />
         <span className="series-swatch" style={{ background: wholeColor }} />
-        All pixels <span className="muted">{totalPixels.toLocaleString()} px</span>
+        All pixels
       </label>
 
       <label className={`series-chip${state.showCursor ? "" : " off"}`} title="Spectrum at the cursor">
@@ -43,10 +37,26 @@ export function SeriesLegend({ si, state, spectra, totalPixels, wholeColor }: Pr
             </option>
           ))}
         </select>
-        {spectra[CURSOR_CHANNEL] && cursorSize > 1 && (
-          <span className="muted">{spectra[CURSOR_CHANNEL].pixels} px</span>
-        )}
       </label>
+
+      {state.cursor2 && (
+        <span className={`series-chip${state.showCursor2 ? "" : " off"}`} title="Spectrum at the second cursor (⌘-click to place it)">
+          <input
+            type="checkbox"
+            checked={state.showCursor2}
+            onChange={(e) => patch(si, { showCursor2: e.target.checked })}
+            aria-label="Show cursor 2"
+          />
+          <span className="series-swatch" style={{ background: CURSOR2_COLOR }} />
+          Cursor 2
+          <span className="muted">
+            {state.cursor2.x}, {state.cursor2.y}
+          </span>
+          <button className="icon-button" title="Remove cursor 2" onClick={() => patch(si, { cursor2: null })}>
+            ×
+          </button>
+        </span>
+      )}
 
       {state.rois.map((r) => (
         <span
@@ -66,7 +76,6 @@ export function SeriesLegend({ si, state, spectra, totalPixels, wholeColor }: Pr
             <span className="series-swatch" style={{ background: r.color }} />
             {r.name}
           </ColourPick>
-          <span className="muted">{spectra[r.id] ? `${spectra[r.id].pixels.toLocaleString()} px` : "…"}</span>
           <button
             className="icon-button"
             title={`Remove ${r.name}`}

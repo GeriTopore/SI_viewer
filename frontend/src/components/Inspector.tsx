@@ -4,11 +4,14 @@ import { useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
 import { useLayers } from "../state/layers";
 import { EditableTitle } from "./RenameInput";
+import { RegionInfo, useSelectedRegion } from "./RegionInfo";
 import { ExportDialog } from "./ExportDialog";
 import { bytesLabel, filterLabel, formatValue, hasTechnique, isLineScan, isThickness, isZlpShift, kindLabel, shapeLabel } from "../format";
 
 export function Inspector() {
   const d = useFocusedDataset();
+  const region = useSelectedRegion();
+  if (region) return <RegionInfo {...region} dataset={d} />;
   if (!d) return <p className="muted">Select a dataset to see its details.</p>;
 
   return (

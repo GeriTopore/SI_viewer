@@ -286,6 +286,18 @@ const parentIn = (d: DatasetSummary, ids: Set<string>) => {
   return p && p !== d.id && ids.has(p) ? p : null;
 };
 
+/** A new spectrum image under ``d``, cropped (see ``api.cropDataset``): it is
+ * selected, or why not is told. */
+export async function cropDataset(d: DatasetSummary, crop: { region?: object; lo?: number; hi?: number }) {
+  try {
+    const r = await api.cropDataset(d.id, crop);
+    useDatasets.getState().replaceFile(r.file);
+    useDatasets.getState().select(r.id);
+  } catch (e) {
+    useLayers.getState().notify(`Could not crop ${d.title}: ${(e as Error).message}`);
+  }
+}
+
 /** Shown in the dataset pane: not a PCA's factors (its window shows them). */
 export const listed = (d: DatasetSummary) => d.origin !== "pca-factors";
 
@@ -678,11 +690,13 @@ export const useDatasets = create<DatasetsState>((set, get) => {
     },
 
     select: (id) => {
+      useSi.getState().setRegionView(null); // the Info tab shows the dataset again
       follow(id);
       set({ selection: [id], focusId: id });
     },
 
     clickDataset: (d) => {
+      useSi.getState().setRegionView(null);
       follow(d.id);
       const { selection } = get();
       // A member of the linked group in the viewer: the view stays, the member is focused.
@@ -769,7 +783,8 @@ export const canDelete = (d: DatasetSummary) =>
   d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r" ||
   d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan" ||
   d.origin === "aligned-sum" || d.origin === "rebinned" || d.origin === "zlp-aligned" || d.origin === "aligned" ||
-  d.origin === "dpc" || d.origin === "pca" || d.origin === "pca-factors" || d.origin === "pca-denoised";
+  d.origin === "dpc" || d.origin === "pca" || d.origin === "pca-factors" || d.origin === "pca-denoised" ||
+  d.origin === "cropped";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);

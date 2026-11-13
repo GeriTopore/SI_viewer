@@ -118,18 +118,28 @@ export interface PcaInfo {
   channels: [number, number];
   poisson: boolean;
   components: number;
-  /** Fraction of the sum of squares of each component. */
+  /** Fraction of the sum of squares of each component (empty for the
+   * algorithms that don't rank them: NMF, sparse PCA, the online ones). */
   explained: number[];
+  /** HyperSpy's algorithm, and the name it goes by here (absent: "SVD", "PCA"). */
+  algorithm?: DecompositionAlgorithm;
+  name?: string;
+  /** Each spectrum normalised before decomposing (null: as they are). */
+  normalise?: { mode: "range" | "value" | "mean"; lo?: number | null; hi?: number | null } | null;
   /** A denoised spectrum image: the components it was rebuilt from. */
   n?: number;
 }
 
 /** What a PCA is made with. */
+export type DecompositionAlgorithm =
+  | "SVD" | "MLPCA" | "sklearn_pca" | "NMF" | "sparse_pca" | "mini_batch_sparse_pca" | "RPCA" | "ORPCA" | "ORNMF";
+
 export interface PcaOptions {
   lo: number | null;
   hi: number | null;
   components: number;
   poisson: boolean;
+  algorithm: DecompositionAlgorithm;
 }
 
 /** A segment image a DPC can be made from. */
@@ -198,7 +208,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc"
-    | "pca" | "pca-factors" | "pca-denoised";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -1129,9 +1139,13 @@ export const api = {
   alignedSum: (id: string, choice: ShiftsChoice) =>
     request<JobSummary>(`/api/datasets/${id}/insitu/aligned-sum`, { method: "POST", body: JSON.stringify(choice) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
+  /** A new spectrum image under ``id``, cropped to a rectangle (navigation
+   * pixels, as a region's spectrum) and/or an energy window. */
+  cropDataset: (id: string, crop: { region?: object; lo?: number; hi?: number }) =>
+    request<{ id: string; file: FileSummary }>(`/api/datasets/${id}/crop`, { method: "POST", body: JSON.stringify(crop) }),
   /** Job: decompose a spectrum image; its result's ``pca_id`` is the PCA made (or remade). */
-  startPca: (id: string, options: PcaOptions) =>
-    request<JobSummary>(`/api/datasets/${id}/pca`, { method: "POST", body: JSON.stringify(options) }),
+  startPca: (id: string, options: PcaOptions, normalise: PcaInfo["normalise"] = null) =>
+    request<JobSummary>(`/api/datasets/${id}/pca`, { method: "POST", body: JSON.stringify({ ...options, normalise }) }),
   /** The spectrum image rebuilt from a PCA's first ``n`` components (a new SI, ``id``). */
   denoisePca: (id: string, n: number) =>
     request<{ id: string; file: FileSummary }>(`/api/datasets/${id}/pca/denoise`, {

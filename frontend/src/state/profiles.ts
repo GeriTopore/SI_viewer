@@ -39,7 +39,7 @@ export interface ViewProfiles {
 }
 
 /** Pan, profile lines, or FFT boxes. */
-export type ImageTool = "pan" | "line" | "fft";
+export type ImageTool = "pan" | "line" | "fft" | "rect" | "ellipse" | "polygon";
 
 const LINE_COLORS = ["#ffd60a", "#00e5ff", "#ff6bd6", "#8cff5a", "#ff7a59", "#b18cff"];
 

@@ -5,6 +5,7 @@ import { shapeToRegion, type SiState } from "../../state/si";
 import { useLayers } from "../../state/layers";
 
 export const CURSOR_CHANNEL = "cursor";
+export const CURSOR2_CHANNEL = "cursor2";
 export const LINE_CHANNEL = "line";
 
 /** Part of a profile line whose spectrum is shown: the band's polygon, and
@@ -29,7 +30,7 @@ export function useSiSpectra(
     );
   }
 
-  const { cursor, showCursor, rois } = state;
+  const { cursor, showCursor, cursor2, showCursor2, rois } = state;
   useEffect(() => {
     if (!ready) return;
     const c = coalescer.current!;
@@ -37,12 +38,16 @@ export function useSiSpectra(
       const { x, y } = cursor;
       c.request(CURSOR_CHANNEL, `${x},${y},${cursorSize}@${version}`, () => fetchPixelSpectrum(si, x, y, cursorSize));
     }
+    if (cursor2 && showCursor2) {
+      const { x, y } = cursor2;
+      c.request(CURSOR2_CHANNEL, `${x},${y},${cursorSize}@${version}`, () => fetchPixelSpectrum(si, x, y, cursorSize));
+    }
     for (const roi of rois) {
       if (!roi.visible) continue;
       const region = shapeToRegion(roi.shape);
       c.request(roi.id, `${JSON.stringify(region)}@${version}`, () => fetchRegionSpectrum(si, region));
     }
-  }, [si, version, ready, cursor, showCursor, cursorSize, rois]);
+  }, [si, version, ready, cursor, showCursor, cursor2, showCursor2, cursorSize, rois]);
 
   const lineKey = line && JSON.stringify(line);
   useEffect(() => {
@@ -56,7 +61,7 @@ export function useSiSpectra(
 
   // Drop results for regions (or a line pick) that no longer exist.
   useEffect(() => {
-    const alive = new Set([CURSOR_CHANNEL, ...rois.map((r) => r.id), ...(line ? [LINE_CHANNEL] : [])]);
+    const alive = new Set([CURSOR_CHANNEL, ...(cursor2 ? [CURSOR2_CHANNEL] : []), ...rois.map((r) => r.id), ...(line ? [LINE_CHANNEL] : [])]);
     setSpectra((prev) => {
       const stale = Object.keys(prev).filter((k) => !alive.has(k));
       if (!stale.length) return prev;

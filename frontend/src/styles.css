@@ -2619,6 +2619,43 @@ button.primary:disabled {
   white-space: nowrap;
 }
 
+/* Each tree row is measured on its own (nested rows are narrower): when it is
+   tight the shape label goes and the title shrinks to an ellipsis instead of
+   running past the pane's edge. */
+.dataset-list > li {
+  container-type: inline-size;
+}
+
+@container (max-width: 240px) {
+  /* The delete button (shown on hover) floats over the row's end instead of
+     keeping a column. */
+  .dataset {
+    position: relative;
+    grid-template-columns: auto minmax(0, 1fr) 0;
+    gap: 5px;
+  }
+  .dataset.has-results {
+    grid-template-columns: 10px auto minmax(0, 1fr) 0;
+  }
+  .dataset.no-badge {
+    grid-template-columns: minmax(0, 1fr) 0;
+  }
+  .dataset.no-badge.has-results {
+    grid-template-columns: 10px minmax(0, 1fr) 0;
+  }
+  .dataset .dataset-shape {
+    visibility: hidden;
+  }
+  .dataset .row-delete {
+    position: absolute;
+    right: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--panel);
+    border-radius: 3px;
+  }
+}
+
 .row-delete,
 .thumb-delete {
   opacity: 0;
@@ -3743,7 +3780,9 @@ button.primary.danger {
   transform: rotate(-45deg);
 }
 
+/* Narrow: the histogram on a row of its own, the rest under it. */
 .fft-contrast .contrast-controls {
+  flex-wrap: wrap;
   gap: 6px 10px;
   min-height: 0;
 }
@@ -3752,6 +3791,7 @@ button.primary.danger {
   order: -1;
   flex: 1 0 100%;
   width: 100%;
+  max-width: none;
 }
 
 .fft-contrast .colormap-picker {
@@ -3759,7 +3799,7 @@ button.primary.danger {
 }
 
 .fft-contrast .gamma {
-  flex: 1 1 100%;
+  flex: 1 1 auto;
 }
 
 .fft-contrast .gamma input[type="range"] {
@@ -5250,4 +5290,33 @@ kbd {
   position: absolute;
   right: 18px;
   bottom: 4px;
+}
+
+/* Info tab: the selected region */
+.region-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.region-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.region-units {
+  font-size: 11px;
+}
+
+/* Elements button: a periodic-table icon (and how many are chosen). */
+.elements-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.elements-icon {
+  display: block;
+}
+.elements-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }

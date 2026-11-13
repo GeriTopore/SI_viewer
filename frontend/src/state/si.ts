@@ -21,6 +21,9 @@ export interface Roi {
 export interface SiState {
   cursor: { x: number; y: number } | null;
   showCursor: boolean;
+  /** A second cursor (⌘-click), compared with the first. */
+  cursor2: { x: number; y: number } | null;
+  showCursor2: boolean;
   showWhole: boolean;
   rois: Roi[];
   selected: string | null;
@@ -32,10 +35,13 @@ export interface SiState {
 }
 
 export const CURSOR_COLOR = "#ff9f0a";
+export const CURSOR2_COLOR = "#ff453a";
+/** Cursor block sizes (n × n pixels averaged). */
+export const CURSOR_SIZES = [1, 3, 5, 7, 9, 15];
 const ROI_COLORS = ["#00e5ff", "#ff6bd6", "#8cff5a", "#b18cff", "#ffd60a", "#ff7a59"];
 
 const EMPTY: SiState = {
-  cursor: null, showCursor: true, showWhole: false, rois: [], selected: null, main: null, selectedWindow: null,
+  cursor: null, showCursor: true, cursor2: null, showCursor2: true, showWhole: false, rois: [], selected: null, main: null, selectedWindow: null,
 };
 
 interface SiStore {
@@ -47,6 +53,12 @@ interface SiStore {
   showWindows: boolean;
   /** The main window's band is drawn (the virtual image's range; needs showWindows). */
   showMain: boolean;
+  /** The view whose region is selected (shown in the Info tab), with its image size. */
+  regionView: { key: string; width: number; height: number } | null;
+  /** Units of region positions and sizes in the Info tab: "px" or a length/axis unit. */
+  regionUnits: string;
+  setRegionUnits: (u: string) => void;
+  setRegionView: (v: { key: string; width: number; height: number } | null) => void;
   patch: (si: string, patch: Partial<SiState>) => void;
   addRoi: (si: string, shape: Shape) => string;
   updateRoi: (si: string, id: string, patch: Partial<Roi>) => void;
@@ -78,6 +90,10 @@ export const useSi = create<SiStore>((set, get) => {
     reduce: "mean",
     showWindows: true,
     showMain: false,
+    regionView: null,
+    regionUnits: "px",
+    setRegionUnits: (regionUnits) => set({ regionUnits }),
+    setRegionView: (regionView) => set({ regionView }),
     patch: (si, patch) => update(si, () => patch),
     addRoi: (si, shape) => {
       const id = `roi${nextId++}`;

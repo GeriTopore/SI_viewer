@@ -10,10 +10,10 @@ import { BASE_LAYER, FFT_TOOL_TITLE, LayeredViewer } from "../components/Layered
 import { RoiOverlay } from "../components/RoiOverlay";
 import { SeriesLegend } from "../components/SeriesLegend";
 import { SpectrumPlot, type EnergyRange, type Marker, type PlotWindow, type SpectrumSeries } from "../components/SpectrumPlot";
-import { allDatasets, useDatasets } from "../state/datasets";
+import { allDatasets, useDatasets, cropDataset } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import { baseLayerKey, useLayers } from "../state/layers";
-import { CURSOR_COLOR, containsPoint, getSiState, scaleShape, shapeToRegion, useSi, useSiState, type Reduce, type Tool } from "../state/si";
+import { CURSOR2_COLOR, CURSOR_COLOR, CURSOR_SIZES, containsPoint, getSiState, scaleShape, shapeBounds, shapeToRegion, useSi, useSiState, type Reduce, type Tool } from "../state/si";
 import { reducing, useInsitu } from "../state/insitu";
 import type { MenuItem } from "../components/ContextMenu";
 import type { Pt } from "../components/ImageView";
@@ -23,7 +23,7 @@ import { bytesLabel, formatValue, insituViewLabel } from "../format";
 import { imageGeometry, isAbort } from "./geometry";
 import { useNavigatorTools } from "./si/useNavigatorTools";
 import { navigatorGeometry, polygonToScan, scanInteraction, scanPixel, scanTransform } from "./si/scan";
-import { CURSOR_CHANNEL, LINE_CHANNEL, useSiSpectra, type LineBand } from "./si/useSiSpectra";
+import { CURSOR2_CHANNEL, CURSOR_CHANNEL, LINE_CHANNEL, useSiSpectra, type LineBand } from "./si/useSiSpectra";
 import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from "../state/profiles";
 import { eelsTab, useUi, type BottomTab } from "../state/ui";
 import { stepKeys, useShortcuts } from "../keyboard";
@@ -34,6 +34,8 @@ import { memberLabel, memberTabs, useGroup, useLossLog } from "./si/LinkedSpectr
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
 import { usePcaBand } from "./si/usePcaBand";
+import { NormaliseToggle, useNormBand } from "../components/NormaliseSection";
+import { normaliseSeries, useNormSettings } from "../state/normalise";
 import { useDeconvPreview } from "./si/useDeconvPreview";
 import { useThresholdLine } from "./si/useThresholdLine";
 
@@ -101,14 +103,24 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     e: () => setTool("ellipse"),
     p: () => setTool("polygon"),
     l: () => setTool("line"),
-    // Shift +/-: the selected region bigger or smaller (lines: the viewer's).
+    // Shift +/-: with the cursor tool, the cursor's block bigger or smaller;
+    // otherwise the selected region (lines: the viewer's).
     ...stepKeys((step) => {
       if (tool === "line") return false;
+      if (tool === "cursor") {
+        const { cursorSize, setCursorSize } = useSi.getState();
+        const i = CURSOR_SIZES.indexOf(cursorSize);
+        const next = CURSOR_SIZES[Math.max(0, Math.min(CURSOR_SIZES.length - 1, (i < 0 ? 0 : i) + step))];
+        if (next !== cursorSize) setCursorSize(next);
+        return true;
+      }
       const { selected, rois } = getSiState(ds.id);
       const roi = rois.find((r) => r.id === selected);
       if (!roi) return false;
       const shape = scaleShape(roi.shape, step);
-      if (shape) useSi.getState().updateRoi(ds.id, roi.id, { shape });
+      // Not grown past the image's edges.
+      const [x0, y0, x1, y1] = shape ? shapeBounds(shape) : [0, 0, 0, 0];
+      if (shape && x0 >= 0 && y0 >= 0 && x1 <= g.width && y1 <= g.height) useSi.getState().updateRoi(ds.id, roi.id, { shape });
       return true;
     }),
   });
@@ -311,6 +323,29 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
     return items;
   };
 
+  // Right-click in a rectangle: a new spectrum image of its pixels.
+  const cropMenu = (p: Pt): MenuItem[] => {
+    const s = getSiState(ds.id);
+    const at = { x: p.x / scanK, y: p.y / scanK }; // scan pixels
+    return s.rois
+      .filter((r) => r.visible && r.shape.kind === "rect" && containsPoint(r.shape, at.x, at.y))
+      .map((r) => ({
+        label: `Crop to ${r.name}`,
+        title: "A new spectrum image of the pixels in this rectangle",
+        onSelect: () => void cropDataset(ds, { region: shapeToRegion(r.shape) }),
+      }));
+  };
+
+  // Right-click on the second cursor (its block, or a pixel around it): delete it.
+  const cursor2Menu = (p: Pt): MenuItem[] => {
+    const c = getSiState(ds.id).cursor2;
+    if (!c || !getSiState(ds.id).showCursor2) return [];
+    const half = Math.floor((useSi.getState().cursorSize - 1) / 2) + 1;
+    const [x, y] = [Math.floor(p.x / scanK), Math.floor(p.y / scanK)];
+    if (Math.abs(x - c.x) > half || Math.abs(y - c.y) > half) return [];
+    return [{ label: "Delete cursor 2", danger: true, onSelect: () => patch(ds.id, { cursor2: null }) }];
+  };
+
   // ---------- spectra ----------
   const whole = useSpectrum(ds, ready);
   // A point or stretch picked on a line's profile: its spectrum (the band
@@ -345,7 +380,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   );
   const fitSeries = useFitSeries(ds, axis.x, reduce === "mean", fitCursor, st);
   // Each series with the pixels it sums (for the deconvolution preview; none for fits).
-  const { series, sel } = useMemo(() => {
+  const { series, plain, sel } = useMemo(() => {
     const k = (n: number) => (reduce === "mean" ? 1 / n : 1);
     const out: SpectrumSeries[] = [];
     const sel: (DeconvolutionSelection | null)[] = [];
@@ -370,8 +405,13 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
       out.push({ label: "Cursor", data: scaled(c.data, k(c.pixels)), color: CURSOR_COLOR });
       sel.push({ kind: "pixel", x: st.cursor.x, y: st.cursor.y, size: cursorSize });
     }
-    return { series: [...out, ...fitSeries], sel };
-  }, [st.showWhole, st.showCursor, st.cursor, st.rois, whole.data, spectra, reduce, totalPixels, fitSeries, pickLine, lineBand, cursorSize]);
+    const c2 = spectra[CURSOR2_CHANNEL];
+    if (st.showCursor2 && st.cursor2 && c2) {
+      out.push({ label: "Cursor 2", data: scaled(c2.data, k(c2.pixels)), color: CURSOR2_COLOR });
+      sel.push({ kind: "pixel", x: st.cursor2.x, y: st.cursor2.y, size: cursorSize });
+    }
+    return { series: [...out, ...fitSeries], plain: out, sel };
+  }, [st.showWhole, st.showCursor, st.cursor, st.showCursor2, st.cursor2, st.rois, whole.data, spectra, reduce, totalPixels, fitSeries, pickLine, lineBand, cursorSize]);
 
   // ---------- elements, line markers and energy windows ----------
   const [preview, setPreview] = useState<string | null>(null);
@@ -411,13 +451,21 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const bgPixels = useMemo(() => sel.map((s) => (s?.kind === "pixel" ? { x: s.x, y: s.y, size: s.size } : null)), [sel]);
   const bg = useBackgroundPreview(ds, axis.x, series, bgPixels);
   // Deconvolution (Process tab): the deconvolved spectra, dashed.
-  const plotted = useDeconvPreview(ds, bg.series, sel, reduce === "mean");
+  const previewed = useDeconvPreview(ds, bg.series, sel, reduce === "mean");
+  // Normalised (Process tab, the plot's toggle): the spectra alone, each
+  // normalised (fits and previews are on the spectra's own scale).
+  const norm = useNormSettings(ds);
+  const plotted = useMemo(
+    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : previewed),
+    [norm, plain, previewed, axis.x],
+  );
+  const normBand = useNormBand(ds);
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
   const pcaBand = usePcaBand(ds);
   const allWindows = useMemo(
-    () => [...plotWindows, ...bg.bands, ...zlp.windows, ...pcaBand.bands],
-    [plotWindows, bg.bands, zlp.windows, pcaBand.bands],
+    () => [...plotWindows, ...bg.bands, ...zlp.windows, ...pcaBand.bands, ...normBand.bands],
+    [plotWindows, bg.bands, zlp.windows, pcaBand.bands, normBand.bands],
   );
   const windowMapIds = plotWindows.filter((w) => w.id !== MAIN && w.id !== DRAFT).map((w) => w.id);
   const selectedWindow = plotWindows.some((w) => w.id === st.selectedWindow) ? st.selectedWindow : null;
@@ -474,7 +522,10 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // Dragging the selected window's edge or inside: the main window follows
   // live; a window map's band follows the pointer and its map is remade on release.
   const editWindow = async (id: string, range: EnergyRange, final: boolean) => {
-    if (bg.onEditBand(id, range, final) || zlp.onEdit(id, range, final) || pcaBand.onEdit(id, range, final)) return;
+    if (
+      bg.onEditBand(id, range, final) || zlp.onEdit(id, range, final) || pcaBand.onEdit(id, range, final) ||
+      normBand.onEdit(id, range)
+    ) return;
     if (id === MAIN) return setMain(range);
     setEdit({ id, ...range });
     if (!final) return;
@@ -508,11 +559,13 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   };
   useShortcuts({ Delete: deleteSelectedWindow, Backspace: deleteSelectedWindow });
   const onWindowMenu = (id: string, x: number, y: number) => {
-    if (id === MAIN || !windowMapIds.includes(id)) return false;
+    if (id !== MAIN && !windowMapIds.includes(id)) return false;
     selectWindow(id);
     setMenu({ x, y, id });
     return true;
   };
+  // The energy range of a window (the main one, or a window map's).
+  const windowRange = (id: string) => plotWindows.find((w) => w.id === id);
   // Double-click on the main band: back to the whole range.
   const onWindowDoubleClick = (id: string) => {
     if (id !== MAIN || !main) return false;
@@ -532,7 +585,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const loadingMsg = `Loading spectrum image into memory (${bytesLabel(ds.nbytes)})…`;
 
   const legend = (
-    <SeriesLegend si={ds.id} state={st} spectra={spectra} totalPixels={totalPixels} wholeColor={SPECTRUM_COLOR} />
+    <SeriesLegend si={ds.id} state={st} wholeColor={SPECTRUM_COLOR} />
   );
   const spectrumPlot = (
     <SpectrumPlot
@@ -571,6 +624,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
               </button>
             ))}
           </div>
+          <NormaliseToggle d={ds} />
         </>
       }
       legend={legend}
@@ -615,7 +669,8 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           fftTool={tool === "fft"}
           profilePick
           onLineScan={cutLineScan}
-          imageMenu={ds.insitu?.view ? timeScanMenu : undefined}
+          imageMenu={(p) => [...cursor2Menu(p), ...cropMenu(p), ...(ds.insitu?.view ? timeScanMenu(p) : [])]}
+          histogramRegions={{ rois: st.rois, scale: scanK }}
           gridContext="si"
           base={
             sourceId === NONE
@@ -665,9 +720,23 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
-            { label: "Delete window", danger: true, onSelect: () => removeWindows([menu.id]) },
-            ...(windowMapIds.length > 1
-              ? [{ label: "Delete all windows", danger: true, onSelect: () => removeWindows(windowMapIds) }]
+            ...(windowRange(menu.id)
+              ? [{
+                  label: "Crop to this window",
+                  title: "A new spectrum image of this energy range",
+                  onSelect: () => {
+                    const w = windowRange(menu.id)!;
+                    void cropDataset(ds, { lo: Math.min(w.lo, w.hi), hi: Math.max(w.lo, w.hi) });
+                  },
+                }]
+              : []),
+            ...(menu.id !== MAIN
+              ? [
+                  { label: "Delete window", danger: true, onSelect: () => removeWindows([menu.id]) },
+                  ...(windowMapIds.length > 1
+                    ? [{ label: "Delete all windows", danger: true, onSelect: () => removeWindows(windowMapIds) }]
+                    : []),
+                ]
               : []),
           ]}
         />

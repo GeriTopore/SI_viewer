@@ -1,5 +1,5 @@
 import type { Pt, Transform } from "./ImageView";
-import { CURSOR_COLOR, shapeBounds, type Roi, type Shape, type SiState } from "../state/si";
+import { CURSOR2_COLOR, CURSOR_COLOR, shapeBounds, type Roi, type Shape, type SiState } from "../state/si";
 
 interface Props {
   t: Transform;
@@ -21,6 +21,9 @@ export function RoiOverlay({ t, state, cursorSize, draft, hover, hideRois }: Pro
           <RoiShape key={r.id} t={t} roi={r} selected={r.id === state.selected} />
         ))}
       {draft && <DraftShape t={t} shape={draft} hover={hover} />}
+      {state.cursor2 && state.showCursor2 && (
+        <CursorBox t={t} cursor={state.cursor2} size={cursorSize} color={CURSOR2_COLOR} />
+      )}
       {state.cursor && state.showCursor && <CursorBox t={t} cursor={state.cursor} size={cursorSize} />}
     </g>
   );
@@ -92,7 +95,9 @@ function DraftShape({ t, shape, hover }: { t: Transform; shape: Shape; hover: Pt
   );
 }
 
-function CursorBox({ t, cursor, size }: { t: Transform; cursor: { x: number; y: number }; size: number }) {
+function CursorBox({ t, cursor, size, color = CURSOR_COLOR }: {
+  t: Transform; cursor: { x: number; y: number }; size: number; color?: string;
+}) {
   const half = Math.floor((size - 1) / 2);
   const [sx0, sy0] = t.toScreen(cursor.x - half, cursor.y - half);
   const [sx1, sy1] = t.toScreen(cursor.x - half + size, cursor.y - half + size);
@@ -103,7 +108,7 @@ function CursorBox({ t, cursor, size }: { t: Transform; cursor: { x: number; y: 
   const arm = 7;
   const box = { x0: sx0 - pad, y0: sy0 - pad, x1: sx1 + pad, y1: sy1 + pad };
   return (
-    <g stroke={CURSOR_COLOR} strokeWidth={1.5} className="cursor-box">
+    <g stroke={color} strokeWidth={1.5} className="cursor-box">
       <rect x={box.x0} y={box.y0} width={box.x1 - box.x0} height={box.y1 - box.y0} fill="none" />
       <line x1={cx} y1={box.y0 - arm} x2={cx} y2={box.y0} />
       <line x1={cx} y1={box.y1} x2={cx} y2={box.y1 + arm} />

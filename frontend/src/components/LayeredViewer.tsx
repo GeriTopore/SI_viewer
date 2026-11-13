@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import type { Frame } from "../api/arrays";
 import { contrastVersion, type DatasetSummary } from "../api/client";
-import { allDatasets, initialColormap, planeSize, setMapColour, useDatasets } from "../state/datasets";
+import { allDatasets, cropDataset, initialColormap, planeSize, setMapColour, useDatasets } from "../state/datasets";
+import { containsPoint, getSiState, shapeToRegion, useSi, useSiState, type Roi } from "../state/si";
+import { useNavigatorTools } from "../views/si/useNavigatorTools";
+import { RoiOverlay } from "./RoiOverlay";
 import { useDisplay } from "../state/display";
 import { DEFAULT_LAYER, baseLayerKey, useLayers } from "../state/layers";
 import { useViewerImage } from "../state/viewerImage";
@@ -53,6 +56,8 @@ export interface BaseImage {
   version?: string;
   /** The colormap it starts with (e.g. a DPC stack's circular one). */
   colormap?: () => string;
+  /** The dataset it shows (e.g. a stack), for its region menu (crop). */
+  source?: DatasetSummary;
 }
 
 interface Props {
@@ -87,6 +92,10 @@ interface Props {
   /** Entries of the menu of a right-click on the image (``p`` in image
    * pixels) away from a profile line; none: no menu. */
   imageMenu?: (p: Pt) => MenuItem[];
+  /** The view's regions for the Histogram tab when the view keeps its own
+   * (a spectrum image's; ``scale``: image pixels per region unit). Views with
+   * the viewer's own tools have regions of their own. */
+  histogramRegions?: { rois: Roi[]; scale: number };
   /** Shown right under the image (e.g. a stack's frame slider). */
   footer?: ReactNode;
   /** Tabs of the pane under the image besides "Line profile" (e.g. the
@@ -141,10 +150,20 @@ const BASE = "base";
 /** Key of the base layer in ``requestActive`` / ``onActiveChange``. */
 export const BASE_LAYER = BASE;
 
+const TOOL_LABELS = { line: "╱", fft: "FFT", rect: "▭", ellipse: "◯", polygon: "⬠" } as const;
+const TOOL_TITLES = {
+  line: "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it",
+  fft: FFT_TOOL_TITLE,
+  rect: "Rectangle region: drag to draw, drag inside to move; right-click it to crop",
+  ellipse: "Ellipse region: drag to draw, drag inside to move",
+  polygon: "Polygon region: click vertices; click the first, double-click or Enter to close",
+} as const;
+
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 export function LayeredViewer({
   viewKey, base, images: maps, stacks = [], geometry, loading, error, children, empty, interaction, renderOverlay,
   lineTool, fftTool, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
+  histogramRegions,
   scanFactor = 1,
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
@@ -290,7 +309,31 @@ export function LayeredViewer({
   // FFT boxes: squares whose FFT the FFT panel can show instead of the view.
   const drawingBoxes = lineTool === undefined ? imageTool === "fft" : !!fftTool;
   const boxInteraction = useFftBoxTool(viewKey, geometry.width, geometry.height);
-  const activeInteraction = drawingLines ? lineInteraction : drawingBoxes ? boxInteraction : interaction;
+  // Regions (rectangle, ellipse, polygon) drawn on images and stacks, kept per view.
+  const ownRegions = lineTool === undefined;
+  const regionTool = imageTool === "rect" || imageTool === "ellipse" || imageTool === "polygon" ? imageTool : null;
+  const drawingRegions = ownRegions && !!regionTool;
+  const regionTools = useNavigatorTools(viewKey, geometry.width, geometry.height, false, regionTool ?? "rect");
+  const regionState = useSiState(viewKey);
+  const annotationsHidden = useUi((s) => !!s.annotationsHidden[viewKey]);
+  const toolInteraction0 = drawingLines
+    ? lineInteraction
+    : drawingBoxes
+      ? boxInteraction
+      : drawingRegions
+        ? regionTools.interaction
+        : interaction;
+  // With another tool (or none), a press still selects the region under it
+  // (its info in the Info tab) or, off the regions, deselects it.
+  const activeInteraction: Interaction | undefined = ownRegions && !drawingRegions
+    ? {
+        ...toolInteraction0,
+        onDown: (p, e, t) => {
+          if (!annotationsHidden) regionTools.regionPress(p, t);
+          return toolInteraction0?.onDown?.(p, e, t) ?? false;
+        },
+      }
+    : toolInteraction0;
   // Shift +/-: the selected line one pixel wider or narrower (on a spectrum
   // image only with the line tool: otherwise its selected region is resized).
   useShortcuts(
@@ -305,19 +348,34 @@ export function LayeredViewer({
     }),
   );
   // Annotations hidden with the eye: drawing lines or boxes shows them again.
-  const annotationsHidden = useUi((s) => !!s.annotationsHidden[viewKey]);
   useEffect(() => {
-    if (drawingLines || drawingBoxes) useUi.getState().setAnnotationsHidden(viewKey, false);
-  }, [drawingLines, drawingBoxes, viewKey]);
+    if (drawingLines || drawingBoxes || drawingRegions) useUi.getState().setAnnotationsHidden(viewKey, false);
+  }, [drawingLines, drawingBoxes, drawingRegions, viewKey]);
   // Right-clicking a profile line (with any tool) opens its menu; elsewhere
   // on the image, the view's own menu (if it has entries there).
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
-  const toolInteraction: Interaction | undefined = onLineScan || imageMenu
+  // A region right-clicked: crop the image shown to it (a rectangle), or delete it.
+  const regionItems = (p: Pt): MenuItem[] => {
+    if (!ownRegions || annotationsHidden) return [];
+    const hits = getSiState(viewKey).rois.filter((r) => r.visible && containsPoint(r.shape, p.x, p.y));
+    const target = isBase ? base?.source : activeLayer && entryOf(activeLayer.key)?.dataset;
+    return hits.flatMap((r) => [
+      ...(r.shape.kind === "rect" && target
+        ? [{
+            label: `Crop ${target.title} to ${r.name}`,
+            title: "A new dataset of the pixels in this rectangle (a stack: every frame)",
+            onSelect: () => void cropDataset(target, { region: shapeToRegion(r.shape) }),
+          }]
+        : []),
+      { label: `Delete ${r.name}`, danger: true, onSelect: () => useSi.getState().deleteRois(viewKey, [r.id]) },
+    ]);
+  };
+  const toolInteraction: Interaction | undefined = onLineScan || imageMenu || ownRegions
     ? {
         ...activeInteraction,
         onContextMenu: (p, e, t) => {
           const line = annotationsHidden || !onLineScan ? undefined : lineAt(viewKey, p, t.zoom);
-          const items = line ? lineMenuItems(line, onLineScan!) : (imageMenu?.(p) ?? []);
+          const items = line ? lineMenuItems(line, onLineScan!) : [...regionItems(p), ...(imageMenu?.(p) ?? [])];
           if (!items.length) return activeInteraction?.onContextMenu?.(p, e, t) ?? false;
           setMenu({ x: e.clientX, y: e.clientY, items });
           return true;
@@ -357,13 +415,21 @@ export function LayeredViewer({
         ]
       : []),
   ];
-  if (tabs.length) {
+  // With regions drawn, the histogram tab is offered (to see a region's).
+  if (tabs.length || (ownRegions && regionState.rois.length > 0)) {
     // The layer's own pixels (not stretched over the scan).
     const own = isBase ? (base?.frame ?? null) : activeLayer ? (entryOf(activeLayer.key)?.frame ?? null) : null;
     tabs.push({
       id: "histogram" as const,
       label: "Histogram",
-      content: <HistogramPanel frame={own} label={activeLayer?.label ?? ""} display={activeLayer?.display} />,
+      content: (
+        <HistogramPanel
+          frame={own}
+          label={activeLayer?.label ?? ""}
+          display={activeLayer?.display}
+          regions={ownRegions ? { rois: regionState.rois, scale: 1 } : histogramRegions}
+        />
+      ),
     });
   }
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -428,19 +494,15 @@ export function LayeredViewer({
           {lineTool === undefined && (
             <div className="segmented tool-buttons" role="group" aria-label="Image tool">
               {/* A tool is switched on and off; with none on, dragging pans. */}
-              {(["line", "fft"] as const).map((t) => (
+              {(["line", "fft", "rect", "ellipse", "polygon"] as const).map((t) => (
                 <button
                   key={t}
                   className={imageTool === t ? "active" : undefined}
                   aria-pressed={imageTool === t}
                   onClick={() => setImageTool(imageTool === t ? "pan" : t)}
-                  title={
-                    (t === "line"
-                      ? "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it"
-                      : FFT_TOOL_TITLE) + " · click again to pan"
-                  }
+                  title={`${TOOL_TITLES[t]} · click again to pan`}
                 >
-                  {t === "line" ? "╱" : "FFT"}
+                  {TOOL_LABELS[t]}
                 </button>
               ))}
             </div>
@@ -504,6 +566,9 @@ export function LayeredViewer({
                   {!annotationsHidden && (
                     <>
                       <FftBoxOverlay t={t} view={viewKey} />
+                      {ownRegions && (
+                        <RoiOverlay t={t} state={regionState} cursorSize={1} draft={regionTools.draft} hover={regionTools.hover} />
+                      )}
                       {surveys.filter((d) => d.id === p.layer.key).map((d) => (
                         <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
                       ))}
@@ -538,6 +603,9 @@ export function LayeredViewer({
                   {!annotationsHidden && (
                     <>
                       <FftBoxOverlay t={t} view={viewKey} />
+                      {ownRegions && (
+                        <RoiOverlay t={t} state={regionState} cursorSize={1} draft={regionTools.draft} hover={regionTools.hover} />
+                      )}
                       {surveys.map((d) => (
                         <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
                       ))}

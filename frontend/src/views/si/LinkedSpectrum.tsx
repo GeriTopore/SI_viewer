@@ -13,6 +13,8 @@ import { useBackgroundPreview } from "./useBackgroundPreview";
 import { useFitSeries } from "../useFitSeries";
 import { useMarkers } from "./xray";
 import { ElementsPicker } from "../../components/ElementsPicker";
+import { NormaliseToggle, useNormBand } from "../../components/NormaliseSection";
+import { normaliseSeries, useNormSettings } from "../../state/normalise";
 
 /** The link group ``ds`` is in, itself included (low loss first, then core
  * losses by energy offset); just ``ds`` when it is not linked. */
@@ -146,7 +148,8 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
   // Background removal (Process tab): its fits and bands on this plot.
   const bgPixels = useMemo(() => sel.map((s) => (s?.kind === "pixel" ? { x: s.x, y: s.y, size: s.size } : null)), [sel]);
   const bg = useBackgroundPreview(member, axis.x, plain, bgPixels);
-  const windows = useMemo(() => [...bg.bands, ...zlp.windows], [bg.bands, zlp.windows]);
+  const normBand = useNormBand(member);
+  const windows = useMemo(() => [...bg.bands, ...zlp.windows, ...normBand.bands], [bg.bands, zlp.windows, normBand.bands]);
   // Deconvolution (Process tab): the deconvolved spectra, dashed.
   const deconvolved = useDeconvPreview(member, bg.series, sel, reduce === "mean");
   // The member's model fit (Quantify tab) and its elements' edges.
@@ -155,7 +158,11 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
     [lineScan, st.showCursor, st.cursor, cursorSize],
   );
   const fitSeries = useFitSeries(member, axis.x, reduce === "mean", fitCursor, st);
-  const series = useMemo(() => [...deconvolved, ...fitSeries], [deconvolved, fitSeries]);
+  const norm = useNormSettings(member);
+  const series = useMemo(
+    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : [...deconvolved, ...fitSeries]),
+    [norm, plain, axis.x, deconvolved, fitSeries],
+  );
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(member, preview, axis.x);
 
@@ -168,7 +175,7 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
       series={series}
       windows={windows}
       onEditWindow={(id, range, final) => {
-        if (!bg.onEditBand(id, range, final)) zlp.onEdit(id, range, final);
+        if (!bg.onEditBand(id, range, final) && !normBand.onEdit(id, range)) zlp.onEdit(id, range, final);
       }}
       xLabel={axis.label}
       xUnits={axis.units}
@@ -179,6 +186,7 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
         <>
           <ElementsPicker ds={member} onPreview={setPreview} />
           <ReduceToggle unit={lineScan ? "position" : "pixel"} />
+          <NormaliseToggle d={member} />
         </>
       }
       legend={legend}

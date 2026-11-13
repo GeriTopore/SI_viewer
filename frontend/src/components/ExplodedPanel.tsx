@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { Frame } from "../api/arrays";
@@ -10,6 +10,7 @@ import { Plot3D, type Plot3DMode } from "./Plot3D";
 import { LINE_MAPS, lineColor, lineGradient, lineMap } from "../viewer/diverging";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { AnnotationsToggle } from "./AnnotationsToggle";
+import { normaliseData, type NormSettings } from "../state/normalise";
 
 /** Key of a LineScan's energy marks in ``ui.annotationsHidden`` (both views follow it). */
 export const marksKey = (lineScanId: string) => `${lineScanId}:energy-marks`;
@@ -63,9 +64,6 @@ export function movedMark(m0: EnergyMark, part: MarkPart["part"], d: number): En
 export const markCursor = (part: MarkPart["part"] | undefined, dragging = false) =>
   part === "in" ? (dragging ? "grabbing" : "grab") : part ? "ew-resize" : "";
 
-/** How the spectra are normalised: not at all, each by its own mean, or each
- * by its value at a line / its mean over a window (a mark's id). */
-type Norm = "none" | "mean" | { mark: string };
 
 
 
@@ -90,37 +88,15 @@ const MAX_3D_COLS = 400;
 const cssVar = (name: string) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-/** Each row of ``frame`` divided by its mean over channels c0…c1 (end
- * exclusive; one channel: its value there), as HyperSpy's example normalises
- * to a value or to a signal range. Rows whose reference is zero or less are
- * left as they are. */
-function normalised(frame: Frame, c0 = 0, c1 = frame.width): Frame {
-  const { width: w, height: h } = frame;
-  const data = new Float32Array(frame.data);
-  for (let r = 0; r < h; r++) {
-    const row = data.subarray(r * w, (r + 1) * w);
-    let sum = 0;
-    let n = 0;
-    for (let c = c0; c < c1; c++) {
-      if (!Number.isFinite(row[c])) continue;
-      sum += row[c];
-      n++;
-    }
-    const ref = n ? sum / n : 0;
-    if (ref > 0) for (let i = 0; i < w; i++) row[i] /= ref;
-  }
-  return { ...frame, data };
-}
 
 /** Bottom-pane tab of a LineScan: its spectra as a cascade, each raised
  * above the last by an adjustable spacing (the intensity axis is arbitrary),
- * coloured blue to red from the first row to the last. *Normalise* divides
- * each spectrum by its own mean, so their shapes compare. Drag to zoom the
+ * coloured blue to red from the first row to the last, normalised as the
+ * dataset's spectra are (``norm``: Process tab, Normalisation). Drag to zoom the
  * energy, double-click resets. Shift-click marks a line, shift-drag a window;
- * right-click one to normalise every spectrum to its value there (or its mean
- * over the window). *3D* shows the same spectra (the energy range zoomed to
+ * right-click one to delete it. *3D* shows the same spectra (the energy range zoomed to
  * in 2D) over energy and the row axis, as a surface or as lines. */
-export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks, onMarksChange, selected, onSelect, onClose }: {
+export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks, onMarksChange, selected, onSelect, onClose, norm, normToggle }: {
   /** The LineScan's values: rows × channels. */
   frame: Frame | null;
   rows: ScanAxis;
@@ -134,23 +110,12 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
   selected: string | null;
   onSelect: (id: string | null) => void;
   onClose: () => void;
+  /** The dataset's normalisation (applied to each spectrum while on). */
+  norm?: NormSettings;
+  /** The dataset's "Normalised" checkbox (shared with the spectrum plot and the Process tab). */
+  normToggle?: ReactNode;
 }) {
-  const [norm, setNorm] = useState<Norm>("none");
-  const normMark = typeof norm === "object" ? marks.find((m) => m.id === norm.mark) : undefined;
-  // A deleted mark normalises nothing.
-  useEffect(() => {
-    if (typeof norm === "object" && !normMark) setNorm("none");
-  }, [norm, normMark]);
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
-  /** Channels c0…c1 (end exclusive) of a mark. */
-  const channelsOf = (m: EnergyMark): [number, number] => {
-    const at = (e: number) => Math.min(cols.size - 1, Math.max(0, Math.round((e - cols.offset) / cols.scale)));
-    return [at(m.lo), at(m.hi) + 1];
-  };
-  const markText = (m: EnergyMark) =>
-    m.lo === m.hi
-      ? `${formatValue(m.lo)} ${cols.units}`.trim()
-      : `${formatValue(m.lo)}–${formatValue(m.hi)} ${cols.units}`.trim();
   const [view, setView] = useState<"2d" | "3d">("2d");
   const [mode3d, setMode3d] = useState<Plot3DMode>("surface");
   const [cmapId, setCmapId] = useState(storedCmap);
@@ -168,10 +133,15 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
   // The energy range of the 2D zoom, taken when switching to 3D (null: all).
   const [range3d, setRange3d] = useState<[number, number] | null>(null);
   const frame = useMemo(() => {
-    if (!raw || norm === "none") return raw;
-    if (norm === "mean") return normalised(raw);
-    return normMark ? normalised(raw, ...channelsOf(normMark)) : raw;
-  }, [raw, norm, normMark?.lo, normMark?.hi]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!raw || !norm?.on) return raw;
+    const x = Array.from({ length: raw.width }, (_, i) => cols.offset + cols.scale * i);
+    const data = new Float32Array(raw.data.length);
+    for (let r = 0; r < raw.height; r++) {
+      const row = normaliseData(raw.data.subarray(r * raw.width, (r + 1) * raw.width), x, norm);
+      row.forEach((v, i) => (data[r * raw.width + i] = v ?? NaN));
+    }
+    return { ...raw, data };
+  }, [raw, norm, cols.offset, cols.scale]);
   const n = frame?.height ?? 0;
   const [step, setStep] = useState(() => Math.max(1, Math.ceil(n / MAX_LINES)));
   useEffect(() => setStep(Math.max(1, Math.ceil(n / MAX_LINES))), [n]);
@@ -252,13 +222,12 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
   // plot is made again (e.g. a new "Every") or its data changes.
   const zoomX = useRef<{ min: number; max: number } | null>(null);
   // Read by the plot's hooks.
-  // Hidden marks are not drawn, hit or dragged (a normalisation to one still applies).
+  // Hidden marks are not drawn, hit or dragged.
   const hidden = useUi((s) => !!s.annotationsHidden[marksView]);
-  const live = useRef({ marks, all: marks, normId: "", onMarksChange, selected, onSelect, show: () => {} });
+  const live = useRef({ marks, all: marks, onMarksChange, selected, onSelect, show: () => {} });
   live.current = {
     marks: hidden ? [] : marks,
     all: marks,
-    normId: normMark?.id ?? "",
     onMarksChange,
     selected,
     onSelect,
@@ -327,11 +296,11 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
               u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
             },
           ],
-          // The marks in their colours: lines dashed (solid when normalised to),
+          // The marks in their colours: lines dashed,
           // windows as a band between two edges; the selected one bolder.
           draw: [
             (u) => {
-              const { marks: ms, normId, selected: sel } = live.current;
+              const { marks: ms, selected: sel } = live.current;
               if (!ms.length) return;
               const ctx = u.ctx;
               const dpr = devicePixelRatio || 1;
@@ -349,7 +318,7 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
                 const bold = m.id === sel;
                 ctx.strokeStyle = m.color;
                 ctx.lineWidth = (bold ? 2.5 : 1.25) * dpr;
-                ctx.setLineDash(m.lo === m.hi && m.id !== normId ? [4 * dpr, 3 * dpr] : []);
+                ctx.setLineDash(m.lo === m.hi ? [4 * dpr, 3 * dpr] : []);
                 if (m.lo === m.hi) vline(a);
                 else {
                   ctx.globalAlpha = bold ? 0.24 : 0.12;
@@ -455,18 +424,11 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
 
   useEffect(() => {
     plotRef.current?.redraw(false);
-  }, [cmapId, marks, normMark?.id, selected, hidden]);
+  }, [cmapId, marks, selected, hidden]);
 
   const menuMark = menu ? marks.find((m) => m.id === menu.id) : undefined;
   const menuItems: MenuItem[] = menuMark
     ? [
-        normMark?.id === menuMark.id
-          ? { label: "Stop normalising", onSelect: () => setNorm("none") }
-          : {
-              label: menuMark.lo === menuMark.hi ? `Normalise to the value at ${markText(menuMark)}` : `Normalise to the mean over ${markText(menuMark)}`,
-              title: "Divide every spectrum by this, so they all meet here",
-              onSelect: () => setNorm({ mark: menuMark.id }),
-            },
         {
           label: menuMark.lo === menuMark.hi ? "Delete line" : "Delete window",
           danger: true,
@@ -534,17 +496,7 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
             aria-label="Spacing between spectra"
           />
         </label>
-        <label
-          className="profile-check"
-          title={
-            normMark
-              ? `Each spectrum divided by its ${normMark.lo === normMark.hi ? "value at" : "mean over"} ${markText(normMark)}`
-              : "Divide each spectrum by its own mean, so their shapes compare (right-click a line or window to normalise there)"
-          }
-        >
-          <input type="checkbox" checked={norm !== "none"} onChange={(e) => setNorm(e.target.checked ? "mean" : "none")} />
-          {normMark ? `Normalise (${normMark.lo === normMark.hi ? "at" : "over"} ${markText(normMark)})` : "Normalise"}
-        </label>
+        {normToggle}
         <label className="profile-width" title="Draw every n-th spectrum">
           Every
           <select value={step} onChange={(e) => setStep(Number(e.target.value))}>
@@ -581,7 +533,7 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
           mode={mode3d}
           xTitle={cols.units ? `${cols.label} (${cols.units})` : cols.label}
           yTitle={axisName}
-          zTitle={norm === "none" ? "Intensity" : normMark ? `Intensity / at ${markText(normMark)}` : "Intensity / mean"}
+          zTitle={norm?.on ? "Intensity (normalised)" : "Intensity"}
           cmap={cmap}
         />
       )}

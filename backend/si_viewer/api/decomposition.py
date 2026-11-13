@@ -1,4 +1,4 @@
-"""Decomposition of spectrum images: PCA (M19a)."""
+"""Decomposition of spectrum images with HyperSpy's algorithms (M19a)."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ class PcaBody(BaseModel):
     components: int = Field(32, ge=1, le=256)
     # Weight by the counting noise (Keenan & Kotula): for counts.
     poisson: bool = True
+    algorithm: str = "SVD"
+    # Each spectrum normalised first: {mode: "range" | "value" | "mean", lo, hi}.
+    normalise: dict | None = None
 
 
 @router.post("/api/datasets/{dataset_id}/pca")
@@ -29,16 +32,27 @@ def post_pca(dataset_id: str, body: PcaBody, request: Request) -> dict:
     ds = _dataset(request, dataset_id)
     if not session.can_decompose(ds):
         raise HTTPException(400, f"{ds.title} is not an EELS or EDS spectrum image")
+    from ..session import DECOMPOSITIONS
+
+    if body.algorithm not in DECOMPOSITIONS:
+        raise HTTPException(422, f"Unknown decomposition algorithm {body.algorithm!r}")
+    n = body.normalise
+    if n is not None and (n.get("mode") not in ("range", "value", "mean") or (n["mode"] != "range" and n.get("lo") is None)):
+        raise HTTPException(422, "Normalise to 0–1, a value at an energy or a mean over a window")
     try:
         session.pca_channels(ds, body.lo, body.hi)
     except ValueError as e:
         raise HTTPException(422, str(e))
 
     def run(job: Job) -> dict:
-        pca = session.make_pca(ds, body.lo, body.hi, body.components, body.poisson, report=job.report)
+        pca = session.make_pca(
+            ds, body.lo, body.hi, body.components, body.poisson, report=job.report, algorithm=body.algorithm,
+            normalise=body.normalise,
+        )
         return {"pca_id": pca.id, "file": session.file_of(ds).summary(session)}
 
-    return request.app.state.jobs.submit("pca", f"PCA of {ds.title}", run).summary()
+    name = DECOMPOSITIONS[body.algorithm][0]
+    return request.app.state.jobs.submit("pca", f"{name} of {ds.title}", run).summary()
 
 
 class DenoiseBody(BaseModel):

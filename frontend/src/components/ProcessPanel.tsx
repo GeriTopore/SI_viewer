@@ -17,6 +17,8 @@ import { canEstimateThickness } from "../state/thickness";
 import { ZlpSection } from "./ZlpSection";
 import { DpcSection, canMakeDpc } from "./DpcSection";
 import { PcaSection, hasPcaSection } from "./PcaSection";
+import { NormaliseSection } from "./NormaliseSection";
+import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
 import { GridIcon, ListIcon } from "./DatasetList";
 
@@ -433,6 +435,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
         </>
       ),
     },
+    canNormalise(d) && {
+      id: "normalise", title: "Normalisation",
+      tip: "Normalise the spectra on the plot: to 0–1, a value at an energy or a mean over a window",
+      body: <NormaliseSection d={d} />,
+    },
     canRemoveBackground(d) && {
       id: "background", title: "Background removal",
       tip: "Fit and subtract the background under an edge; makes a new spectrum image",
@@ -449,10 +456,10 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       body: <DeconvolutionSection d={d} />,
     },
     hasPcaSection(d) && {
-      id: "pca", title: d.origin === "pca" ? "PCA denoising" : "PCA",
+      id: "pca", title: "Decomposition and denoising",
       tip: d.origin === "pca"
         ? "Rebuild the spectrum image from its first components; makes a new spectrum image"
-        : "Principal component analysis over an energy window: the components' maps and spectra",
+        : "Decompose over an energy window (HyperSpy): the components' maps and spectra",
       body: <PcaSection d={d} />,
     },
   ] as (Process | false)[]).filter((x): x is Process => !!x);

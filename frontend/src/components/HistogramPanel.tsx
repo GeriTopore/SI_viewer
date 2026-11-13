@@ -6,7 +6,9 @@ import { useUi } from "../state/ui";
 import { formatValue } from "../format";
 import { percentile, sortedSample } from "../viewer/contrast";
 import type { DisplayParams } from "../viewer/renderer";
+import { containsPoint, shapeBounds, type Roi } from "../state/si";
 
+const WHOLE = "whole";
 const BIN_CHOICES = [32, 64, 128, 256, 512];
 type Range = "data" | "contrast";
 
@@ -54,37 +56,77 @@ function binsOf(data: Float32Array, lo: number, hi: number, n: number): { x: num
   return { x: y.map((_, k) => lo + (k + 0.5) * width), y, width };
 }
 
+/** The values of ``frame`` whose pixel centres are inside ``roi`` (region
+ * coordinates are ``scale`` frame pixels per unit, after the frame's own binning). */
+function regionValues(frame: Frame, roi: Roi, scale: number): Float32Array {
+  const per = (frame.bin || 1) / scale; // region units per frame pixel
+  const [x0, y0, x1, y1] = shapeBounds(roi.shape);
+  const i0 = Math.max(0, Math.floor(x0 / per)), i1 = Math.min(frame.width - 1, Math.ceil(x1 / per));
+  const j0 = Math.max(0, Math.floor(y0 / per)), j1 = Math.min(frame.height - 1, Math.ceil(y1 / per));
+  const out: number[] = [];
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
+      if (containsPoint(roi.shape, (i + 0.5) * per, (j + 0.5) * per)) out.push(frame.data[j * frame.width + i]);
+    }
+  }
+  return Float32Array.from(out);
+}
+
 /** Bottom-pane tab: the distribution of the values of the image being edited
- * (the toolbar's layer), over its whole range or its contrast limits, which
- * are marked. Drag to zoom, double-click resets. */
-export function HistogramPanel({ frame, label, display }: {
+ * (the toolbar's layer) and of the pixels in its regions, each ticked in the
+ * legend and drawn in its colour, over the whole image's range or its
+ * contrast limits, which are marked. Drag to zoom, double-click resets. */
+export function HistogramPanel({ frame: whole, label, display, regions }: {
   frame: Frame | null;
   label: string;
   display?: DisplayParams;
+  /** The view's regions (``scale``: frame pixels per region unit). */
+  regions?: { rois: Roi[]; scale: number };
 }) {
-  const [bins, setBins] = useState(256);
+  const [bins, setBins] = useState(128);
+  // Ticked in the legend: "whole" and region ids.
+  const [shown, setShown] = useState<string[]>([WHOLE]);
+  const rois = regions?.rois ?? [];
+  const toggle = (id: string, on: boolean) => setShown((s) => (on ? [...s.filter((x) => x !== id), id] : s.filter((x) => x !== id)));
+  const accent = cssVar("--accent") || "#4c8dff";
+  const series = useMemo(() => {
+    if (!whole) return [];
+    const out: { id: string; name: string; color: string; data: Float32Array }[] = [];
+    const ticked = rois.length ? shown : [WHOLE]; // no regions: the whole image
+    if (ticked.includes(WHOLE)) out.push({ id: WHOLE, name: "Whole image", color: accent, data: whole.data });
+    for (const r of rois) {
+      if (ticked.includes(r.id)) out.push({ id: r.id, name: r.name, color: r.color, data: regionValues(whole, r, regions!.scale) });
+    }
+    return out;
+  }, [whole, shown, rois, regions?.scale, accent]); // eslint-disable-line react-hooks/exhaustive-deps
+  const frame = whole;
   const [range, setRange] = useState<Range>("data");
   const [log, setLog] = useState(false);
   const theme = useUi((s) => s.theme);
   const wrapRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
-  const [hover, setHover] = useState<{ lo: number; hi: number; count: number } | null>(null);
+  const [hover, setHover] = useState<{ lo: number; hi: number; counts: number[] } | null>(null);
 
-  const stats = useMemo(() => (frame ? statsOf(frame.data) : null), [frame]);
+  // Bins over the whole image's range (shared by every series).
+  const wholeStats = useMemo(() => (frame ? statsOf(frame.data) : null), [frame]);
+  const stats = useMemo(() => (series.length ? statsOf(series[0].data) : null), [series]);
   const [lo, hi] =
-    range === "contrast" && display ? [display.lo, display.hi] : stats && stats.count ? [stats.min, stats.max] : [0, 1];
-  const hist = useMemo(() => (frame ? binsOf(frame.data, lo, hi, bins) : null), [frame, lo, hi, bins]);
-  const live = useRef({ display, hist });
-  live.current = { display, hist };
+    range === "contrast" && display
+      ? [display.lo, display.hi]
+      : wholeStats && wholeStats.count ? [wholeStats.min, wholeStats.max] : [0, 1];
+  const hists = useMemo(() => series.map((s) => binsOf(s.data, lo, hi, bins)), [series, lo, hi, bins]);
+  const hist = hists[0] ?? null;
+  const live = useRef({ display, hists });
+  live.current = { display, hists };
+  const seriesKey = series.map((s) => `${s.id}:${s.color}`).join("|");
 
   const data = (): uPlot.AlignedData =>
-    hist ? [hist.x, hist.y.map((c) => (log && c <= 0 ? null : c))] : [[], []];
+    hist ? [hist.x, ...hists.map((h) => h.y.map((c) => (log && c <= 0 ? null : c)))] : [[]];
 
   useLayoutEffect(() => {
     const el = wrapRef.current!;
     const text = cssVar("--muted");
     const grid = cssVar("--border");
-    const accent = cssVar("--accent");
     const axis = (name?: string): uPlot.Axis => ({
       stroke: text,
       grid: { stroke: grid, width: 1 },
@@ -106,14 +148,14 @@ export function HistogramPanel({ frame, label, display }: {
         axes: [axis("Value"), { ...axis(), size: 52, values }],
         series: [
           {},
-          {
-            label: "Count",
-            stroke: accent,
-            fill: `${accent}66`,
+          ...series.map((sr) => ({
+            label: sr.name,
+            stroke: sr.color,
+            fill: `${sr.color}${series.length > 1 ? "44" : "66"}`,
             width: 1,
             paths: uPlot.paths.bars!({ size: [1, Infinity], gap: 0 }),
             points: { show: false },
-          },
+          })),
         ],
         cursor: { drag: { x: true, y: false }, points: { show: false } },
         legend: { show: false },
@@ -121,10 +163,10 @@ export function HistogramPanel({ frame, label, display }: {
           setCursor: [
             (u) => {
               const i = u.cursor.idx;
-              const h = live.current.hist;
-              if (i == null || !h) return setHover(null);
-              const x = h.x[i];
-              setHover({ lo: x - h.width / 2, hi: x + h.width / 2, count: h.y[i] });
+              const hs = live.current.hists;
+              if (i == null || !hs.length) return setHover(null);
+              const x = hs[0].x[i];
+              setHover({ lo: x - hs[0].width / 2, hi: x + hs[0].width / 2, counts: hs.map((h) => h.y[i]) });
             },
           ],
           // The contrast limits, dashed.
@@ -166,11 +208,11 @@ export function HistogramPanel({ frame, label, display }: {
       plot.destroy();
       plotRef.current = null;
     };
-  }, [theme, log]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [theme, log, seriesKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     plotRef.current?.setData(data());
-  }, [hist]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hists]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     plotRef.current?.redraw(false);
   }, [display?.lo, display?.hi]);
@@ -214,20 +256,35 @@ export function HistogramPanel({ frame, label, display }: {
           </button>
         </div>
       </div>
+      {rois.length > 0 && (
+        <div className="series-legend">
+          {[{ id: WHOLE, name: "Whole image", color: accent }, ...rois].map((r) => (
+            <label key={r.id} className={`series-chip${shown.includes(r.id) ? "" : " off"}`}>
+              <input type="checkbox" checked={shown.includes(r.id)} onChange={(e) => toggle(r.id, e.target.checked)} />
+              <span className="series-swatch" style={{ background: r.color }} />
+              {r.name}
+            </label>
+          ))}
+        </div>
+      )}
       <div className="profile-plot">
         <div className="profile-readout">
           {hover ? (
             <>
-              {formatValue(hover.lo)} – {formatValue(hover.hi)}: {hover.count} px
+              {formatValue(hover.lo)} – {formatValue(hover.hi)}:{" "}
+              {series.length > 1
+                ? series.map((sr, k) => `${sr.name} ${hover.counts[k]}`).join(" · ")
+                : `${hover.counts[0] ?? 0} px`}
             </>
           ) : stats && stats.count ? (
             <span className="muted">
+              {series.length > 1 ? `${series[0].name}: ` : ""}
               {stats.count} px{stats.nan ? ` (+${stats.nan} not a number)` : ""} · mean {formatValue(stats.mean)} · σ{" "}
               {formatValue(stats.std)} · median {formatValue(stats.median)} · {formatValue(stats.min)} –{" "}
               {formatValue(stats.max)} · drag to zoom · double-click resets
             </span>
           ) : (
-            <span className="muted">{frame ? "No values" : "No image"}</span>
+            <span className="muted">{!frame ? "No image" : series.length ? "No values" : "Nothing ticked"}</span>
           )}
         </div>
         <div ref={wrapRef} className="profile-canvas" />

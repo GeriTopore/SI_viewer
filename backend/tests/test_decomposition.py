@@ -152,3 +152,70 @@ def test_poisson_weighting_needs_counts(tmp_path):
         time.sleep(0.02)
         job = client.get(f"/api/jobs/{job['id']}").json()
     assert job["status"] == "failed" and "Negative" in job["error"]
+
+
+@pytest.mark.parametrize("algorithm", ["SVD", "sklearn_pca", "NMF", "sparse_pca", "RPCA"])
+def test_algorithms(tmp_path, algorithm):
+    """Each algorithm's denoised SI is HyperSpy's model of the same data (with
+    the mean put back for scikit-learn's, which centre it)."""
+    import hyperspy.api as hs
+    from fastapi.testclient import TestClient
+
+    from si_viewer.app import create_app
+    from si_viewer.session import DECOMPOSITIONS
+
+    clean, noisy = _truth(h=12, w=10, n=60)
+    s = hs.signals.Signal1D(noisy)
+    s.set_signal_type("EELS")
+    s.save(tmp_path / "si.hspy")
+    client = TestClient(create_app())
+    si = client.post("/api/files", json={"path": str(tmp_path / "si.hspy")}).json()["datasets"][0]
+    session = client.app.state.session
+    result = _wait(client, client.post(f"/api/datasets/{si['id']}/pca", json={"components": 4, "algorithm": algorithm}).json())
+    made = session.get_dataset(result["pca_id"])
+    name, centred = DECOMPOSITIONS[algorithm]
+    assert made.title == name and made.pca["algorithm"] == algorithm and made.pca["poisson"] is (not centred)
+    assert made.signal.data.shape == (4, 12, 10)
+    assert len(made.pca["explained"]) == (0 if algorithm in ("NMF", "sparse_pca") else 4)
+    denoised = session.get_dataset(client.post(f"/api/datasets/{made.id}/pca/denoise", json={"n": 4}).json()["id"])
+    got = np.asarray(denoised.signal.data)
+    # Three components carry the signal: the model is close to the truth.
+    err_noisy = np.sqrt(np.mean((noisy - clean) ** 2))
+    assert np.sqrt(np.mean((got - clean) ** 2)) < 0.8 * err_noisy, algorithm
+    assert denoised.title.endswith(f"({name}, 4)")
+
+
+def test_each_algorithm_its_own_objects(client):
+    si = client.si
+    session = client.app.state.session
+    a = _wait(client, client.post(f"/api/datasets/{si['id']}/pca", json={"components": 3}).json())["pca_id"]
+    b = _wait(client, client.post(f"/api/datasets/{si['id']}/pca", json={"components": 3, "algorithm": "NMF"}).json())["pca_id"]
+    assert a != b and session.get_dataset(b).title == "NMF" and session.get_dataset(b).pca["explained"] == []
+    assert client.post(f"/api/datasets/{si['id']}/pca", json={"algorithm": "nope"}).status_code == 422
+
+
+@pytest.mark.parametrize("norm", [{"mode": "range"}, {"mode": "mean", "lo": 410, "hi": 420}])
+def test_decomposition_of_normalised_spectra(client, norm):
+    """Each spectrum normalised (as the plot does) before decomposing; the
+    denoised SI is back on the spectra's own scale."""
+    si = client.si
+    session = client.app.state.session
+    src = session.get_dataset(si["id"])
+    data = np.asarray(src.signal.data, np.float64)
+    result = _wait(client, client.post(f"/api/datasets/{si['id']}/pca", json={"components": 8, "normalise": norm}).json())
+    pca = session.get_dataset(result["pca_id"])
+    assert pca.pca["normalise"] == norm and pca.pca["poisson"] is False
+    # The factors are of normalised spectra: about 0–1 for "range".
+    if norm["mode"] == "range":
+        rebuilt = np.einsum("khw,kn->hwn", pca.signal.data, session.pca_factors(pca).signal.data)
+        assert -0.2 < rebuilt.min() and rebuilt.max() < 1.2
+    made = session.get_dataset(client.post(f"/api/datasets/{pca.id}/pca/denoise", json={"n": 3}).json()["id"])
+    got = np.asarray(made.signal.data, np.float64)
+    # Three components carry the signal: close to the data on its own scale.
+    assert np.sqrt(np.mean((got - data) ** 2)) < 0.5 * np.sqrt(np.mean(data ** 2))
+    assert abs(got.mean() / data.mean() - 1) < 0.05
+
+
+def test_bad_normalisation(client):
+    r = client.post(f"/api/datasets/{client.si['id']}/pca", json={"normalise": {"mode": "value"}})
+    assert r.status_code == 422

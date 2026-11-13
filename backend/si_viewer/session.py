@@ -499,6 +499,48 @@ def _detector_info(signal) -> dict | None:
     }
 
 
+def spectrum_normalisation(signal, norm: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Per spectrum (navigation shape) offset and scale normalising it as the
+    spectrum plot does: ``mode`` "range" to 0–1 (minimum to maximum), "value"
+    divided by its value at ``lo``, "mean" by its mean over ``lo``–``hi``. A
+    spectrum whose reference is zero or less (or flat) is left as it is."""
+    from .processing.background import EnergyAxis
+
+    data = np.asarray(signal.data, np.float32)
+    mode = norm.get("mode", "range")
+    with np.errstate(all="ignore"):
+        if mode == "range":
+            lo, hi = np.nanmin(data, axis=-1), np.nanmax(data, axis=-1)
+            ok = hi > lo
+            return np.where(ok, lo, 0).astype(np.float32), np.where(ok, hi - lo, 1).astype(np.float32)
+        axis = EnergyAxis.of(signal)
+        n = data.shape[-1]
+        at = lambda e: int(min(n - 1, max(0, round((float(e) - axis.offset) / axis.scale))))  # noqa: E731
+        e0 = norm.get("lo")
+        if e0 is None:
+            raise ValueError("Normalisation needs an energy")
+        e1 = e0 if mode == "value" else norm.get("hi", e0)
+        c0, c1 = sorted((at(e0), at(e1)))
+        ref = np.nanmean(data[..., c0:c1 + 1], axis=-1)
+        ok = ref > 0
+        return np.zeros(ref.shape, np.float32), np.where(ok, ref, 1).astype(np.float32)
+
+
+# HyperSpy's decomposition algorithms: their name here, and whether they
+# centre the data (scikit-learn's).
+DECOMPOSITIONS: dict[str, tuple[str, bool]] = {
+    "SVD": ("PCA", False),
+    "MLPCA": ("MLPCA", False),
+    "sklearn_pca": ("PCA", True),
+    "NMF": ("NMF", False),
+    "sparse_pca": ("Sparse PCA", True),
+    "mini_batch_sparse_pca": ("Sparse PCA", True),
+    "RPCA": ("RPCA", False),
+    "ORPCA": ("ORPCA", False),
+    "ORNMF": ("ORNMF", False),
+}
+
+
 class Session:
     def __init__(self) -> None:
         self.files: dict[str, FileEntry] = {}
@@ -1739,6 +1781,131 @@ class Session:
             made.append(ds)
         return made
 
+    # ---------- cropping ----------
+
+    def crop(self, ds: Dataset, region=None, lo: float | None = None, hi: float | None = None) -> Dataset:
+        """A new spectrum image under ``ds``: its pixels in the rectangle
+        ``region`` (a ``processing.regions.Region``; the pixels whose centres
+        are inside, as for its spectrum) and/or its channels in the energy
+        window lo–hi (HyperSpy's ``inav`` / ``isig``). Returns it."""
+        from .processing.background import EnergyAxis
+        from .processing.regions import region_mask
+
+        if region is None and lo is None and hi is None:
+            raise ValueError("Give a region or an energy window to crop to")
+        if ds.insitu is not None:
+            return self._crop_series(ds, region, lo, hi)
+        if ds.kind in (DatasetKind.IMAGE, DatasetKind.STACK):
+            return self._crop_image(ds, region, lo, hi)
+        if ds.kind not in (DatasetKind.SPECTRUM_IMAGE, DatasetKind.SPECTRUM):
+            raise ValueError(f"{ds.title} can't be cropped")
+        if ds.kind is DatasetKind.SPECTRUM and region is not None:
+            raise ValueError(f"{ds.title} is a spectrum: crop it to an energy window")
+        ds.materialise()
+        signal = ds.signal
+        parts = []
+        if region is not None:
+            h, w = si_cube(ds).shape[:2]
+            rows, cols = self._crop_box(region, h, w)
+            if ds.is_line_scan:
+                signal = signal.inav[cols.start:cols.stop]
+                parts.append(f"{cols.start}–{cols.stop - 1}")
+            else:
+                signal = signal.inav[cols.start:cols.stop, rows.start:rows.stop]
+                parts.append(f"x {cols.start}–{cols.stop - 1}, y {rows.start}–{rows.stop - 1}")
+        if lo is not None or hi is not None:
+            c0, c1 = self.energy_channels(ds, lo, hi)
+            signal = signal.isig[c0:c1]
+            axis = EnergyAxis.of(ds.signal)
+            parts.append(
+                f"{axis.offset + axis.scale * c0:g}–{axis.offset + axis.scale * (c1 - 1):g}"
+                f"{' ' + axis.units if axis.units else ''}"
+            )
+        signal = signal.deepcopy()
+        return self.copy_as(ds, "cropped", f"{ds.title} ({'; '.join(parts)})", signal=signal)
+
+    @staticmethod
+    def _crop_box(region, h: int, w: int) -> tuple[slice, slice]:
+        """The rows and columns of a rectangle ``region`` (the pixels whose
+        centres are inside, as for its spectrum) in an h × w image."""
+        from .processing.regions import region_mask
+
+        if region.kind != "rect":
+            raise ValueError("Only a rectangle can be cropped to")
+        rows, cols, _ = region_mask((h, w), region)
+        if cols.stop - cols.start < 1 or rows.stop - rows.start < 1:
+            raise ValueError("The region holds no pixels")
+        return rows, cols
+
+    def _crop_image(self, ds: Dataset, region, lo, hi) -> Dataset:
+        """An image or stack cropped to a rectangle (a stack: every frame, as
+        shown, i.e. aligned if it is), as a new dataset under it."""
+        if region is None or lo is not None or hi is not None:
+            raise ValueError(f"{ds.title} has no energy axis: crop it to a rectangle")
+        h, w = ds.signal.data.shape[-2:]
+        rows, cols = self._crop_box(region, h, w)
+        signal = ds.signal.isig[cols.start:cols.stop, rows.start:rows.stop].deepcopy()
+        title = f"{ds.title} (x {cols.start}–{cols.stop - 1}, y {rows.start}–{rows.stop - 1})"
+        return self.copy_as(ds, "cropped", title, signal=signal)
+
+    def _crop_series(self, ds: Dataset, region, lo, hi) -> Dataset:
+        """An in-situ series cropped to a rectangle and/or an energy window,
+        every frame (its time kept): a new series of the same file, read and
+        cropped a frame at a time, under it."""
+        from .processing.technique import technique_of
+
+        series = ds.insitu
+        _, fy, fx, fe = series.binning
+        h, w, n = series.frame_shape
+        parts = []
+        rows, cols, chans = slice(0, h), slice(0, w), slice(0, n)
+        if region is not None:
+            rows, cols = self._crop_box(region, h, w)
+            parts.append(f"x {cols.start}–{cols.stop - 1}, y {rows.start}–{rows.stop - 1}")
+        if lo is not None or hi is not None:
+            c0, c1 = self.energy_channels(ds, lo, hi)
+            chans = slice(c0, c1)
+            axis = ds.signal.axes_manager.signal_axes[0]
+            units = axis.units if isinstance(axis.units, str) and axis.units != "None" else ""
+            parts.append(f"{axis.offset + axis.scale * c0:g}–{axis.offset + axis.scale * (c1 - 1):g}{' ' + units if units else ''}")
+        # In the recorded frames (binning undone), within any crop it already has.
+        base = series.crop or ((0, series.raw_frame_shape[0]), (0, series.raw_frame_shape[1]), (0, series.raw_frame_shape[2]))
+        crop = tuple(
+            (b[0] + s.start * f, b[0] + s.stop * f) for b, s, f in zip(base, (rows, cols, chans), (fy, fx, fe))
+        )
+        made = self.crop_series_raw(ds, crop, f"{ds.title} ({'; '.join(parts)})")
+        if series.binning != (1, 1, 1, 1):
+            made.insitu.set_binning(series.binning)
+            title = made.title
+            made.signal = made.insitu.placeholder()
+            apply_technique(made.signal, technique_of(ds.signal))
+            made.signal.metadata.General.title = title
+        self.show_insitu_frame(made, min(series.view.start, made.insitu.n - 1))
+        return made
+
+    def crop_series_raw(self, src: Dataset, crop: tuple, title: str, ds_id: str | None = None) -> Dataset:
+        """A series of ``src``'s file cropped to ``crop`` (rows, columns,
+        channels of the recorded frames, as (start, stop) each), under ``src``
+        (``ds_id``: the id it gets)."""
+        from .insitu_series import InsituSeries
+        from .processing.technique import technique_of
+
+        series = InsituSeries(src.insitu.signal, crop=crop)
+        signal = series.placeholder()
+        apply_technique(signal, technique_of(src.signal))
+        signal.metadata.General.title = title
+        made = Dataset(
+            id=ds_id or _new_id(), file_id=src.file_id, signal=signal, kind=DatasetKind.SPECTRUM_IMAGE,
+            origin="cropped", parent_id=src.id, technique_source=src.technique_source, insitu=series,
+            eels_role=src.eels_role, eels_role_source=src.eels_role_source,
+        )
+        with self._lock:
+            self.datasets[made.id] = made
+            ids = self.files[src.file_id].dataset_ids
+            if made.id not in ids:
+                ids.insert(ids.index(src.id) + 1, made.id)
+        return made
+
     # ---------- PCA (M19a) ----------
 
     @staticmethod
@@ -1749,6 +1916,11 @@ class Session:
         return ds.kind is DatasetKind.SPECTRUM_IMAGE and ds.insitu is None and technique_of(ds.signal) in ("EELS", "EDS")
 
     def pca_channels(self, ds: Dataset, lo: float | None, hi: float | None) -> tuple[int, int]:
+        """The channels [c0, c1) of the energy window lo–hi of ``ds`` (the
+        whole axis where not given). ValueError for fewer than 2 channels."""
+        return self.energy_channels(ds, lo, hi)
+
+    def energy_channels(self, ds: Dataset, lo: float | None, hi: float | None) -> tuple[int, int]:
         """The channels [c0, c1) of the energy window lo–hi of ``ds`` (the
         whole axis where not given). ValueError for fewer than 2 channels."""
         from .processing.background import EnergyAxis
@@ -1763,35 +1935,59 @@ class Session:
 
     def make_pca(
         self, ds: Dataset, lo: float | None = None, hi: float | None = None, components: int = 32,
-        poisson: bool = True, report=None,
+        poisson: bool = True, report=None, algorithm: str = "SVD", normalise: dict | None = None,
     ) -> Dataset:
         """Decompose the spectrum image ``ds`` over the energy window lo–hi
-        with HyperSpy (``decomposition``: SVD, ``normalize_poissonian_noise``
-        if ``poisson``): "PCA" under it, a stack of the components' maps
-        (loadings), with "PCA factors" (their spectra) under that. Made again in
-        place if ``ds`` was decomposed before. Returns the PCA stack."""
+        with HyperSpy's ``decomposition`` (``algorithm``, one of
+        ``DECOMPOSITIONS``; ``normalize_poissonian_noise`` if ``poisson``): a
+        stack of the components' maps (loadings) under it, titled by the
+        algorithm, with their spectra (factors) under that. Made again in place
+        if ``ds`` was decomposed with the same algorithm before. Returns the
+        stack."""
         import hyperspy.api as hs
 
         from .processing.background import EnergyAxis
 
         if not self.can_decompose(ds):
             raise ValueError(f"{ds.title} is not an EELS or EDS spectrum image")
+        if algorithm not in DECOMPOSITIONS:
+            raise ValueError(f"Unknown decomposition algorithm {algorithm!r}")
+        name, centred = DECOMPOSITIONS[algorithm]
+        # scikit-learn's centre the data: the mean is put back when denoising,
+        # which can't be done after Poisson weighting. Normalised spectra are
+        # not counts: no Poisson weighting either.
+        poisson = bool(poisson) and not centred and not normalise
         c0, c1 = self.pca_channels(ds, lo, hi)
         ds.materialise()
         if report:
             report(0.05, "Decomposing")
         window = ds.signal.isig[c0:c1].deepcopy()
         window.change_dtype("float32")
+        # Each spectrum normalised as on the plot (over its whole energy
+        # range), undone when denoising: v' = (v - offset) / scale.
+        norm_offset = norm_scale = None
+        if normalise:
+            norm_offset, norm_scale = spectrum_normalisation(ds.signal, normalise)
+            window.data = (window.data - norm_offset[..., None]) / norm_scale[..., None]
         k = max(1, min(int(components), window.axes_manager.navigation_size, c1 - c0))
+        extra = {
+            "SVD": {"svd_solver": "randomized"},
+            # Maximum likelihood PCA needs the noise variance: the counts'.
+            "MLPCA": {"var_func": lambda x: np.maximum(x, 1)},
+        }.get(algorithm, {})
         window.decomposition(
-            normalize_poissonian_noise=poisson, algorithm="SVD", output_dimension=k, svd_solver="randomized",
-            print_info=False,
+            normalize_poissonian_noise=poisson, algorithm=algorithm, output_dimension=k, print_info=False, **extra,
         )
         lr = window.learning_results
         h, w = si_cube(ds).shape[:2]
         loadings = np.ascontiguousarray(lr.loadings[:, :k].T.reshape(k, h, w), dtype=np.float32)
         factors = np.ascontiguousarray(lr.factors[:, :k].T, dtype=np.float32)
-        explained = lr.explained_variance_ratio[:k]
+        # NMF and the online robust ones rank nothing by variance.
+        ev = lr.explained_variance_ratio
+        explained = [] if ev is None else np.asarray(ev)[:k]
+        mean = None if lr.mean is None else np.asarray(lr.mean, np.float32).ravel()
+        if mean is not None and mean.size != c1 - c0:
+            mean = None
         del window, lr
         if report:
             report(0.95, "Making the components")
@@ -1799,7 +1995,8 @@ class Session:
         settings = {
             "source_id": ds.id, "window": [axis.offset + axis.scale * c0, axis.offset + axis.scale * (c1 - 1)],
             "channels": [c0, c1], "poisson": bool(poisson), "components": k,
-            "explained": [float(v) for v in explained],
+            "explained": [float(v) for v in explained], "algorithm": algorithm, "name": name,
+            "normalise": dict(normalise) if normalise else None,
         }
         comp_axis = {"name": "Component", "size": k, "offset": 1, "scale": 1, "units": "", "navigate": True}
         nav = [ax.get_axis_dictionary() for ax in ds.signal.axes_manager.navigation_axes[::-1]]  # array order
@@ -1808,16 +2005,22 @@ class Session:
         if ds.is_line_scan:
             nav = [{"name": "y", "size": 1, "offset": 0, "scale": 1, "units": nav[0].get("units", ""), "navigate": False}, *nav]
         maps = hs.signals.Signal2D(loadings, axes=[comp_axis, *nav])  # (k, 1, w) for a line scan
-        maps.metadata.General.title = "PCA"
+        maps.metadata.General.title = name
         energy = ds.signal.axes_manager.signal_axes[0].get_axis_dictionary()
         energy.update(offset=axis.offset + axis.scale * c0, size=c1 - c0, navigate=False)
         spectra = hs.signals.Signal1D(factors, axes=[comp_axis, energy])
-        spectra.metadata.General.title = "PCA factors"
+        spectra.metadata.General.title = f"{name} factors"
+        if mean is not None:
+            spectra.metadata.set_item("Decomposition.mean", mean)
+        if norm_offset is not None:
+            spectra.metadata.set_item("Decomposition.norm_offset", norm_offset.astype(np.float32))
+            spectra.metadata.set_item("Decomposition.norm_scale", norm_scale.astype(np.float32))
 
         with self._lock:
             earlier = {
                 d.origin: d for d in self.datasets.values()
                 if d.origin in ("pca", "pca-factors") and d.pca and d.pca.get("source_id") == ds.id
+                and d.pca.get("algorithm", "SVD") == algorithm
             }
         made = {}
         for origin, signal, parent in (("pca", maps, ds.id), ("pca-factors", spectra, None)):
@@ -1854,7 +2057,7 @@ class Session:
         ``get_decomposition_model`` of the stored loadings and factors): a new
         spectrum image under the source (or the one made with the same ``n``,
         remade)."""
-        from hyperspy.learn.mva import LearningResults
+        from hyperspy.learn import LearningResults
 
         factors = self.pca_factors(pca)
         source = self.get_dataset(pca.pca["source_id"])
@@ -1870,13 +2073,24 @@ class Session:
         window.learning_results.factors = np.asarray(factors.signal.data, np.float32).T
         signal = window.get_decomposition_model(n)
         signal.change_dtype("float32")
+        # The mean taken out by scikit-learn's algorithms, put back (HyperSpy
+        # can't: it expects one per pixel).
+        mean = factors.signal.metadata.get_item("Decomposition.mean")
+        if mean is not None:
+            signal.data += np.asarray(mean, np.float32)
+        # Decomposed normalised: back to the spectra's own scale.
+        offset = factors.signal.metadata.get_item("Decomposition.norm_offset")
+        scale = factors.signal.metadata.get_item("Decomposition.norm_scale")
+        if offset is not None and scale is not None:
+            signal.data = signal.data * np.asarray(scale, np.float32)[..., None] + np.asarray(offset, np.float32)[..., None]
         signal.learning_results = LearningResults()  # the PCA keeps them, not the denoised SI
-        title = f"{source.title} (PCA, {n})"
+        title = f"{source.title} ({pca.pca.get('name', 'PCA')}, {n})"
         settings = {**pca.pca, "n": n}
         with self._lock:
             earlier = next((
                 d for d in self.datasets.values()
                 if d.origin == "pca-denoised" and d.pca and d.pca.get("source_id") == source.id and d.pca.get("n") == n
+                and d.pca.get("algorithm", "SVD") == pca.pca.get("algorithm", "SVD")
             ), None)
         if earlier is not None:
             signal.metadata.General.title = title
@@ -2058,7 +2272,7 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised"):
+        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped"):
             entry["restore"] = self._tree_places(dataset)
             self._remove_tree(dataset)
             return self._keep_undoable(entry)

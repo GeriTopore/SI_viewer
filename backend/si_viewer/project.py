@@ -272,7 +272,11 @@ def save_project(
                 rec["kind"] = ds.kind.value
                 rec["title"] = ds.title
                 rec["stored"] = {}
-                if ds.origin != "file" or ds_id in store_raw:
+                # A cropped in-situ series: its crop, remade from the raw files on open.
+                crop_series = ds.insitu is not None and ds.insitu.crop is not None
+                if crop_series:
+                    rec["insitu_crop"] = [list(c) for c in ds.insitu.crop]
+                if (ds.origin != "file" and not crop_series) or ds_id in store_raw:
                     ds.materialise()
                     label = f"{ds.title} [{ds.id}]"
                     if ds.quantities:  # fitted maps: each quantity
@@ -547,6 +551,23 @@ def open_project(
         for i in fe["dataset_ids"]:
             rec = datasets[i]
             if rec["origin"] == "file" and fe["id"] not in detached:
+                continue
+            if rec.get("insitu_crop"):
+                src = session.datasets.get(rec.get("parent_id"))
+                if src is None or src.insitu is None:
+                    warnings.append(f"{rec['title']}: its in-situ series is not open, so it can't be cropped again")
+                    continue
+                made = session.crop_series_raw(src, tuple(rec["insitu_crop"]), rec["title"], ds_id=i)
+                binning = tuple((rec.get("insitu") or {}).get("binning") or (1, 1, 1, 1))
+                if binning != (1, 1, 1, 1):
+                    made.insitu.set_binning(binning)
+                    made.signal = made.insitu.placeholder()
+                    made.signal.metadata.General.title = rec["title"]
+                for k in ("custom_title", "filters", "map_options", "eels_role", "eels_role_source", "derived_from"):
+                    if k in rec:
+                        setattr(made, k, rec[k])
+                if rec.get("insitu"):
+                    _restore_view(session, path, made, rec)
                 continue
             stored = rec["stored"]
             quantities = {}

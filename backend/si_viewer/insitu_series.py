@@ -105,13 +105,21 @@ class InsituSeries:
     """The series behind a dataset: lazy signal, frame cache, read-ahead and
     the current :class:`ViewState`."""
 
-    def __init__(self, signal, cache_bytes: int | None = None) -> None:
+    def __init__(self, signal, cache_bytes: int | None = None, crop: tuple | None = None) -> None:
         self.signal = signal  # lazy, (frames, y, x, E)
+        # A cropped series (of another's file): the recorded frames' rows,
+        # columns and channels kept, as (start, stop) each; frames are cropped
+        # as they are read.
+        self.crop: tuple[tuple[int, int], ...] | None = (
+            tuple((int(a), int(b)) for a, b in crop) if crop is not None else None
+        )
         md = signal.metadata.Insitu.as_dictionary()
         self.meta = md
         self.n_raw = int(md["frames"])
         self.times_raw = np.asarray(md.get("frame_times_s") or np.arange(self.n_raw), dtype=np.float64)
-        self.raw_frame_shape = tuple(int(s) for s in signal.data.shape[1:])  # (y, x, E)
+        self.raw_frame_shape = (  # (y, x, E)
+            tuple(b - a for a, b in self.crop) if self.crop else tuple(int(s) for s in signal.data.shape[1:])
+        )
         # Binning factors along (time, y, x, E); see set_binning.
         self.binning: tuple[int, int, int, int] = (1, 1, 1, 1)
         self.cache = FrameCache(FRAME_CACHE_BYTES if cache_bytes is None else cache_bytes)
@@ -179,6 +187,9 @@ class InsituSeries:
         ``Insitu`` tags (it is one frame, an ordinary spectrum image). Nothing
         is read."""
         s = self.signal.inav[:, :, 0]  # Time is the last navigation axis
+        if self.crop:
+            (y0, y1), (x0, x1), (e0, e1) = self.crop
+            s = s.inav[x0:x1, y0:y1].isig[e0:e1]
         if s.metadata.get_item("Insitu") is not None:
             del s.metadata.Insitu
         return s
@@ -199,6 +210,9 @@ class InsituSeries:
     # ---------- reading ----------
 
     def _read_raw(self, k: int) -> np.ndarray:
+        if self.crop:
+            (y0, y1), (x0, x1), (e0, e1) = self.crop
+            return np.asarray(self.signal.data[k, y0:y1, x0:x1, e0:e1].compute(scheduler="synchronous"))
         return np.asarray(self.signal.data[k].compute(scheduler="synchronous"))
 
     def _read_now(self, k: int) -> np.ndarray:

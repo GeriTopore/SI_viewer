@@ -407,6 +407,14 @@ PCA/NMF denoising (`decomposition`), drift correction of EDS spectrum images (ap
 the HAADF stack's shifts to the EDS frames, see 4.10), batch processing
 recipes across files, and saved sessions.
 
+**Per-frame EDS from Velox `.emd`.** The EDS spectrum stream keeps every
+frame (e.g. 122 frames of 256 × 256 × 4096); RosettaSciIO reads a frame
+range summed (`first_frame`, `last_frame`, ~0.1 s) or every frame lazily
+(`sum_frames=False`). Treated as an in-situ series (§4.13), with the same
+UI: the frame slider and frame ranges, time scans, and the aligned sum with
+the simultaneous HAADF stack's shifts; frames read from the stream on
+demand (single frames are sparse, ~0.2 counts per pixel).
+
 ### 4.10 Drift correction of image stacks (M9, planned)
 
 Registering and averaging HAADF (and other STEM) image stacks with the
@@ -1527,7 +1535,7 @@ Later in M19: blind source separation (HyperSpy's `blind_source_separation`
 on the kept components) and diffusion maps (pydiffmap, as in the user's own
 `dm.py`).
 
-### 4.22 Focus mode (M20, in progress)
+### 4.22 Focus mode (M20, done)
 
 As panes and tabs multiply, a way to work on one of them without the rest of
 the interface around it: e.g. the spectrum tab while adjusting the
@@ -1537,28 +1545,8 @@ components of a curve fit one by one.
 or tab out of the layout and shows it at about 80–90 % of the window, on top
 of the interface, with everything behind it blurred and dimmed.
 
-**Suggested shape (to settle when it is built):**
-
-- **Independent of any process.** Any pane can be focused: the viewer (single
-  or grid), a bottom tab (spectrum, profile, histogram, scree, exploded…),
-  the FFT, a Process section. Processes with many decisions (curve fitting,
-  drift correction, background removal) can *offer* it, e.g. a "Focus"
-  button in their section or opening in focus by choice, but nothing
-  requires it.
-- **The same component, moved, not a copy.** The focused pane is the live one
-  (same state, zoom, selection), rendered in an overlay; leaving focus puts
-  it back where it was. Edits made while focused are just edits.
-- **What comes with it.** A pane alone is often not enough: fitting a
-  spectrum needs its controls. A focused pane can bring a slim side strip
-  with the controls it depends on (the Process section that drives it, the
-  legend), rather than the whole right-hand pane.
-- **In and out.** A focus button in each pane's header (an expand icon, next
-  to Split / Save PNG), a shortcut (F is taken by "fit"; e.g. Shift F or `),
-  and Esc, a click on the blurred background, or the same button to leave.
-  One pane focused at a time; switching focus to another pane is allowed.
-- **Look.** Rounded panel with the app's border and shadow, the backdrop
-  blurred (CSS `backdrop-filter`) and dimmed; animated open/close kept short.
-  The focused size is remembered per pane.
+Built for two panes, the spectrum pane and the datasets pane; focus for
+other panes or tied to a process is not planned.
 
 **The spectrum pane (built).** *Shift F* (any view with a bottom pane)
 lifts the bottom pane's active half (when split, only the half in use) over
@@ -1581,8 +1569,7 @@ any open menu or dialog) or a click on the backdrop leaves. The panes are
 the live ones, fixed in place by CSS (classes `focus-mode`, `focus-nav`,
 `focus-right` on `<html>`), so zoom, cursor and edits carry over and
 nothing is remounted; menus and dialogs stay above them. No focus button
-(the shortcut only, as asked). Next: the other panes (the viewer, the FFT,
-a Process section).
+(the shortcut only, as asked).
 
 **The datasets pane (built).** *Shift F* with the pointer over the datasets
 pane shows the processing of everything in the highlighted dataset's
@@ -1600,11 +1587,6 @@ double-click it): focus mode closes and the main view shows it alone; or
 *Rename…* (in place), *Export…* (the export dialog) and *Delete* (undoable
 with ⌘Z), as in the list, focus mode staying open. Esc,
 Shift F or a click on the backdrop leaves.
-
-**Open questions:** whether focus is per pane or a saved layout (several
-panes side by side in focus, e.g. the spectrum and its map); whether
-processes like curve fitting open in focus by default; how it interacts with
-the split bottom pane (focus the split as a whole, or one side).
 
 ### 4.23 Curve fitting (M21, planned)
 
@@ -1625,9 +1607,7 @@ drawn while the section is open. (First built in the Quantify tab; moved.)
 **The whole spectrum is always fitted**: there is no fit range to set; to fit
 part of it, crop the data to an energy window first (Crop to this window) and
 fit the new spectrum (image). The components are listed in a panel beside the plot (a bottom
-tab, *Model*), with their curves drawn in their colours on the spectrum. It
-is the first process to offer **focus mode** (§4.22): the spectrum, the
-component list and the fit controls together, the rest blurred.
+tab, *Model*), with their curves drawn in their colours on the spectrum.
 
 #### The model
 
@@ -1788,7 +1768,7 @@ with it).
 | M21c | Fit every pixel as a job: parameter maps, reduced χ² map, fit at the cursor; per-pixel active components |
 | M21d | Optimizer, loss function, bounded, gradients and linear fitting; residual, model and component signals |
 | M21e | Expression and fixed-pattern components; several stored models, saved with an analysis; export |
-| M21f | SAMFire with seed pixels; lazy/big data; slicing a model (regions, cropping); focus mode for fitting (§4.22) |
+| M21f | SAMFire with seed pixels; lazy/big data; slicing a model (regions, cropping) |
 
 **M21a — built.** Process tab → *Curve fitting* (any spectrum, spectrum
 image or line scan). The spectrum (all pixels, the cursor
@@ -1805,8 +1785,7 @@ exSpy's model) with Poisson noise variance for counts. The model is a spec
 (`processing/curve_fit.py`) rebuilt for every request (`api/curve_fit.py`:
 `GET /api/curve-fit/components`, `POST …/curve-fit/estimate`,
 `POST …/curve-fit`); tested equal to HyperSpy's own fit. The component list
-sits in the Process section for now (the *Model* bottom tab and focus mode
-come with M21b/M21f). A channel with no counts gets a variance of 1 (Poisson's
+sits in the Process section for now (the *Model* bottom tab comes with M21b/M21f). A channel with no counts gets a variance of 1 (Poisson's
 estimate is 0 there, which would give it an infinite weight). Data stored as averages (e.g. DM's "Stack_Averaged") gives
 a large reduced χ²: the Poisson variance assumes counts.
 
@@ -1904,6 +1883,228 @@ planned.
 atomic columns), user Python components, opening an EELS edge model here to
 add peaks (fine structure) to it.
 
+### 4.24 Background jobs flap (built)
+
+A folder tab on the bottom edge at the left, just above the status bar
+("▴ Jobs", the Navigator tab's look turned to poke up; a badge with the
+number running), opens a drawer above it, the tab staying joined to the
+drawer's top-left: every queued or running job with its progress bar, message and Cancel,
+then the three latest to finish (done, with how long it took; failed, with
+the error; cancelled), each with how long ago. It polls `GET /api/jobs`
+(every 0.7 s while a job runs or the panel is open, else every 4 s; the
+list leaves results out). Jobs record when they started and finished. When
+a job finishes, the files are synced (`syncFiles`), so its results reach the
+dataset list whichever panel started it.
+
+### 4.25 Atomic-resolution images with kemstem (M22, in progress)
+
+Quantification of atomic-resolution STEM images with
+[kemstem](https://github.com/noahschnitzer/kemstem) (Kourkoutis group;
+local clone `~/Documents/Dev/kemstem`, v0.0.6). The package is plain
+functions on NumPy arrays: points are `(n, 2)` arrays in `(y, x)` pixels,
+images are 2D float arrays normalised to 0–1, and FFTs are complex and
+centred. As with HyperSpy, the backend calls kemstem and writes only glue.
+kemstem's matplotlib helpers (`select_peaks`, `plot_*`) are not used: the
+viewer draws the same things itself.
+
+**Workflows** (from the example notebooks):
+1. **Fourier filtering and strain** (notebook 1):
+   - pick FFT peaks, then refine them with 2D Gaussians (`refine_peaks_gf`);
+   - `fourier_filter` gives the amplitude and the grating;
+   - `phaselock` or `gpa` gives the phase;
+   - `phase_to_strain` gives ε∥ and ε⊥ from one peak, and
+     `calculate_strain_tensor` gives εxx, εyy, εxy and ω from two;
+   - local wave fitting (`fit_grating`) gives spacing and rotation maps.
+2. **Domain mapping** (notebook 1b): the filtered amplitudes of several
+   peaks, each overlaid on the image in its own colour.
+3. **Site by site** (notebook 2):
+   - find columns (`find_columns`) and refine them with 2D Gaussians
+     (`refine_columns`);
+   - split the sublattices by intensity;
+   - pair correlations (`get_neighborhood`) clustered with k-means
+     (`cluster_neighbors`) to choose lattice vectors;
+   - per-site vectors to neighbours (`get_vector_to_neighbors`) give bond
+     lengths and angles, shown as sites, bonds or polygons;
+   - chains of connected columns (`get_connected_columns`) give line
+     profiles.
+4. **Periodic lattice displacements** (notebook 3):
+   - damp the superlattice peaks (`damp_peaks_circle`, with the backgrounds
+     of the refined peaks) to get an undistorted reference image;
+   - fit the columns in both images with the same pre-processing;
+   - `measure_displacements` gives the displacements, drawn as triangles
+     coloured by direction.
+
+**Where it lives.** An **Atomic** section in the right column for an image
+(not a map of a spectrum image). It is a guided workflow like drift
+correction: steps in order, each with its parameters, a preview in the
+viewer and a Next button. Results go into the dataset tree under the image,
+each with its own badge, so they show in the processing tree and are saved
+with projects.
+
+**Data model.**
+- *FFT peaks* are stored as spatial frequencies (cycles/px, y and x). The
+  same peaks can then be drawn on the FFT panel at any zoom and converted to
+  kemstem's FFT pixels of the full image.
+- *Columns*: a new dataset kind, a point set over its image. It holds a
+  per-site table:
+  - y, x;
+  - the Gaussian parameters (amplitude, σ₁, σ₂, angle, offset), and
+    intensity = amplitude + offset;
+  - fit failed;
+  - the sublattice label;
+  - and any measured value.
+
+  It is drawn as an overlay on its image. It has an Info table, exports to
+  CSV, and is saved in projects.
+- *Maps* (amplitude, phase, strain, spacing, rotation, rasterised site
+  values) are ordinary image datasets.
+  - Phase uses a cyclic colormap; strain and rotation use the diverging map
+    centred on 0 (`viewer/diverging.ts`).
+  - The coarsening length is drawn as a circle in the corner of the viewer
+    (`coarsening_length`).
+- Pixel sizes come from the image's axes: spacings in Å, displacements in
+  pm, angles in °.
+
+**Viewer work** (new, frontend only):
+- Peak markers on the FFT panel. Clicking adds a peak, with "Add the
+  conjugate" (−k) as an option, and right-click deletes one. The peaks are
+  numbered, with |k|, d and direction as in the hover readout. The filter's
+  Gaussian (σ) or the damping circles (radius) are drawn around them.
+- A point layer for thousands of columns, drawn on a canvas or WebGL rather
+  than SVG:
+  - markers coloured by label or by a value, with the colormap and contrast
+    of the existing controls;
+  - click to select and show the site's row;
+  - add or delete columns by hand; lasso or click to relabel.
+- Bonds (lines from a site to a neighbour) and polygons (unit cells,
+  octahedra) coloured by a value.
+- Displacement triangles: area ∝ |d|^p, coloured by angle, with a colour
+  wheel legend (`vector_to_color`) and pm scale triangles.
+- The fit check: the data patch, the fit and the residual of one column
+  (or one wave-fit patch) at the clicked position. It replaces the
+  notebooks' `plot_fit_comparison` and `test_fit` figures.
+- The neighbourhood plot in the bottom pane: a scatter of the vectors to the
+  k nearest neighbours, with the k-means cluster centres. Clicking a cluster
+  sets v₁, v₂ or a nearest-neighbour vector.
+
+**Glue and jobs.**
+- `refine_columns` (and `refine_peaks_gf`) are serial `curve_fit` loops,
+  about 1–3 ms per column, so 5000 columns take about 10 s. It runs as a job
+  in chunks of about 256 columns, which gives progress and lets Cancel work
+  between chunks.
+- `fit_grating` runs its own process pool and reports no progress, so it is
+  one job with an indeterminate bar. The test fit at the cursor is
+  instantaneous.
+- Inputs are normalised (`normalize`) and optionally pre-blurred
+  (Gaussian σ). The same pre-processing is used for every image in a
+  comparison (notebook 3).
+- kemstem assumes square images (`coarsening_length` uses `shape[0]`, and
+  `fit_grating`'s interpolation assumes a square). Non-square images get a
+  "Crop to a square" offer, using the existing crop.
+- kemstem is installed editable from the local clone (`environment.yml`:
+  `-e ../kemstem`), with `cmocean`; scikit-learn and scikit-image were
+  already present.
+- **Licence:** kemstem is GPL-3.0. SI Viewer can only bundle it, for example
+  in the M8 installers, under a GPL-compatible licence. Decide before
+  packaging.
+
+**Stages.**
+- **M22a: FFT peaks (done).**
+  - kemstem's three example images are in the Examples menu (only when its
+    clone is installed). They are calibrated as in the notebooks: 0.0184
+    nm/px, the double perovskite uncalibrated. They are the test data for
+    M22.
+  - "Atomic resolution" in the Process tab of an image (`AtomicSection`,
+    `state/atomic.ts`). While it is open, the FFT panel transforms the
+    whole image (its centred square, up to 2048 px) instead of the view.
+  - Picking: a click on the FFT adds a peak (with its conjugate, −k, when
+    ticked) and a right-click deletes the nearest. Each peak is a numbered
+    ring, with a dot where it was refined. Peaks are kept as cycles per
+    image pixel, so they survive zooming and re-binning.
+  - A magnifier can follow the pointer (`components/Loupe.tsx`): a square
+    to its right, or to its left near the window's edge, with a crosshair
+    at the pointer.
+    - Each has its own toggle (magnifying-glass button). The image
+      viewers' sits in the layer toolbar, the FFT's beside "View in main
+      window". Both are off whenever the app starts.
+    - M toggles the one under the mouse.
+    - FFT: a 92 px square of 23 × 23 FFT pixels at full resolution (the
+      panel max-pools them), with the peaks' rings. No tooltip while it, or
+      peak picking, is on.
+    - Image viewers (images, stacks, spectrum-image navigators): a 140 px
+      square, drawn by a second WebGL renderer from the same layers at 4×
+      the view's zoom. It shows every visible layer in its own display, but
+      not the overlays (regions, lines).
+  - The table gives each peak's d (Å or px) and direction. Peaks are kept
+    per image (in this browser, and in saved analyses).
+  - Refine: `POST /api/datasets/{id}/atomic/fft-peaks` (`processing/atomic.py`)
+    runs kemstem on the filtered image's FFT, `log(1 + |F|)` blurred by σ
+    (as in the notebooks):
+    - `refine_peaks_gf`: Gaussian fits, also returning amplitude, background
+      and widths;
+    - or `refine_peaks_com`: centre of mass;
+    - window (odd) and edge handling (none, Hann, periodic + smooth) are
+      options;
+    - peaks too close to the edge, and failed fits, stay as clicked and are
+      marked ✕.
+  - Checks:
+    - From the same start, the result equals kemstem's own calls.
+    - On the strain example, from browser clicks: (983.1, 1205.0) and
+      (823.0, 982.1) FFT px; d = 1.905 and 1.923 Å.
+    - The film/substrate peak is doubled, so the first converges to the
+      side nearer the click; the notebook's start gives 1201.3.
+    - kemstem's tqdm bars are silenced (`TQDM_DISABLE`).
+- **M22b: Fourier filtering and strain.**
+  - Filter one peak (σ, with the coarsening length shown), giving amplitude
+    and grating maps.
+  - Phase by lock-in (second σ, default 2×) or GPA.
+  - Strain from one peak, or the tensor from two.
+  - Domain mapping: the amplitudes of several peaks as a composite overlay.
+- **M22c: Local wave fitting.**
+  - Patch size and step.
+  - The test fit at the cursor.
+  - The `fit_grating` job, giving spacing (Å) and rotation (°) maps and a
+    coarsening length of max(filter, patch, step).
+  - Strain against the mean, a typed value, or a region's mean (an existing
+    image region, e.g. the substrate). A spacing histogram (histogram tab)
+    helps choose the reference.
+- **M22d: Columns.**
+  - `find_columns` (distance, threshold, pre-blur) with a live preview of
+    the markers, then editing by hand.
+  - The single-column test fit, then the `refine_columns` job, which gives
+    the Columns dataset.
+  - Sublattices from a histogram of a column value with draggable
+    thresholds (or k-means on it), and relabelling by hand.
+- **M22e: Neighbourhoods and measurements.**
+  - The neighbourhood plot and clusters, then lattice vectors.
+  - Per-site lengths and angles for a sublattice pair (A→A, B→B, A→B).
+  - Display as sites, bonds or polygons.
+  - Rasterised maps (`aggregate_points` with a σ, or `interpolate_points`).
+  - Lattice indexing (`index_lattice`).
+  - Line profiles along a chain of n columns, extrapolated by a fraction
+    (`extrapolate_point_pair`), in the profile pane.
+- **M22f: Periodic lattice displacements.**
+  - Pick the superlattice peaks (conjugates added).
+  - Refine them on |FFT| for the backgrounds.
+  - Damp them (radius), giving the reference image and difference image
+    datasets.
+  - Fit the columns in both images (reusing M22d).
+  - `measure_displacements` (threshold), giving the triangles overlay and
+    magnitude and angle maps.
+- **Later:**
+  - per-frame analysis of stacks and in-situ series (columns or strain over
+    time);
+  - columns on spectrum-image navigators (site-resolved spectra summed over
+    each sublattice);
+  - export of the overlays as PNG.
+
+**Tests.**
+- The backend glue is checked against direct kemstem calls on crops of
+  kemstem's example images (`example_notebooks/data`: the two HAADF `.tif`s
+  and the NSMO one). The tests are skipped when the clone is missing.
+- Crops are small (256²) so the tests stay fast. No long jobs in browser
+  tests.
+
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
@@ -1941,8 +2142,9 @@ add peaks (fine structure) to it.
 | M17 | Undo a deletion (⌘/Ctrl Z): datasets, regions, line profiles, FFT boxes | Done |
 | M18 | Save and open an analysis (HDF5 project, HyperSpy-readable): in place / new dataset for operations (M18a), save and open (M18b), stored arrays and checks (M18c), embedding and relinking (M18d) | Done (choosing which datasets to store set aside) |
 | M19 | Decomposition of spectrum images: PCA with denoising (M19a), blind source separation (M19b), diffusion maps (M19c) | In progress |
-| M20 | Focus mode: any pane or tab lifted to most of the window over a blurred interface, with the controls it needs (§4.22) | In progress (the spectrum and datasets panes built) |
+| M20 | Focus mode (Shift F) over a blurred interface: the spectrum pane with the right-hand pane and a navigator flap; the datasets pane as a processing tree (§4.22) | Done |
 | M21 | Curve fitting with HyperSpy's `Model1D`: model on one spectrum (M21a), placing peaks and twins (M21b), every pixel (M21c), optimizers, losses and linear fitting (M21d), expression and pattern components, stored models (M21e), SAMFire and big data (M21f) (§4.23) | In progress (M21a, M21b but excluded windows, M21c but line scans and per-pixel active components) |
+| M22 | Atomic-resolution images with kemstem: FFT peaks (M22a), Fourier filtering and strain (M22b), local wave fitting (M22c), columns and sublattices (M22d), neighbourhoods and measurements (M22e), periodic lattice displacements (M22f) (§4.25) | In progress (M22a done) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

@@ -16,9 +16,13 @@ dependencies:
   - websockets
   - pytest
   - httpx             # FastAPI TestClient
+  - cmocean           # kemstem's colormaps
   - pip
   - pip:
       - -e .
       # Drift correction of image stacks: the local rigidRegistration copy,
       # editable so changes to it take effect at once.
       - -e ../rigidRegistration
+      # Atomic-resolution analysis (M22): the local kemstem clone, editable;
+      # its example images are the Examples menu's kemstem entries.
+      - -e ../kemstem

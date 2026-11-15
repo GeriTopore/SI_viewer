@@ -8,6 +8,8 @@ import { isTyping, useShortcuts } from "../keyboard";
 import { safeFileName } from "../download";
 import type { SnapshotPanel } from "../viewer/snapshot";
 import { PngExportDialog } from "./PngExportDialog";
+import { ViewerLoupe, lastPointer, overFft } from "./Loupe";
+import { useUi } from "../state/ui";
 import { scanPixel } from "../views/si/scan";
 
 export interface AxisCal {
@@ -147,6 +149,9 @@ export function ImageView({
   // While "fitted", the image re-fits when the panel resizes.
   const fitted = useRef(view === null);
   const [hover, setHover] = useState<Hover | null>(null);
+  // The magnifier (when on): the data point under the pointer, and the pointer in the window.
+  const loupeOn = useUi((s) => s.viewerLoupe);
+  const [loupeAt, setLoupeAt] = useState<{ x: number; y: number; cx: number; cy: number } | null>(null);
   const drag = useRef<{ x: number; y: number; view: ViewTransform } | null>(null);
 
   const setView = useCallback(
@@ -341,6 +346,7 @@ export function ImageView({
       return;
     }
     const p = toData(e.clientX, e.clientY, view);
+    if (loupeOn) setLoupeAt({ x: p.x, y: p.y, cx: e.clientX, cy: e.clientY });
     if (tooling.current) interaction?.onMove?.(p, e, transform!);
     else interaction?.onHover?.(p, transform!);
     const ix = Math.floor(p.x);
@@ -372,6 +378,19 @@ export function ImageView({
   useShortcuts({
     f: () => (ownsKeys() ? fit() : false),
     "1": () => (ownsKeys() && view ? setView({ ...view, zoom: 1 }) : false),
+    // M: the magnifier on or off (the FFT panel's own when over it).
+    m: () => {
+      if (overFft() || !ownsKeys()) return false;
+      const ui = useUi.getState();
+      const on = !ui.viewerLoupe;
+      ui.setViewerLoupe(on);
+      // Switched on: at once where the pointer is (if over this image).
+      const rect = wrapRef.current?.getBoundingClientRect();
+      const { x: cx, y: cy } = lastPointer;
+      const inside = !!rect && cx >= rect.left && cx < rect.right && cy >= rect.top && cy < rect.bottom;
+      if (on && inside && view) setLoupeAt({ ...toData(cx, cy, view), cx, cy });
+      else setLoupeAt(null);
+    },
   });
   // ⌘/Ctrl+S saves the image (instead of the browser saving the page).
   const save = useRef<() => void>(() => {});
@@ -432,6 +451,7 @@ export function ImageView({
         onPointerLeave={() => {
           if (hoveredView === owner) hoveredView = null;
           setHover(null);
+          setLoupeAt(null);
           interaction?.onHover?.(null);
         }}
         onDoubleClick={(e) => {
@@ -443,6 +463,9 @@ export function ImageView({
         }}
       >
         <canvas ref={canvasRef} />
+        {loupeOn && loupeAt && view && (
+          <ViewerLoupe layers={layers} x={loupeAt.x} y={loupeAt.y} zoom={view.zoom} cx={loupeAt.cx} cy={loupeAt.cy} />
+        )}
         {renderOverlay && transform && (
           <svg className="image-overlay-svg" width={size.w} height={size.h}>
             {renderOverlay(transform)}

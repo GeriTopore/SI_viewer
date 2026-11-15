@@ -58,6 +58,7 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
     keys: [
       ["F", "Fit the image under the mouse (else the main one) to its window, or double-click"],
       ["1", "One screen pixel per data pixel (same image)"],
+      ["M", "Magnifier on or off beside the pointer (over the FFT: the FFT's own)"],
       ["G", "Several images: merged or a grid of panels"],
       ["⌘/Ctrl S", "Save the image as shown as PNG"],
       ["Space + drag", "Pan with any tool (or middle-drag)"],

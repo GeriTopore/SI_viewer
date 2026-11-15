@@ -25,6 +25,7 @@ import { ProfilePanel } from "./ProfilePanel";
 import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from "../state/profiles";
 import { lineAt, useLineTool } from "../views/useLineTool";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import { LoupeToggle } from "./Loupe";
 import { AnnotationsToggle } from "./AnnotationsToggle";
 import { lineMenuItems } from "./ProfilePanel";
 import { useFftBoxTool } from "../views/useFftBoxTool";
@@ -564,6 +565,7 @@ export function LayeredViewer({
             </div>
           )}
           {lineTool === undefined && <AnnotationsToggle view={viewKey} />}
+          <LoupeToggle which="viewer" />
           {canSwitch && (
             <div className="segmented" role="group" aria-label="Several images">
               {(["merged", "grid"] as const).map((m) => (

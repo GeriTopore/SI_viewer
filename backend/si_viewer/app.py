@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import (
-    background, crop, curve_fit, datasets, decomposition, deconvolution, dpc, eds, eels, eels_fit, examples, export, files, fs, insitu, jobs, plot_export, process,
+    atomic, background, crop, curve_fit, datasets, decomposition, deconvolution, dpc, eds, eels, eels_fit, examples, export, files, fs, insitu, jobs, plot_export, process,
     project, registration, thickness, zlp,
 )
 from .jobs import JobManager
@@ -40,6 +40,7 @@ def create_app(session: Session | None = None) -> FastAPI:
     app.include_router(eels_fit.router)
     app.include_router(curve_fit.router)
     app.include_router(examples.router)
+    app.include_router(atomic.router)
     app.include_router(jobs.router)
     app.include_router(process.router)
     app.include_router(export.router)

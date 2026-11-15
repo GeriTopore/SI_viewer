@@ -193,6 +193,11 @@ interface UiState {
   /** The FFT is of the patch with a Hann window (no edge streaks). */
   fftHann: boolean;
   setFftHann: (on: boolean) => void;
+  /** A magnifier follows the pointer over the FFT / over the image viewers. */
+  fftLoupe: boolean;
+  setFftLoupe: (on: boolean) => void;
+  viewerLoupe: boolean;
+  setViewerLoupe: (on: boolean) => void;
   /** FFT display: amplitude or log(1 + |F|²), gamma and colormap. */
   fftScale: FftScale;
   setFftScale: (scale: FftScale) => void;
@@ -393,6 +398,11 @@ export const useUi = create<UiState>((set, get) => ({
     save("si-viewer.fftHann", String(fftHann));
     set({ fftHann });
   },
+  // Off whenever the app starts (not remembered).
+  fftLoupe: false,
+  setFftLoupe: (fftLoupe) => set({ fftLoupe }),
+  viewerLoupe: false,
+  setViewerLoupe: (viewerLoupe) => set({ viewerLoupe }),
   fftContrastOpen: load<string>("si-viewer.fftContrastOpen", "true") === "true",
   setFftContrastOpen: (fftContrastOpen) => {
     save("si-viewer.fftContrastOpen", String(fftContrastOpen));

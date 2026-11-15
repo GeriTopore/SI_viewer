@@ -186,6 +186,24 @@ export interface EelsSubshell {
 /** EELS spectra and spectrum images: the elements chosen for a model fit and
  * their edges inside the energy range (by onset). */
 /** How DPC images are made from the four quadrant images. */
+/** How FFT peaks are refined (kemstem): 2D Gaussian fits or centre of mass,
+ * in a window (odd, FFT px) of the blurred log pattern. */
+export interface FftPeakOptions {
+  method: "gauss" | "com";
+  window: number;
+  blur: number;
+  edge: "none" | "hann" | "pplus";
+}
+
+export interface RefinedPeak {
+  fy: number;
+  fx: number;
+  failed: boolean;
+  amplitude?: number;
+  background?: number;
+  sigma?: [number, number];
+}
+
 export interface DpcSettings {
   /** The image of each quadrant (A–D). */
   inputs: Record<string, string>;
@@ -872,7 +890,12 @@ export interface JobSummary {
   progress: number;
   message: string;
   error: string | null;
-  result: {
+  /** When it was submitted, started and finished (seconds since the epoch). */
+  created?: number;
+  started?: number | null;
+  finished?: number | null;
+  /** Left out of the list of jobs (``listJobs``). */
+  result?: {
     file: FileSummary;
     skipped?: string[];
     /** Curve fit of every pixel: the pixels whose fit failed. */
@@ -1267,6 +1290,8 @@ export const api = {
   alignedSum: (id: string, choice: ShiftsChoice) =>
     request<JobSummary>(`/api/datasets/${id}/insitu/aligned-sum`, { method: "POST", body: JSON.stringify(choice) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
+  /** Every queued or running job, then the ``recent`` latest to finish (no results). */
+  listJobs: (recent = 3) => request<JobSummary[]>(`/api/jobs?recent=${recent}`),
   /** A new spectrum image under ``id``, cropped to a rectangle (navigation
    * pixels, as a region's spectrum) and/or an energy window. */
   cropDataset: (id: string, crop: { region?: object; lo?: number; hi?: number }) =>
@@ -1342,6 +1367,11 @@ export const api = {
       body: JSON.stringify({ inputs, normalise }),
     }),
   /** Make (or make again) DPC x, DPC y and iDPC images. */
+  refineFftPeaks: (id: string, peaks: [number, number][], options: FftPeakOptions) =>
+    request<{ peaks: RefinedPeak[]; shape: [number, number] }>(`/api/datasets/${id}/atomic/fft-peaks`, {
+      method: "POST",
+      body: JSON.stringify({ peaks, ...options }),
+    }),
   makeDpc: (settings: DpcSettings) =>
     request<{ ids: Record<"colour" | "x" | "y" | "idpc", string>; files: FileSummary[] }>("/api/dpc", {
       method: "POST",

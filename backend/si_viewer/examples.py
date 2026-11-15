@@ -164,6 +164,61 @@ def _synthetic_fept_si() -> list:
     return [si, image]
 
 
+def kemstem_data() -> "Path | None":
+    """kemstem's example images (``example_notebooks/data`` of its clone,
+    installed with ``pip install -e``), or None without them."""
+    from pathlib import Path
+
+    try:
+        import kemstem
+    except ImportError:
+        return None
+    data = Path(kemstem.__file__).resolve().parents[2] / "example_notebooks" / "data"
+    return data if data.is_dir() else None
+
+
+def _kemstem_image(name: str, title: str, nm_per_px: float | None):
+    """One of kemstem's example HAADF images, calibrated as in its notebook."""
+    def load() -> list:
+        import hyperspy.api as hs
+
+        s = hs.load(kemstem_data() / name)
+        s.metadata.General.title = title
+        for ax, axis_name in zip(s.axes_manager.signal_axes, ("x", "y")):
+            ax.name = axis_name
+            if nm_per_px:
+                ax.scale, ax.units = nm_per_px, "nm"
+        return [s]
+
+    return load
+
+
+# (id, file, title, description, nm per pixel from the notebook)
+_KEMSTEM = [
+    ("kemstem-strain", "rI_1341 2.6 Mx B_C270_0_HAADF.tif", "Relaxed film with misfit dislocations (kemstem)",
+     "kemstem example (notebook 1): 2031×2025 HAADF of a partially relaxed perovskite film. "
+     "For FFT peaks, Fourier filtering, strain and wave fitting. 0.0184 nm/px.", 0.0184),
+    ("kemstem-sites", "rI_2138 B1_RT 5.3 Mx_0_HAADF.tif", "Double perovskite on DyScO₃ (kemstem)",
+     "kemstem example (notebook 2): 1017×1017 HAADF of a double perovskite film on its substrate. "
+     "For columns, sublattices, bond lengths and angles. Uncalibrated (px).", None),
+    ("kemstem-pld", "FigS6_0716__Cryo_NSMO110_5-1Mx_0p5us_1024px_REGISTERED.tif",
+     "Charge-ordered Nd₀.₅Sr₀.₅MnO₃ (kemstem)",
+     "kemstem example (notebook 3): 963×898 registered cryo HAADF of a charge-ordered manganite. "
+     "For superlattice peaks and periodic lattice displacements. 0.0184 nm/px.", 0.0184),
+]
+
+
+def _kemstem_examples() -> list[Example]:
+    data = kemstem_data()
+    if data is None:
+        return []
+    return [
+        Example(i, title, desc, _kemstem_image(name, title, px))
+        for i, name, title, desc, px in _KEMSTEM
+        if (data / name).is_file()
+    ]
+
+
 EXAMPLES = [
     Example(
         "fept-si",
@@ -205,6 +260,7 @@ EXAMPLES = [
         "256 ± 5 and 768 ± 10 with random areas, Poisson noise; the true centre and area maps come with it.",
         _fit_two_gaussians,
     ),
+    *_kemstem_examples(),
 ]
 
 _BY_ID = {e.id: e for e in EXAMPLES}

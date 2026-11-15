@@ -12,6 +12,9 @@ import { percentile, sortedSample } from "../viewer/contrast";
 import type { DisplayParams } from "../viewer/renderer";
 import { ContrastControls } from "./ContrastControls";
 import { useFftBoxes, useViewFftBoxes, type FftBox } from "../state/fftBoxes";
+import { addPeak, deletePeak, peakAt, useAtomic, type FftPeak } from "../state/atomic";
+import { LoupeFrame, LoupeToggle, lastPointer, overFft } from "./Loupe";
+import { useShortcuts } from "../keyboard";
 
 // Largest patch transformed; a bigger visible area uses its centre.
 const MAX_PATCH = 2048;
@@ -45,11 +48,14 @@ interface Shown {
 
 const nextPow2 = (v: number) => 2 ** Math.ceil(Math.log2(v));
 
-/** The centred square of the visible area (or of an FFT box), as frame pixels. */
-function cutPatch(img: ViewerImage, box: FftBox | null): { data: Float32Array; patch: Patch } | null {
+/** The centred square of the visible area (or of an FFT box, or of the
+ * whole image), as frame pixels. */
+function cutPatch(img: ViewerImage, box: FftBox | null, whole = false): { data: Float32Array; patch: Patch } | null {
   const { frame, calX, calY } = img;
   const b = frame.bin;
-  const area = box ? { x0: box.x, y0: box.y, x1: box.x + box.size, y1: box.y + box.size } : img;
+  const area = whole
+    ? { x0: 0, y0: 0, x1: frame.width * b, y1: frame.height * b }
+    : box ? { x0: box.x, y0: box.y, x1: box.x + box.size, y1: box.y + box.size } : img;
   const fx0 = Math.max(0, Math.floor(area.x0 / b));
   const fy0 = Math.max(0, Math.floor(area.y0 / b));
   const fx1 = Math.min(frame.width, Math.ceil(area.x1 / b));
@@ -78,7 +84,7 @@ function cutPatch(img: ViewerImage, box: FftBox | null): { data: Float32Array; p
       units: x.units,
       bin: b,
       cropped: fx1 - fx0 > size || fy1 - fy0 > size,
-      region: box?.name ?? null,
+      region: whole ? "the image" : box?.name ?? null,
     },
   };
 }
@@ -104,6 +110,21 @@ export function FftPanel() {
   const box = boxes.find((b) => b.id === source) ?? null;
   const compare = useViewerImage((s) => s.compare);
   const setCompare = useViewerImage((s) => s.setCompare);
+  // The Atomic section's image: its whole FFT, with its peaks to edit.
+  const atomicId = useAtomic((s) => s.shown);
+  const atomic = useAtomic((s) => (atomicId ? s.byId[atomicId] : undefined));
+  const peaks = useMemo(
+    () =>
+      atomicId
+        ? {
+            list: atomic?.peaks ?? [],
+            picking: atomic?.picking ?? true,
+            onAdd: (fy: number, fx: number) => addPeak(atomicId, fy, fx),
+            onDelete: (i: number) => deletePeak(atomicId, i),
+          }
+        : null,
+    [atomicId, atomic?.peaks, atomic?.picking],
+  );
   const setSource = (id: string | null) => fftView && useFftBoxes.getState().patch(fftView, { source: id, selected: id });
   // The focused dataset's bandpass filter, drawn like the alignment's mask
   // (which takes its place while an alignment is shown).
@@ -218,6 +239,7 @@ export function FftPanel() {
           >
             View in main window
           </button>
+          <LoupeToggle which="fft" className="fft-loupe-toggle" />
         </div>
       )}
       {open && (
@@ -230,6 +252,7 @@ export function FftPanel() {
           measure={measure}
           onMask={fftMask ? onMask : null}
           onBand={fftMask ? null : onBand}
+          peaks={peaks}
         />
       )}
     </section>
@@ -271,9 +294,27 @@ type Drag =
   | { id: "mask"; start: MaskSettings; rx: number; ry: number; angle: number }
   | { id: "small" | "large" };
 
+/** FFT peaks drawn and edited on the FFT (the Atomic section): clicks add
+ * one, right-clicks delete the nearest. */
+export interface FftPeaks {
+  list: FftPeak[];
+  picking: boolean;
+  onAdd: (fy: number, fx: number) => void;
+  onDelete: (index: number) => void;
+}
+
+// A peak is hit within this many screen pixels (right-click to delete).
+const PEAK_HIT_PX = 8;
+// The magnifier while picking: LOUPE_N × LOUPE_N FFT pixels around the
+// pointer, shown LOUPE_PX wide to the right of it.
+const LOUPE_N = 23;
+const LOUPE_PX = 92;
+
 export function FftView({
-  image, box, zoom, mask, band: bandProp, measure, onMask, onBand, compact = false,
+  image, box, zoom, mask, band: bandProp, measure, onMask, onBand, compact = false, peaks = null,
 }: {
+  /** FFT peaks to draw (the whole image is transformed while there are). */
+  peaks?: FftPeaks | null;
   image: ViewerImage | null;
   box: FftBox | null;
   /** Without the contrast controls (the FFTs beside the image). */
@@ -291,6 +332,23 @@ export function FftView({
   const liveRef = useRef<Bandpass | null>(null);
   const band = liveBand ?? bandProp;
   const [hover, setHover] = useState<{ id: string; cursor: string } | null>(null);
+  // The pointer over the FFT (screen px in the panel, and in the window) for the magnifier.
+  const [pointerAt, setPointerAt] = useState<{ x: number; y: number; cx: number; cy: number } | null>(null);
+  const loupeRef = useRef<HTMLCanvasElement>(null);
+  const loupeOn = useUi((s) => s.fftLoupe);
+  // M over the FFT: its magnifier on or off.
+  useShortcuts({
+    m: () => {
+      if (!overFft()) return false;
+      const ui = useUi.getState();
+      const on = !ui.fftLoupe;
+      ui.setFftLoupe(on);
+      // Switched on: at once where the pointer is.
+      const rect = wrapRef.current?.getBoundingClientRect();
+      const { x: cx, y: cy } = lastPointer;
+      setPointerAt(on && rect ? { x: cx - rect.left, y: cy - rect.top, cx, cy } : null);
+    },
+  }, !compact);
   const drag = useRef<Drag | null>(null);
   const suppressClick = useRef(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -380,7 +438,7 @@ export function FftView({
       return;
     }
     const t = setTimeout(() => {
-      const cut = cutPatch(image, box);
+      const cut = cutPatch(image, box, !!peaks);
       setTooSmall(!cut);
       if (!cut) {
         setShown(null);
@@ -393,7 +451,7 @@ export function FftView({
       worker.current?.postMessage(req, [cut.data.buffer]);
     }, DELAY_MS);
     return () => clearTimeout(t);
-  }, [image, hann, box?.x, box?.y, box?.size, box?.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [image, hann, box?.x, box?.y, box?.size, box?.name, !!peaks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Square canvas filling the panel width.
   useLayoutEffect(() => {
@@ -464,6 +522,7 @@ export function FftView({
   }, [shown, view, display, side, zoom, mask, band]);
 
   const p = shown?.patch;
+  const toScreen = (u: number) => (shown ? (u / (shown.result.n / zoom) + 0.5) * side : 0);
   // Click: mark that frequency. FFT pixel u (from the centre) is u/n cycles
   // per patch pixel, i.e. u / (n · pixel size) per unit length.
   const onClick = (e: React.MouseEvent) => {
@@ -471,19 +530,46 @@ export function FftView({
       suppressClick.current = false;
       return;
     }
-    if (!measure || !p || !shown || !side) return;
+    if (!p || !shown || !side) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const span = shown.result.n / zoom;
     const u = ((e.clientX - rect.left) / rect.width - 0.5) * span;
     const v = ((e.clientY - rect.top) / rect.height - 0.5) * span;
-    setMark({ kx: u / (p.n * p.px), ky: v / (p.n * p.py) });
+    // A peak: cycles per full-resolution image pixel.
+    if (peaks?.picking) peaks.onAdd(v / (p.n * p.bin), u / (p.n * p.bin));
+    else if (measure) setMark({ kx: u / (p.n * p.px), ky: v / (p.n * p.py) });
+  };
+  // The peaks on screen (f cycles per image pixel is f·n·bin FFT pixels).
+  const peakDots = p && shown && peaks
+    ? peaks.list.map((pk) => {
+        const at = peakAt(pk);
+        return {
+          x: toScreen(pk.fx * p.n * p.bin), y: toScreen(pk.fy * p.n * p.bin),
+          rx: toScreen(at.fx * p.n * p.bin), ry: toScreen(at.fy * p.n * p.bin),
+          refined: !!pk.refined && !pk.refined.failed,
+        };
+      })
+    : [];
+  const onContextMenu = (e: React.MouseEvent) => {
+    if (!peaks || !peakDots.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    let best = -1;
+    let bestD = PEAK_HIT_PX;
+    peakDots.forEach((d, i) => {
+      const dist = Math.min(Math.hypot(d.x - x, d.y - y), Math.hypot(d.rx - x, d.ry - y));
+      if (dist <= bestD) [best, bestD] = [i, dist];
+    });
+    if (best < 0) return;
+    e.preventDefault();
+    peaks.onDelete(best);
   };
 
   const freq = measure && p ? mark : null;
   const k = freq && Math.hypot(freq.kx, freq.ky);
   // The mark in FFT pixels, then on screen (for the spots and the ring).
   const at = p && freq ? { u: freq.kx * p.n * p.px, v: freq.ky * p.n * p.py } : null;
-  const toScreen = (u: number) => (shown ? (u / (shown.result.n / zoom) + 0.5) * side : 0);
   // The mask's cutoff ring (an ellipse for an elliptical mask): f cycles
   // per frame pixel is f·n·bin FFT pixels, i.e. f·bin·zoom·side on screen.
   const fc = mask && maskCutoff(mask);
@@ -572,6 +658,10 @@ export function FftView({
         : { id: id as "small" | "large" };
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    if (loupeOn && !drag.current) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setPointerAt({ x: e.clientX - rect.left, y: e.clientY - rect.top, cx: e.clientX, cy: e.clientY });
+    }
     const { dx, dy, d } = pointer(e);
     if (drag.current) {
       dragTo(drag.current, dx, dy, d);
@@ -599,6 +689,67 @@ export function FftView({
     const id = hitRing(dx, dy, d);
     setHover(id ? { id, cursor: resizeCursor(dx, dy) } : null);
   };
+
+  // The magnifier: FFT pixels around the pointer at full resolution (the
+  // panel max-pools them), with the pointer's exact position at its centre.
+  const loupe = (() => {
+    if (!loupeOn || !pointerAt || !shown || !p || !side || drag.current) return null;
+    const { n } = shown.result;
+    const span = n / zoom;
+    // FFT pixel (fractional, from the array's corner) under the pointer.
+    const u = (pointerAt.x / side - 0.5) * span + n / 2;
+    const v = (pointerAt.y / side - 0.5) * span + n / 2;
+    const scale = LOUPE_PX / LOUPE_N; // screen px per FFT pixel
+    const left0 = u - LOUPE_N / 2;
+    const top0 = v - LOUPE_N / 2;
+    const toLoupe = (f: number, start: number) => (f - start) * scale;
+    const list = (peaks?.list ?? []).map((pk) => {
+      const at = peakAt(pk);
+      const f = p.n * p.bin;
+      return {
+        x: toLoupe(pk.fx * f + n / 2, left0), y: toLoupe(pk.fy * f + n / 2, top0),
+        rx: toLoupe(at.fx * f + n / 2, left0), ry: toLoupe(at.fy * f + n / 2, top0),
+        refined: !!pk.refined && !pk.refined.failed,
+      };
+    }).filter((q) => q.x > -10 && q.y > -10 && q.x < LOUPE_PX + 10 && q.y < LOUPE_PX + 10);
+    return { u, v, peaks: list };
+  })();
+
+  useEffect(() => {
+    const canvas = loupeRef.current;
+    if (!canvas || !loupe || !shown || !view) return;
+    const { n } = shown.result;
+    const data = view.frame.data;
+    const { lo, hi, gamma: g0, colormap: cmap } = display;
+    const lut = colormapLut(cmap);
+    const gain = 1 / Math.max(hi - lo, 1e-30);
+    const dpr = window.devicePixelRatio || 1;
+    const d = Math.round(LOUPE_PX * dpr);
+    canvas.width = d;
+    canvas.height = d;
+    const ctx = canvas.getContext("2d")!;
+    const img = ctx.createImageData(d, d);
+    const start = { u: loupe.u - LOUPE_N / 2, v: loupe.v - LOUPE_N / 2 };
+    for (let cy = 0; cy < d; cy++) {
+      const y = Math.floor(start.v + ((cy + 0.5) * LOUPE_N) / d);
+      for (let cx = 0; cx < d; cx++) {
+        const x = Math.floor(start.u + ((cx + 0.5) * LOUPE_N) / d);
+        const o = (cy * d + cx) * 4;
+        if (x < 0 || y < 0 || x >= n || y >= n) {
+          img.data[o + 3] = 255;
+          continue;
+        }
+        let t = Math.min(1, Math.max(0, (data[y * n + x] - lo) * gain));
+        if (g0 !== 1) t **= g0;
+        const k = Math.round(t * 255) * 4;
+        img.data[o] = lut[k];
+        img.data[o + 1] = lut[k + 1];
+        img.data[o + 2] = lut[k + 2];
+        img.data[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }, [loupe?.u, loupe?.v, shown, view, display]); // eslint-disable-line react-hooks/exhaustive-deps
 
   let readout: React.ReactNode;
   if (!image) readout = <span className="muted">No image in the viewer</span>;
@@ -630,17 +781,23 @@ export function FftView({
     <div className="fft-body">
       <div
         ref={wrapRef}
-        className={`fft-canvas-wrap${measure && p ? " measuring" : ""}`}
+        className={`fft-canvas-wrap${(measure || peaks?.picking) && p ? " measuring" : ""}`}
         onClick={onClick}
+        onContextMenu={onContextMenu}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onPointerLeave={() => !drag.current && setHover(null)}
+        onPointerLeave={() => {
+          if (!drag.current) setHover(null);
+          setPointerAt(null);
+        }}
         style={{ cursor: hover?.cursor || undefined, touchAction: (onMask && ring) || (onBand && band) ? "none" : undefined }}
         title={
           hover
             ? "Drag to resize"
+            : peaks?.picking || loupeOn
+              ? undefined
             : p
               ? `FFT of ${p.label}${measure ? ": click to measure a spacing" : ""}`
               : undefined
@@ -697,6 +854,32 @@ export function FftView({
             <circle cx={toScreen(-at.u)} cy={toScreen(-at.v)} r={4} className="fft-spot" />
           </svg>
         ) : null}
+        {peakDots.length > 0 && (
+          <svg className="fft-overlay" width={side} height={side}>
+            {peakDots.map((d, i) => (
+              <g key={i} className={`fft-peak${d.refined ? " refined" : ""}`}>
+                <circle cx={d.x} cy={d.y} r={5} />
+                {d.refined && <circle className="fft-peak-dot" cx={d.rx} cy={d.ry} r={2} />}
+                <text x={d.x + 7} y={d.y - 6}>{i + 1}</text>
+              </g>
+            ))}
+          </svg>
+        )}
+        {loupe && pointerAt && (
+          <LoupeFrame cx={pointerAt.cx} cy={pointerAt.cy} size={LOUPE_PX}>
+            <canvas ref={loupeRef} style={{ width: LOUPE_PX, height: LOUPE_PX }} />
+            {loupe.peaks.length > 0 && (
+              <svg width={LOUPE_PX} height={LOUPE_PX}>
+                {loupe.peaks.map((q, i) => (
+                  <g key={i} className={`fft-peak${q.refined ? " refined" : ""}`}>
+                    <circle cx={q.x} cy={q.y} r={7} />
+                    {q.refined && <circle className="fft-peak-dot" cx={q.rx} cy={q.ry} r={3} />}
+                  </g>
+                ))}
+              </svg>
+            )}
+          </LoupeFrame>
+        )}
         {busy && <span className="spinner fft-busy" aria-hidden />}
       </div>
       <div className="fft-readout">{readout}</div>

@@ -3735,6 +3735,24 @@ button.primary.danger {
   stroke-width: 1.5;
 }
 
+/* FFT peaks (Atomic section): ring as clicked, dot where refined, number. */
+.fft-peak circle {
+  fill: none;
+  stroke: #22d3ee;
+  stroke-width: 1.5;
+}
+.fft-peak .fft-peak-dot {
+  fill: #ff4d6d;
+  stroke: none;
+}
+.fft-peak text {
+  fill: #22d3ee;
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.7);
+  stroke-width: 3px;
+}
+
 .fft-busy {
   position: absolute;
   top: 6px;
@@ -5969,4 +5987,126 @@ kbd {
   font-size: 12px;
   text-align: center;
   cursor: text;
+}
+
+/* Background jobs: a folder tab on the bottom edge at the left (just above
+   the status bar), opening a drawer above it; the tab stays joined to the
+   drawer's top-left like a folder's tab. Under menus and dialogs; above
+   focus mode's backdrop. */
+.jobs-flap {
+  position: fixed;
+  z-index: 9;
+  left: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.jobs-panel {
+  width: 340px;
+  max-height: 55vh;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 0 8px 0 0;
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.25);
+  animation: focus-fade 120ms ease-out;
+}
+
+.jobs-panel ul {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jobs-row-title {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+
+.jobs-row.done .jobs-row-status {
+  color: var(--ok);
+}
+
+.jobs-row.failed .jobs-row-status,
+.jobs-row.cancelled .jobs-row-status {
+  color: var(--muted);
+}
+
+.jobs-row.failed .jobs-row-status {
+  color: var(--danger);
+}
+
+/* The tab: the Navigator tab's look, turned to poke up from the bottom
+   edge; open, it sits on the drawer, joined to it (no border between). */
+.jobs-flap-handle {
+  position: relative;
+  z-index: 1;
+  height: 26px;
+  margin-bottom: -1px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.jobs-flap-handle:hover {
+  color: var(--text);
+}
+
+.jobs-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* The magnifier beside the pointer (FFT panel, image viewers). */
+.loupe {
+  position: fixed;
+  z-index: 20;
+  pointer-events: none;
+  border: 1px solid #22d3ee;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.loupe canvas,
+.loupe svg {
+  position: absolute;
+  inset: 0;
+}
+.loupe-cross {
+  stroke: #ffd60a;
+  stroke-width: 1;
+}
+/* The FFT's magnifier button, beside "View in main window". */
+.icon-toggle.fft-loupe-toggle {
+  padding: 2px 4px;
 }

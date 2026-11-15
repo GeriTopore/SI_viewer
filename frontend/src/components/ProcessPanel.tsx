@@ -18,6 +18,7 @@ import { ZlpSection } from "./ZlpSection";
 import { DpcSection, canMakeDpc } from "./DpcSection";
 import { PcaSection, hasPcaSection } from "./PcaSection";
 import { NormaliseSection } from "./NormaliseSection";
+import { AtomicSection, canAnalyseAtomic } from "./AtomicSection";
 import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
@@ -460,6 +461,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       id: "curvefit", title: "Curve fitting",
       tip: "Fit a model of HyperSpy's components (peaks, backgrounds, steps) to a spectrum",
       body: <CurveFitPanel key={d.id} ds={d} />,
+    },
+    canAnalyseAtomic(d) && {
+      id: "atomic", title: "Atomic resolution",
+      tip: "Pick FFT peaks and refine them (kemstem)",
+      body: <AtomicSection key={d.id} d={d} />,
     },
     hasPcaSection(d) && {
       id: "pca", title: "Decomposition and denoising",

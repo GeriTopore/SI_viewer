@@ -31,6 +31,8 @@ class Job:
     error: str | None = None
     result: dict | None = None
     created: float = field(default_factory=time.time)
+    started: float | None = None
+    finished: float | None = None
     _cancel: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def report(self, progress: float, message: str | None = None) -> None:
@@ -40,12 +42,19 @@ class Job:
         if message is not None:
             self.message = message
 
-    def summary(self) -> dict:
-        return {
+    @property
+    def active(self) -> bool:
+        return self.status in ("queued", "running")
+
+    def summary(self, with_result: bool = True) -> dict:
+        out = {
             "id": self.id, "kind": self.kind, "title": self.title, "status": self.status,
             "progress": self.progress, "message": self.message, "error": self.error,
-            "result": self.result,
+            "created": self.created, "started": self.started, "finished": self.finished,
         }
+        if with_result:
+            out["result"] = self.result
+        return out
 
 
 class JobManager:
@@ -59,9 +68,9 @@ class JobManager:
 
         def run() -> None:
             if job._cancel.is_set():
-                job.status = "cancelled"
+                job.status, job.finished = "cancelled", time.time()
                 return
-            job.status = "running"
+            job.status, job.started = "running", time.time()
             try:
                 job.result = fn(job)
                 job.progress, job.status = 1.0, "done"
@@ -70,6 +79,8 @@ class JobManager:
             except Exception as e:  # reported to the client
                 job.status, job.error = "failed", str(e) or type(e).__name__
                 traceback.print_exc()
+            finally:
+                job.finished = time.time()
 
         self._executor.submit(run)
         return job
@@ -78,5 +89,13 @@ class JobManager:
         job = self.jobs[job_id]
         job._cancel.set()
         if job.status == "queued":
-            job.status = "cancelled"
+            job.status, job.finished = "cancelled", time.time()
         return job
+
+    def listing(self, recent: int = 3) -> list[Job]:
+        """Every queued or running job (oldest first), then the ``recent``
+        latest to finish (done, failed or cancelled; newest first)."""
+        jobs = list(self.jobs.values())
+        active = sorted((j for j in jobs if j.active), key=lambda j: j.created)
+        ended = sorted((j for j in jobs if not j.active), key=lambda j: j.finished or j.created, reverse=True)
+        return active + ended[: max(0, recent)]

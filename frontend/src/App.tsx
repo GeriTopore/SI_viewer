@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { JobsFlap } from "./components/JobsFlap";
 import { FocusLayer } from "./components/FocusLayer";
 import { api, type Health } from "./api/client";
 import { useUndo } from "./state/undo";
@@ -165,6 +166,7 @@ export function App() {
       {browserOpen && <FileBrowser />}
       <DropZone />
       <FocusLayer />
+      <JobsFlap />
       <Toast />
     </div>
   );

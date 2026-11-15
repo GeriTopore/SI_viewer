@@ -111,6 +111,13 @@ def put_fit_quantity(dataset_id: str, body: QuantityBody, request: Request) -> d
     return {"file": session.file_of(si).summary(session)}
 
 
+@router.get("/api/jobs")
+def list_jobs(request: Request, recent: int = 3) -> list[dict]:
+    """The background jobs: every queued or running one, then the ``recent``
+    latest to finish (without their results; ``GET /api/jobs/{id}`` has them)."""
+    return [j.summary(with_result=False) for j in request.app.state.jobs.listing(recent)]
+
+
 @router.get("/api/jobs/{job_id}")
 def get_job(job_id: str, request: Request) -> dict:
     try:

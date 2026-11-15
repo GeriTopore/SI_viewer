@@ -1,10 +1,10 @@
-import { createElement, useMemo, useRef, useState, type ReactNode } from "react";
-import type { DatasetSummary, FitSource } from "../api/client";
+import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { dataVersion, type DatasetSummary, type FitSource } from "../api/client";
 import type { PlotHandle, PlotWindow, SpectrumSeries } from "../components/SpectrumPlot";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { isLineScan } from "../format";
 import {
-  drawModel, duplicateComponent, estimateComponent, modeOf, paramRole, placePeak, removeComponent,
+  drawModel, duplicateComponent, fetchPixelFit, showsPixelFit, estimateComponent, modeOf, paramRole, placePeak, removeComponent,
   setAllFree, setParamLimits, updateComponent, useCurveFit, type ModelComponent,
 } from "../state/curveFit";
 import { shapeToRegion, useSi, useSiState } from "../state/si";
@@ -37,6 +37,19 @@ export interface CurvePlotProps {
   menu?: ReactNode;
 }
 
+/** The fit of every pixel at the cursor while the plot shows it (see
+ * ``showsPixelFit``), else null. */
+export function usePixelCurveFit(ds: DatasetSummary, source: FitSource | null) {
+  const st = useCurveFit((s) => s.byId[ds.id]);
+  const shows = showsPixelFit(ds, st, source) && source?.type === "pixel";
+  const at = shows && source?.type === "pixel" ? `${ds.id}|${dataVersion(ds)}|${source.x}|${source.y}|${source.size}` : null;
+  useEffect(() => {
+    if (at && source?.type === "pixel") void fetchPixelFit(ds, at, source.x, source.y, source.size);
+  }, [at]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The last one stays while the next is fetched.
+  return shows ? (st?.pixelFit?.result ?? null) : null;
+}
+
 /** Curve fitting (Process tab) on a spectrum plot, while its section is open: the model and each active
  * component (per pixel with ``perPixel``, to match spectra plotted as means),
  * and the interaction: click a component's curve to select it, drag its handles,
@@ -53,7 +66,8 @@ export function useCurveFitSeries(ds: DatasetSummary, x: Float64Array, perPixel 
   const shown = useCurveFit((s) => s.shown === ds.id);
   const cat = useCurveFit((s) => s.catalogue);
   const source = useCurveSource(ds, st?.source ?? "all");
-  const result = st?.result;
+  const pixel = usePixelCurveFit(ds, source);
+  const result = pixel ?? st?.result;
   const on = shown && !!st;
   const scale = result && perPixel ? 1 / Math.max(1, result.pixels) : 1;
   const selected = st?.selected ?? null;
@@ -96,7 +110,7 @@ export function useCurveFitSeries(ds: DatasetSummary, x: Float64Array, perPixel 
   const drag = useRef<DragStart | null>(null);
   // The component's handles where its curve puts them (before any drag).
   const base = useMemo<PlotHandle[]>(() => {
-    if (!on || !comp || !result || !shown) return [];
+    if (!on || !comp || !result || !shown || pixel) return []; // the fit of every pixel: nothing to drag
     const curve = curves.get(comp.name);
     return curve ? handlesOf(comp, result.x, curve, result.range) : [];
   }, [on, comp, result, curves, shown]);
@@ -129,10 +143,10 @@ export function useCurveFitSeries(ds: DatasetSummary, x: Float64Array, perPixel 
   // The background window: hatched, dragged by its edges or inside.
   const BG = "curve-fit:background";
   const bgBands = useMemo<PlotWindow[]>(
-    () => (on && st.bgLo !== null && st.bgHi !== null
+    () => (on && st.bgOn && st.bgLo !== null && st.bgHi !== null
       ? [{ id: BG, kind: "background", lo: st.bgLo, hi: st.bgHi, color: CURVE_BG_COLOUR, label: "Background" }]
       : []),
-    [on, st?.bgLo, st?.bgHi], // eslint-disable-line react-hooks/exhaustive-deps
+    [on, st?.bgOn, st?.bgLo, st?.bgHi], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const handles = useMemo<PlotHandle[]>(() => {

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { CurveModelInfo } from "./CurveModelInfo";
 import { api, type DatasetSummary, type EelsRole, type MicroscopeInfo, type Technique } from "../api/client";
 import { useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
@@ -29,6 +30,7 @@ export function Inspector() {
             : isZlpShift(d)
               ? d.kind === "spectrum" ? "ZLP shift profile" : "ZLP shift map"
               : d.origin === "pca" ? "Decomposition"
+                : d.origin === "curve-model" ? "Curve model"
                 : isLineScan(d) ? "LineScan" : d.kind === "spectrum_image" ? "Spectrum image" : d.kind === "spectrum" ? "Spectrum" : kindLabel(d)}
         </dd>
         {d.origin === "pca" && d.pca && (
@@ -103,6 +105,7 @@ export function Inspector() {
         )}
       </dl>
       {d.insitu?.view && <SeriesInfo d={d} />}
+      {d.origin === "curve-model" && <CurveModelInfo key={d.id} d={d} />}
       <AxesTable key={d.id} d={d} />
       <SaveButtons d={d} />
     </div>

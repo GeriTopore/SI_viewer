@@ -62,7 +62,8 @@ export function kindLabel(d: DatasetSummary): string {
   if (isThickness(d)) return d.thickness?.output === "absolute" ? "nm" : "t/λ";
   if (isZlpShift(d)) return "eV";
   if (d.survey) return "Survey";
-  if (d.origin === "fitted") return "Fit";
+  if (d.origin === "curve-model") return "Model";
+  if (d.origin === "fitted" || d.origin === "curve-fit") return "Fit";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.
   const role = d.eels ? (d.eels.role === "low_loss" ? "LL" : "HL") : null;
@@ -134,6 +135,12 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
   if (isZlpShift(d)) return `${base}\nEnergy shift applied by ZLP alignment${parentTitle ? ` to ${parentTitle}` : ""}`;
   if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
+  if (d.origin === "curve-model") return `${base}\nThe curve fit of every pixel: the model at each pixel, its maps under it`;
+  if (d.origin === "curve-fit") {
+    return d.title === "Reduced χ²"
+      ? `${base}\nReduced χ² of the curve fit at each pixel (the parameters' maps under it)`
+      : `${base}\nCurve fit of every pixel`;
+  }
   if (d.origin === "fitted") {
     return d.quantity === "at%"
       ? `${base}\nComposition (at%) per pixel from the fitted maps`

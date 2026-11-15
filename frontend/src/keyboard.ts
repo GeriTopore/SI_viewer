@@ -49,6 +49,7 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
       ["Shift + click", "Dataset: show just that one"],
       ["[ / ]", "Fold or unfold the datasets / right-hand pane"],
       ["?", "Show these shortcuts"],
+      ["Shift F", "Focus the spectrum pane (the right-hand pane beside it, the navigator in a flap); over the datasets pane, the highlighted dataset's processing as a tree; again or Esc to leave"],
       ["Esc", "Close a dialog or menu; deselect"],
     ],
   },

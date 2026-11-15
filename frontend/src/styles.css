@@ -26,6 +26,7 @@
   --badge-survey: #4f46e5;
   --badge-dpc: #c026d3;
   --badge-pca: #0891b2;
+  --badge-model: #059669;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -513,6 +514,7 @@ button.primary:disabled {
 .badge-survey { background: var(--badge-survey); }
 .badge-dpc { background: var(--badge-dpc); }
 .badge-pca { background: var(--badge-pca); }
+.badge-model { background: var(--badge-model); }
 
 .empty-list {
   margin: 0;
@@ -5442,4 +5444,529 @@ kbd {
 .curve-twin select.cell-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* Focus mode (Shift F, M20): the bottom pane's active half lifted over the
+   blurred interface; the right-hand pane beside it; the navigator image in a
+   flap on the left. The panes are the live ones, fixed in place by these
+   rules (classes on <html>), under menus and dialogs (z-index 10+).
+   Across: [inset][navigator][gap][handle][gap][pane][gap][right-hand][inset]. */
+:root {
+  --focus-inset-x: 2.5vw;
+  --focus-inset-y: 4vh;
+  --focus-gap: 10px;
+  --focus-handle: 26px;
+  --focus-nav-w: clamp(220px, 24vw, 480px);
+  --focus-right-w: clamp(300px, 24vw, 440px);
+}
+
+.focus-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(6px) saturate(0.8);
+  -webkit-backdrop-filter: blur(6px) saturate(0.8);
+  animation: focus-fade 120ms ease-out;
+}
+
+@keyframes focus-fade {
+  from { opacity: 0; }
+}
+
+.focus-mode .viewer-half.focus-lifted,
+.focus-mode.focus-right .inspector-panel,
+.focus-mode.focus-nav .viewer-top.focus-nav-lifted {
+  position: fixed;
+  z-index: 9;
+  top: var(--focus-inset-y);
+  bottom: var(--focus-inset-y);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  animation: focus-fade 120ms ease-out;
+}
+
+.focus-mode .viewer-half.focus-lifted {
+  left: calc(var(--focus-inset-x) + var(--focus-handle));
+  right: var(--focus-inset-x);
+  padding: 10px 12px;
+  transition: left 140ms ease, right 140ms ease;
+}
+
+.focus-mode.focus-right .viewer-half.focus-lifted {
+  right: calc(var(--focus-inset-x) + var(--focus-right-w) + var(--focus-gap));
+}
+
+.focus-mode.focus-nav .viewer-half.focus-lifted {
+  left: calc(var(--focus-inset-x) + var(--focus-nav-w) + var(--focus-gap) + var(--focus-handle));
+}
+
+.focus-mode.focus-right .inspector-panel {
+  right: var(--focus-inset-x);
+  width: var(--focus-right-w);
+}
+
+/* Sized to the image by the viewer (--focus-nav-h), centred by the tab. */
+.focus-mode.focus-nav .viewer-top.focus-nav-lifted {
+  left: var(--focus-inset-x);
+  width: var(--focus-nav-w);
+  top: calc(50% - var(--focus-nav-h, 92vh) / 2);
+  bottom: auto;
+  height: var(--focus-nav-h, 92vh);
+  padding: 10px;
+  transition: width 140ms ease, height 140ms ease, top 140ms ease;
+}
+
+/* The flap's handle: a folder tab poking out from behind the pane's left
+   edge, the pane's colour, joined to it (no border between). */
+.focus-flap-handle {
+  position: fixed;
+  z-index: 10;
+  top: 50%;
+  left: var(--focus-inset-x);
+  width: calc(var(--focus-handle) + 1px);
+  height: 120px;
+  transform: translateY(-50%);
+  padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  box-shadow: -6px 6px 16px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  transition: left 140ms ease, color 120ms ease;
+}
+
+.focus-flap-handle:hover {
+  color: var(--text);
+}
+
+.focus-flap-arrow {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Reads bottom to top, as a label on a folder's tab. */
+.focus-flap-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+}
+
+.focus-mode.focus-nav .focus-flap-handle {
+  left: calc(var(--focus-inset-x) + var(--focus-nav-w) + var(--focus-gap));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-backdrop,
+  .focus-mode .viewer-half.focus-lifted,
+  .focus-mode.focus-right .inspector-panel,
+  .focus-mode.focus-nav .viewer-top.focus-nav-lifted,
+  .focus-flap-handle {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Focus mode: handles in the gaps beside the pane, dragged to resize the
+   right-hand pane or the navigator's flap (the pane takes the rest). */
+.focus-resizer {
+  position: fixed;
+  z-index: 9;
+  top: var(--focus-inset-y);
+  bottom: var(--focus-inset-y);
+  width: var(--focus-gap);
+  display: flex;
+  justify-content: center;
+}
+
+.focus-resizer::after {
+  width: 3px;
+  height: 100%;
+}
+
+.focus-resizer.right {
+  right: calc(var(--focus-inset-x) + var(--focus-right-w));
+}
+
+.focus-resizer.left {
+  left: calc(var(--focus-inset-x) + var(--focus-nav-w));
+}
+
+/* No sliding while a handle is dragged. */
+.focus-mode body.resizing-col .viewer-half.focus-lifted,
+.focus-mode body.resizing-col .focus-flap-handle,
+.focus-mode body.resizing-col .viewer-top.focus-nav-lifted {
+  transition: none;
+}
+
+/* Focus mode's navigator flap: the navigator menu, pinned to the image
+   area's top-left corner; faint until hovered, its list opening below. */
+.viewer-top.focus-nav-lifted .viewer-row {
+  position: relative;
+}
+
+.focus-corner {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 6;
+  max-width: calc(100% - 12px);
+}
+
+.navigator-corner {
+  opacity: 0.35;
+  transition: opacity 120ms ease;
+  font-size: 12px;
+}
+
+.navigator-corner:hover,
+.navigator-corner:focus-within {
+  opacity: 1;
+}
+
+.navigator-corner-tab {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  border: 1px solid var(--border);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+
+.navigator-corner-list {
+  display: none;
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.navigator-corner:hover .navigator-corner-list,
+.navigator-corner:focus-within .navigator-corner-list {
+  display: block;
+}
+
+.navigator-corner-list button {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+  font: inherit;
+  cursor: pointer;
+}
+
+.navigator-corner-list button:hover {
+  background: var(--hover);
+}
+
+.navigator-corner-list button.active {
+  background: var(--selected);
+  color: var(--accent);
+}
+
+/* Focus mode of the datasets pane: the highlighted dataset's processing as a
+   family tree (raw data at the top). Connectors: each level's list draws a
+   stub down from its parent; each item draws half of the bar above it. */
+.process-tree-panel {
+  position: fixed;
+  z-index: 9;
+  inset: var(--focus-inset-y) var(--focus-inset-x);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28);
+  animation: focus-fade 120ms ease-out;
+}
+
+.process-tree-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.process-tree-header h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.process-tree-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.process-tree-body {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  display: flex;
+  cursor: grab;
+}
+
+/* Dragged to pan (see ProcessTree's usePan). */
+.process-tree-body.panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.process-tree-empty {
+  padding: 24px;
+}
+
+/* Every file of the workspace side by side; each raw dataset its own tree. */
+.process-tree-forest {
+  margin: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 56px;
+  width: max-content;
+}
+
+.process-tree-file h3 {
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-align: center;
+}
+
+.process-tree-roots {
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+}
+
+.process-tree-level {
+  --tree-line: color-mix(in srgb, var(--muted) 55%, transparent);
+  position: relative;
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  padding: 18px 0 0;
+  list-style: none;
+}
+
+.process-tree-level.root {
+  padding-top: 0;
+}
+
+.process-tree-level li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 18px 6px 0;
+}
+
+.process-tree-level.root > li {
+  padding-top: 0;
+}
+
+/* The bar above the siblings, in two halves, and each one's stub up to it. */
+.process-tree-level:not(.root) > li::before,
+.process-tree-level:not(.root) > li::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 50%;
+  width: 50%;
+  height: 18px;
+  border-top: 1px solid var(--tree-line);
+}
+
+.process-tree-level:not(.root) > li::after {
+  right: auto;
+  left: 50%;
+  border-left: 1px solid var(--tree-line);
+}
+
+.process-tree-level > li:only-child::before,
+.process-tree-level > li:only-child::after {
+  display: none;
+}
+
+.process-tree-level:not(.root) > li:only-child {
+  padding-top: 0;
+}
+
+.process-tree-level > li:first-child::before,
+.process-tree-level > li:last-child::after {
+  border: 0 none;
+}
+
+.process-tree-level > li:last-child::before {
+  border-right: 1px solid var(--tree-line);
+  border-radius: 0 6px 0 0;
+}
+
+.process-tree-level > li:first-child::after {
+  border-radius: 6px 0 0 0;
+}
+
+/* The stub down from the parent to the bar. */
+.process-tree-level:not(.root)::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 18px;
+  border-left: 1px solid var(--tree-line);
+}
+
+.process-tree-card {
+  cursor: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  max-width: 200px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  user-select: none;
+}
+
+.process-tree-card:hover {
+  background: var(--hover);
+}
+
+.process-tree-card.current {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.process-tree-card.in-group {
+  max-width: none;
+  flex-direction: row;
+  padding: 4px 8px;
+}
+
+/* Up to two lines: a derived dataset's title ends with what tells it apart
+   (e.g. the energy range of a crop). */
+.process-tree-title {
+  max-width: 100%;
+  font-size: 12px;
+  text-align: center;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.process-tree-card.in-group .process-tree-title {
+  display: block;
+  white-space: nowrap;
+}
+
+.process-tree-shape {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.process-tree-fold {
+  position: relative;
+  z-index: 1;
+  margin-top: 4px;
+  min-width: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.process-tree-fold:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+/* The fold button sits on the line down to the children. */
+.process-tree-fold + .process-tree-level {
+  padding-top: 14px;
+}
+
+.process-tree-fold + .process-tree-level::before {
+  height: 14px;
+}
+
+.process-tree-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.process-tree-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.process-tree-group-head:hover {
+  background: var(--hover);
+}
+
+.process-tree-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 4px 6px 6px;
+}
+
+/* Renaming a dataset in the processing tree: the field in place of its title. */
+.process-tree-card .rename-input {
+  width: 180px;
+  font-size: 12px;
+  text-align: center;
+  cursor: text;
 }

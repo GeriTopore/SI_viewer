@@ -101,6 +101,9 @@ interface Props {
   /** Tabs of the pane under the image besides "Line profile" (e.g. the
    * spectrum). Without them the pane only appears for line profiles. */
   bottomTabs?: { id: BottomTab; label: string; content: ReactNode }[];
+  /** In focus mode's navigator flap: a menu in the image area's top-left
+   * corner (e.g. which navigator is shown), fixed there whatever the zoom. */
+  focusCorner?: ReactNode;
   /** Maps can be overlaid here (drop target and hint); default true. */
   overlays?: boolean;
   /** Several images can be shown merged or as a grid; the choice is
@@ -160,9 +163,12 @@ const TOOL_TITLES = {
 } as const;
 
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
+/** Narrowest the navigator's flap gets in focus mode (room for its toolbar). */
+export const FLAP_MIN_W = 220;
+
 export function LayeredViewer({
   viewKey, base, images: maps, stacks = [], geometry, loading, error, children, empty, interaction, renderOverlay,
-  lineTool, fftTool, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], overlays = true, gridContext, requestActive, onActiveChange,
+  lineTool, fftTool, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], focusCorner, overlays = true, gridContext, requestActive, onActiveChange,
   histogramRegions,
   scanFactor = 1,
 }: Props) {
@@ -233,6 +239,10 @@ export function LayeredViewer({
   // default (maps over a spectrum image merge; plain images get a grid).
   // Merged needs images of one pixel size.
   const gridPref = useUi((s) => (gridContext ? s.gridMode[gridContext] : null));
+  // In focus mode's navigator flap (this viewer has the pane below it):
+  // merged only, no grid (too cluttered there).
+  const focusNav = useUi((s) => s.focus === "bottom" && s.focusNav);
+  const flapOpen = focusNav && bottomTabs.length > 0;
   const setGridMode = useUi((s) => s.setGridMode);
   const sizes = layers.map((l) => {
     const d = l.key === BASE ? undefined : entryOf(l.key)?.dataset;
@@ -243,7 +253,7 @@ export function LayeredViewer({
     return { geometry: own, w: own.width, h: own.height };
   });
   const sameSize = sizes.every((z) => z.w === sizes[0].w && z.h === sizes[0].h);
-  const canSwitch = !!gridContext && layers.length > 1;
+  const canSwitch = !!gridContext && layers.length > 1 && !(flapOpen && sameSize);
   const mode: GridMode = canSwitch
     ? !sameSize
       ? "grid"
@@ -474,6 +484,52 @@ export function LayeredViewer({
     />
   ) : null;
 
+  // Focus mode with the navigator pulled out: the image goes into the flap,
+  // sized to the image's shape (no dead space around it): as tall as the
+  // window allows and as wide as that needs, or narrower and shorter for a
+  // wide image (--focus-nav-w / --focus-nav-h, which the pane follows).
+  const flapW = useUi((s) => s.focusNavW);
+  const topRef = useRef<HTMLDivElement>(null);
+  const lifted = focusNav && tabs.length > 0;
+  useEffect(() => {
+    if (!lifted || !geometry.width || !geometry.height) return;
+    const root = document.documentElement.style;
+    let frame = 0;
+    const fit = (again: number) => {
+      const top = topRef.current;
+      const img = top?.querySelector<HTMLElement>(".image-view");
+      if (!top || !img) return;
+      // What the flap holds besides the image (toolbar, footer, padding).
+      const chromeW = top.clientWidth - img.clientWidth;
+      const chromeH = top.clientHeight - img.clientHeight;
+      const maxH = window.innerHeight * 0.92;
+      // The most it takes: as dragged, else up to 30 % of the window.
+      const maxW = flapW ?? Math.min(560, Math.max(240, window.innerWidth * 0.3));
+      const aspect = geometry.width / geometry.height;
+      let ih = maxH - chromeH;
+      let iw = ih * aspect;
+      if (iw + chromeW > maxW) {
+        iw = maxW - chromeW;
+        ih = iw / aspect;
+      }
+      root.setProperty("--focus-nav-w", `${Math.round(Math.max(FLAP_MIN_W, iw + chromeW))}px`);
+      root.setProperty("--focus-nav-h", `${Math.round(Math.min(maxH, ih + chromeH))}px`);
+      // The toolbar may wrap at the new width: measure once more.
+      if (again) frame = requestAnimationFrame(() => fit(again - 1));
+    };
+    const refit = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => fit(1));
+    };
+    refit();
+    window.addEventListener("resize", refit);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", refit);
+      root.removeProperty("--focus-nav-w");
+      root.removeProperty("--focus-nav-h");
+    };
+  }, [lifted, geometry.width, geometry.height, flapW]);
   return (
     <div
       ref={viewerRef}
@@ -489,7 +545,7 @@ export function LayeredViewer({
       }}
       onDrop={onDrop}
     >
-      <div className="viewer-top">
+      <div ref={topRef} className={`viewer-top${lifted ? " focus-nav-lifted" : ""}`}>
         <div className="layer-toolbar">
           {lineTool === undefined && (
             <div className="segmented tool-buttons" role="group" aria-label="Image tool">
@@ -538,6 +594,7 @@ export function LayeredViewer({
           />
         </div>
         <div className="viewer-row">
+          {lifted && focusCorner && <div className="focus-corner">{focusCorner}</div>}
           {grid ? (
             <ViewerGrid
               panels={layers

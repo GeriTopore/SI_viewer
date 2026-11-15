@@ -1527,7 +1527,7 @@ Later in M19: blind source separation (HyperSpy's `blind_source_separation`
 on the kept components) and diffusion maps (pydiffmap, as in the user's own
 `dm.py`).
 
-### 4.22 Focus mode (M20, planned)
+### 4.22 Focus mode (M20, in progress)
 
 As panes and tabs multiply, a way to work on one of them without the rest of
 the interface around it: e.g. the spectrum tab while adjusting the
@@ -1559,6 +1559,47 @@ of the interface, with everything behind it blurred and dimmed.
 - **Look.** Rounded panel with the app's border and shadow, the backdrop
   blurred (CSS `backdrop-filter`) and dimmed; animated open/close kept short.
   The focused size is remembered per pane.
+
+**The spectrum pane (built).** *Shift F* (any view with a bottom pane)
+lifts the bottom pane's active half (when split, only the half in use) over
+the interface, blurred and dimmed behind it; the right-hand pane (FFT, Info,
+Process, Quantify) comes up as a strip on the right (unless folded; `]`
+folds it in focus too). On the left a handle pulls out the navigator image
+in a flap (its layer toolbar and image; drag the cursor there, or the arrow
+keys), sized to the image's shape (as tall as the window allows and as
+wide as that needs, or narrower and shorter for a wide image; at least
+220 px wide), centred on the tab, a folder tab reading "Navigator"; the pane narrows to make room and widens again when the flap
+closes; whether the flap is open is remembered. Handles in the gaps beside
+the pane resize the right-hand pane (at least 240 px) and the navigator's
+flap (its most width; it keeps the image's shape); the pane takes the rest
+(at least 320 px). Both widths are remembered; a double-click resets one.
+In the flap the images are always merged (no grid, no Merged/Grid switch
+or G), and a menu pinned to the image area's top-left corner (faint until
+hovered; it does not move with pan or zoom) chooses the navigator, as the
+Navigator menu above the viewer does. Shift F again, Esc (after
+any open menu or dialog) or a click on the backdrop leaves. The panes are
+the live ones, fixed in place by CSS (classes `focus-mode`, `focus-nav`,
+`focus-right` on `<html>`), so zoom, cursor and edits carry over and
+nothing is remounted; menus and dialogs stay above them. No focus button
+(the shortcut only, as asked). Next: the other panes (the viewer, the FFT,
+a Process section).
+
+**The datasets pane (built).** *Shift F* with the pointer over the datasets
+pane shows the processing of everything in the highlighted dataset's
+workspace (its file, or the folder or link group it belongs to; not every
+file loaded) as family trees over the blurred interface: each raw dataset
+at the top of its own tree (several side by side; a file's name above its
+trees when there are several files), branching down to everything made
+from it (`parent_id` / `derived_from`), with the list's grouping (results of
+one type are one node, folded, that opens into a list; link boxes as
+separate nodes). Dragging with the left button pans the view. A node with children folds (a button on its line
+down, "+n" when folded); *Collapse all* (only the raw data left) and
+*Expand all* (groups opened too) in the header. The highlighted dataset is
+outlined; titles take up to two lines. Right-click a dataset → *Show* (or
+double-click it): focus mode closes and the main view shows it alone; or
+*Rename…* (in place), *Export…* (the export dialog) and *Delete* (undoable
+with ⌘Z), as in the list, focus mode staying open. Esc,
+Shift F or a click on the backdrop leaves.
 
 **Open questions:** whether focus is per pane or a saved layout (several
 panes side by side in focus, e.g. the spectrum and its map); whether
@@ -1800,6 +1841,42 @@ a large reduced χ²: the Poisson variance assumes counts.
   that side; the value is kept within its limits, also while dragging the
   component's handles. Other parameters (widths, amplitudes, exponents) are
   limited by typing only: their limits don't map cleanly onto the spectrum.
+- **Every pixel (M21c, built):** *Fit every pixel* (2D spectrum images) is a
+  job (progress, cancel): one pass through the pixels (serpentine, as
+  `multifit`), HyperSpy's `fit` at each from its stored values; with the
+  background window, a pass for the background alone, then one for the rest.
+  (Not `multifit` with a mask per chunk: HyperSpy steps through every pixel
+  for each call, quadratic in the pixels.) Every pixel starts from the
+  model's values, its linear parameters (HyperSpy's `_linear`: areas,
+  heights, polynomial coefficients) and their limits divided by the pixels
+  of the spectrum they were set on (all pixels, a region or the cursor's
+  block). A pixel whose fit raises is left NaN.
+- **The model as a dataset (built):** the result is a **Curve model** under
+  the spectrum image (origin `curve-model`, badge *Model*): the fitted model
+  at every pixel as a spectrum image (`m.as_signal()`), viewed, saved and
+  exported like any spectrum image, with the *Reduced χ²* map and a map of
+  each parameter that isn't fixed under it (replaced by the next run;
+  removed when the data changes; deleting the model deletes its maps).
+  `curve_model: {source_id, model}` (the model per pixel) is saved with
+  analyses. Its Info tab lists the components as the Curve fitting section
+  does, read only: a section per component (folds on its header) with its
+  parameters at the cursor (the block's mean) and how each was fitted
+  (Free, Limit, Fixed, Twin); its checkbox shows the component on the
+  plot. The plot shows the model at the cursor (its own spectrum), the
+  data it was fitted to (grey) and the ticked components (dashed). The
+  model at a pixel is rebuilt from the maps (`GET …/curve-model/pixel?x&y&size`),
+  so it works after an analysis is reopened.
+- **Show pixel fit (built):** the fit is also kept on the data
+  (`curve_fits`, summary `curve_pixel_fit`): with *Show pixel fit* (on after
+  fitting every pixel; the Spectrum set to the cursor) the Curve fitting
+  section shows the fit of the cursor's pixel (or block, added up) and the
+  table that pixel's values and errors. Typing a value switches it off (back
+  to editing the model); the model's other settings (background window,
+  limits, Free/Fixed) leave it as it is. The background window keeps its
+  place while switched off.
+  `POST …/curve-fit/maps {source, model}`, `GET …/curve-fit/pixel?x&y&size`.
+  Not yet: line scans (as profiles), per-pixel active components, other
+  paths (`iterpath`, start from the last pixel).
 - **Kept (built):** each dataset's model (components, settings, last result)
   is kept in the browser, so a reload keeps it, and saved with an analysis
   (with the normalisation settings).
@@ -1864,8 +1941,8 @@ add peaks (fine structure) to it.
 | M17 | Undo a deletion (⌘/Ctrl Z): datasets, regions, line profiles, FFT boxes | Done |
 | M18 | Save and open an analysis (HDF5 project, HyperSpy-readable): in place / new dataset for operations (M18a), save and open (M18b), stored arrays and checks (M18c), embedding and relinking (M18d) | Done (choosing which datasets to store set aside) |
 | M19 | Decomposition of spectrum images: PCA with denoising (M19a), blind source separation (M19b), diffusion maps (M19c) | In progress |
-| M20 | Focus mode: any pane or tab lifted to most of the window over a blurred interface, with the controls it needs (§4.22) | Planned |
-| M21 | Curve fitting with HyperSpy's `Model1D`: model on one spectrum (M21a), placing peaks and twins (M21b), every pixel (M21c), optimizers, losses and linear fitting (M21d), expression and pattern components, stored models (M21e), SAMFire and big data (M21f) (§4.23) | In progress (M21a and M21b built but excluded windows) |
+| M20 | Focus mode: any pane or tab lifted to most of the window over a blurred interface, with the controls it needs (§4.22) | In progress (the spectrum and datasets panes built) |
+| M21 | Curve fitting with HyperSpy's `Model1D`: model on one spectrum (M21a), placing peaks and twins (M21b), every pixel (M21c), optimizers, losses and linear fitting (M21d), expression and pattern components, stored models (M21e), SAMFire and big data (M21f) (§4.23) | In progress (M21a, M21b but excluded windows, M21c but line scans and per-pixel active components) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

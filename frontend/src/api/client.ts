@@ -291,11 +291,11 @@ export interface DatasetSummary {
   /** In-situ series (spectrum image or image stack); null otherwise. */
   insitu: InsituInfo | null;
   /** "computed": an element map made from a spectrum image (window +
-   * background); "fitted": from fitting every pixel. */
+   * background); "fitted": from fitting every pixel; "curve-fit": maps of the curve fit of every pixel. */
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -306,6 +306,11 @@ export interface DatasetSummary {
   quantity: FitQuantity | null;
   /** EELS spectrum images: every pixel was fitted (the fit at the cursor can be shown). */
   pixel_fit: boolean;
+  /** Spectrum images: the model of the curve fit of every pixel (null: none). */
+  curve_pixel_fit?: CurveModel | null;
+  /** A curve model (origin "curve-model"): the spectrum image it was fitted
+   * to and the model per pixel. */
+  curve_model?: { source_id: string; model: CurveModel } | null;
   /** Spectrum image a computed map was made from. */
   parent_id: string | null;
   /** Bumped when the data is recomputed or rebinned. */
@@ -870,6 +875,8 @@ export interface JobSummary {
   result: {
     file: FileSummary;
     skipped?: string[];
+    /** Curve fit of every pixel: the pixels whose fit failed. */
+    failed?: number;
     dataset_id?: string;
     /** Zero-loss alignment: the other files changed, the ids aligned, and how far their axes moved (eV). */
     partner_files?: FileSummary[];
@@ -1094,6 +1101,19 @@ export const api = {
       body: JSON.stringify({ source, model, fit }),
       signal,
     }),
+  /** Job: fit the model at every pixel (``source``: the spectrum it was made
+   * on); its result's file has a reduced χ² map with the parameters' maps under it. */
+  startCurveFitMaps: (id: string, source: FitSource, model: CurveModel) =>
+    request<JobSummary>(`/api/datasets/${id}/curve-fit/maps`, {
+      method: "POST",
+      body: JSON.stringify({ source, model }),
+    }),
+  /** A curve model at the cursor's block, from its maps (with the data there). */
+  curveModelPixel: (id: string, x: number, y: number, size: number, signal?: AbortSignal) =>
+    request<CurveFitResult & { data: number[] }>(`/api/datasets/${id}/curve-model/pixel?x=${x}&y=${y}&size=${size}`, { signal }),
+  /** The curve fit of every pixel at the cursor's block (404: none). */
+  curvePixelFit: (id: string, x: number, y: number, size: number, signal?: AbortSignal) =>
+    request<CurveFitResult>(`/api/datasets/${id}/curve-fit/pixel?x=${x}&y=${y}&size=${size}`, { signal }),
   eelsFit: (id: string, source: FitSource, options: EelsFitOptions) =>
     request<EelsFitResult>(`/api/datasets/${id}/eels-fit`, { method: "POST", body: JSON.stringify({ source, options }) }),
   /** Job: fit every pixel; its result's file has a fitted map per element (and at% maps). */

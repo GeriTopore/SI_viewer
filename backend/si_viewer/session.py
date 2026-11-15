@@ -172,6 +172,9 @@ class Dataset:
     # (``data_version``); shown at the cursor while that is current.
     pixel_fits: object | None = field(default=None, repr=False)
     pixel_fits_version: tuple = ()
+    # Curve fitting of every pixel (processing/curve_fit.PixelFits), likewise.
+    curve_fits: object | None = field(default=None, repr=False)
+    curve_fits_version: tuple = ()
     # Bumped whenever the data is recomputed, so clients refresh caches.
     revision: int = 0
     # Bumped when the data is replaced by other data of the same kind (the next
@@ -236,6 +239,10 @@ class Dataset:
     # "window": [lo, hi] (energies), "channels": [c0, c1), "poisson",
     # "components", "explained": [...], and "n" for a denoised SI}.
     pca: dict | None = None
+    # A curve model of every pixel (origin "curve-model", M21c): the fitted
+    # model as a spectrum image, its maps under it. {"source_id", "model": the
+    # model per pixel (processing/curve_fit.ModelSpec, dumped)}.
+    curve_model: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -270,6 +277,11 @@ class Dataset:
     def current_pixel_fits(self):
         """The fit of every pixel, if made from the data as it is now."""
         return self.pixel_fits if self.pixel_fits_version == self.data_version else None
+
+    @property
+    def current_curve_fits(self):
+        """The curve fit of every pixel, if made from the data as it is now."""
+        return self.curve_fits if self.curve_fits_version == self.data_version else None
 
     @property
     def filter_spec(self):
@@ -349,7 +361,7 @@ class Dataset:
         self._keep_eels_elements(signal)
         self.signal = signal
         self.revision += 1
-        self.pixel_fits = None  # made from the old data
+        self.pixel_fits = self.curve_fits = None  # made from the old data
         self.thumbnails.clear()
         self.cache = {}  # a new dict: a result still being computed from the old data lands in the old one
 
@@ -362,7 +374,7 @@ class Dataset:
         self._keep_eels_elements(signal)
         self.signal = signal
         self.data_rev += 1
-        self.pixel_fits = None
+        self.pixel_fits = self.curve_fits = None
         self.thumbnails = {}
         self.cache = {}
 
@@ -393,6 +405,10 @@ class Dataset:
             "origin": self.origin,
             "element": self.element,
             "pixel_fit": self.current_pixel_fits is not None,
+            # The curve fit of every pixel: the model it was made with.
+            "curve_pixel_fit": (
+                self.current_curve_fits.spec.model_dump() if self.current_curve_fits is not None else None
+            ),
             "quantities": list(self.quantities),
             "quantity": self.quantity,
             "parent_id": self.parent_id,
@@ -424,6 +440,7 @@ class Dataset:
             "survey": self.survey,
             "dpc": self.dpc,
             "pca": self.pca,
+            "curve_model": self.curve_model,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -2175,8 +2192,7 @@ class Session:
         from .processing.background import BackgroundOptions
         from .processing.zlp import round_energy
 
-        for f in self._fit_maps(d):
-            self._remove(f)  # made from the old data: fit again to update
+        self._drop_fits(d)  # made from the old data: fit again to update
         for m in self.computed_maps(d):
             new_map = self._make_map(d, m.element)
             if new_map is None:
@@ -2308,7 +2324,9 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped"):
+        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model"):
+            if dataset.origin == "curve-model" and dataset.parent_id in self.datasets:
+                self.datasets[dataset.parent_id].curve_fits = None  # its fit at the cursor goes with it
             entry["restore"] = self._tree_places(dataset)
             self._remove_tree(dataset)
             return self._keep_undoable(entry)
@@ -2375,6 +2393,61 @@ class Session:
             if ds is not None:
                 self.set_elements(ds, elements)
         return [entry["file_id"]]
+
+    def _curve_fit_maps(self, si: Dataset) -> list[Dataset]:
+        """The results of ``si``'s curve fit of every pixel: its model (with
+        the maps under it)."""
+        return [
+            d for d in self.siblings_in_file(si.file_id)
+            if d.parent_id == si.id and d.origin in ("curve-model", "curve-fit")
+        ]
+
+    def _drop_fits(self, si: Dataset) -> bool:
+        """Remove the results of fitting every pixel of ``si`` (made from data
+        that has changed). Returns whether there were any."""
+        old = [*self._fit_maps(si), *self._curve_fit_maps(si)]
+        for d in old:
+            if d.id in self.datasets:
+                self._remove_tree(d)
+        return bool(old)
+
+    def set_curve_model(self, si: Dataset, model, spec: dict, maps: dict[str, np.ndarray]) -> Dataset:
+        """Replace ``si``'s curve model: ``model`` (the fitted model at every
+        pixel, a spectrum image) under ``si``, with ``maps`` (title → data:
+        the reduced χ² and each parameter's) under it. ``spec``: the model per
+        pixel. Returns the model's dataset."""
+        from .processing.element_maps import scan_image
+
+        for d in self._curve_fit_maps(si):
+            if d.id in self.datasets:
+                self._remove_tree(d)
+        model.metadata.General.title = "Curve model"
+        made = Dataset(
+            id=_new_id(), file_id=si.file_id, signal=model, kind=DatasetKind.SPECTRUM_IMAGE,
+            origin="curve-model", parent_id=si.id, curve_model={"source_id": si.id, "model": spec},
+        )
+        items = list(maps.items())
+        chi, params = items[-1], items[:-1]
+        children = [
+            Dataset(
+                id=_new_id(), file_id=si.file_id, signal=scan_image(si.signal, data, title), kind=DatasetKind.IMAGE,
+                origin="curve-fit", parent_id=made.id,
+            )
+            for title, data in [chi, *params]
+        ]
+        with self._lock:
+            for d in [made, *children]:
+                self.datasets[d.id] = d
+                self.files[si.file_id].dataset_ids.append(d.id)
+        return made
+
+    def curve_model_maps(self, model: Dataset) -> dict[str, np.ndarray]:
+        """A curve model's maps by title."""
+        return {
+            d.title: np.asarray(d.signal.data)
+            for d in self.siblings_in_file(model.file_id)
+            if d.parent_id == model.id and d.origin == "curve-fit"
+        }
 
     def _fit_maps(self, si: Dataset) -> list[Dataset]:
         return [d for d in self.siblings_in_file(si.file_id) if d.parent_id == si.id and d.origin == "fitted"]
@@ -2528,7 +2601,8 @@ class Session:
             # Natural order: (frames |) x, y.
             _rebin_in_place(d, [1] * d.signal.axes_manager.navigation_dimension + scale[:2])
 
-        for d in [*self._fit_maps(si), *self.zlp_shift_maps(si)]:
+        self._drop_fits(si)
+        for d in self.zlp_shift_maps(si):
             self._remove(d)  # made at the old size: refit or align again to update
         for m in self.computed_maps(si):
             new_map = self._make_map(si, m.element)
@@ -2677,10 +2751,7 @@ class Session:
                     m.replace_signal(signal)
             self._remake_window_maps(dataset)
             self._remake_thickness(dataset)
-            fits = self._fit_maps(dataset)
-            for d in fits:
-                self._remove(d)
-            if fits:
+            if self._drop_fits(dataset):
                 notes.append("Fitted maps were removed: fit every pixel again to fit the processed data")
         for other in self.linked_of(dataset) if with_linked else []:
             theirs = other.filter_spec
@@ -2736,8 +2807,7 @@ class Session:
                 else:
                     m.refresh_data(new_map)
             self._remake_window_maps(ds, keep_display=True)
-            for f in self._fit_maps(ds):
-                self._remove(f)  # made from another frame: fit again to update
+            self._drop_fits(ds)  # made from another frame: fit again to update
 
     # ---------- drift correction of stacks ----------
 

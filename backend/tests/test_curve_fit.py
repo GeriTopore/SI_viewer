@@ -213,3 +213,104 @@ def test_twins(client):
     badexpr = {**p2, "params": {**p2["params"], "centre": {"value": 0, "twin": {"component": "P1", "param": "centre", "expr": "x +"}}}}
     r = client.post(url, json={"model": {"components": [p1, badexpr]}})
     assert r.status_code == 422 and "formula" in r.json()["detail"]
+
+
+def _wait(client, job, timeout=180):
+    import time
+
+    t0 = time.time()
+    while job["status"] in ("queued", "running"):
+        assert time.time() - t0 < timeout, "job did not finish"
+        time.sleep(0.05)
+        job = client.get(f"/api/jobs/{job['id']}").json()
+    return job
+
+
+def test_every_pixel_recovers_the_truth_maps():
+    """M21c: the model made on the sum of every pixel (its areas divided by
+    the pixels for each one), fitted at every pixel of the two-Gaussians
+    test: the centre maps match the truth where the peak is strong, fixed
+    parameters get no map, the χ² map holds the parameters' maps, and the
+    fit at a pixel matches the maps there."""
+    from si_viewer.examples import get_example
+
+    client = TestClient(create_app())
+    files = client.post("/api/examples/fit-two-gaussians").json()
+    si = next(d for f in (files if isinstance(files, list) else [files]) for d in f["datasets"] if d["kind"] == "spectrum_image")
+    truth = get_example("fit-two-gaussians").load()
+    n = 32 * 32
+    g1 = {"name": "G1", "kind": "Gaussian", "params": {
+        "A": {"value": 5000 * n}, "centre": {"value": 256}, "sigma": {"value": 10, "free": False}}}
+    g2 = {"name": "G2", "kind": "Gaussian", "params": {
+        "A": {"value": 10000 * n}, "centre": {"value": 768}, "sigma": {"value": 20, "free": False}}}
+    model = {"components": [g1, g2]}
+    url = f"/api/datasets/{si['id']}/curve-fit"
+    assert client.get(f"{url}/pixel", params={"x": 0, "y": 0}).status_code == 404
+
+    job = _wait(client, client.post(f"{url}/maps", json={"model": model, "source": {"type": "all"}}).json())
+    assert job["status"] == "done", job.get("error")
+    assert job["result"]["failed"] == 0
+    datasets = job["result"]["file"]["datasets"]
+    # The model: a spectrum image under the data, the maps under it.
+    model_ds = next(d for d in datasets if d["origin"] == "curve-model")
+    assert model_ds["id"] == job["result"]["dataset_id"]
+    assert model_ds["parent_id"] == si["id"] and model_ds["kind"] == "spectrum_image"
+    assert model_ds["curve_model"]["source_id"] == si["id"]
+    under = {d["title"]: d for d in datasets if d["origin"] == "curve-fit" and d["parent_id"] == model_ds["id"]}
+    chi = under.pop("Reduced χ²")
+    maps = under
+    assert set(maps) == {"G1 · A", "G1 · centre", "G2 · A", "G2 · centre"}  # σ fixed: no map
+
+    session = client.app.state.session
+    data = {t: np.asarray(session.get_dataset(d["id"]).signal.data) for t, d in maps.items()}
+    for name, title, t_centre, t_area in (("Gaussian 1", "G1", truth[1], truth[2]), ("Gaussian 2", "G2", truth[3], truth[4])):
+        strong = np.asarray(t_area.data) > 0.5 * np.asarray(t_area.data).max()
+        err = np.abs(data[f"{title} · centre"] - np.asarray(t_centre.data))[strong]
+        assert np.median(err) < 1.0, name
+        ratio = data[f"{title} · A"][strong] / np.asarray(t_area.data)[strong]
+        assert 0.9 < np.median(ratio) < 1.1, name
+    chi_map = np.asarray(session.get_dataset(chi["id"]).signal.data)
+    assert np.isfinite(chi_map).all() and np.median(chi_map) < 2
+
+    summary = client.get(f"/api/datasets/{si['id']}").json()
+    assert summary["curve_pixel_fit"]["components"][0]["name"] == "G1"
+    one = client.get(f"{url}/pixel", params={"x": 7, "y": 5}).json()
+    assert one["pixels"] == 1 and len(one["model"]) == 1024
+    p = {q["name"]: q["value"] for q in one["components"][0]["params"]}
+    assert p["centre"] == pytest.approx(float(data["G1 · centre"][5, 7]), rel=1e-5)
+    block = client.get(f"{url}/pixel", params={"x": 7, "y": 5, "size": 3}).json()
+    assert block["pixels"] == 9 and max(block["model"]) > max(one["model"])
+
+    # The model at a pixel, from its maps: the same as the fit kept on the
+    # data, and its spectrum image holds the same model.
+    at = client.get(f"/api/datasets/{model_ds['id']}/curve-model/pixel", params={"x": 7, "y": 5}).json()
+    assert at["pixels"] == 1
+    assert np.allclose(at["model"], one["model"], rtol=1e-4, atol=1e-3)
+    assert np.allclose(at["data"], np.asarray(session.get_dataset(si["id"]).signal.data[5, 7], float))
+    q = {p["name"]: p["value"] for p in at["components"][0]["params"]}
+    assert q["centre"] == pytest.approx(p["centre"], rel=1e-5) and q["sigma"] == 10
+    model_data = np.asarray(session.get_dataset(model_ds["id"]).signal.data[5, 7], float)
+    assert np.allclose(model_data, one["model"], rtol=1e-3, atol=1e-2)
+    blk = client.get(f"/api/datasets/{model_ds['id']}/curve-model/pixel", params={"x": 7, "y": 5, "size": 3}).json()
+    assert blk["pixels"] == 9 and np.allclose(blk["model"], block["model"], rtol=1e-4, atol=1e-2)
+
+    # Deleting the model deletes its maps, and the fit at the cursor with it.
+    assert client.delete(f"/api/datasets/{model_ds['id']}").status_code == 200
+    left = client.get(f"/api/datasets/{si['id']}").json()
+    assert left["curve_pixel_fit"] is None
+    files = client.get("/api/files").json()
+    assert not any(d["origin"] in ("curve-model", "curve-fit") for f in files for d in f["datasets"])
+
+
+def test_every_pixel_refusals(client):
+    """Fitting every pixel: no components, or every parameter fixed, is
+    refused before the job starts; so is an image."""
+    si = client.si
+    url = f"/api/datasets/{si['id']}/curve-fit/maps"
+    assert client.post(url, json={"model": {"components": []}}).status_code == 422
+    fixed = {"name": "A", "kind": "Offset", "params": {"offset": {"value": 1, "free": False}}}
+    assert client.post(url, json={"model": {"components": [fixed]}}).status_code == 422
+    files = client.get("/api/files").json()
+    image = next((d for f in files for d in f["datasets"] if d["kind"] == "image"), None)
+    if image is not None:
+        assert client.post(f"/api/datasets/{image['id']}/curve-fit/maps", json={"model": {}}).status_code == 400

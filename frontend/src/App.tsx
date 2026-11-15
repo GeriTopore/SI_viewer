@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { FocusLayer } from "./components/FocusLayer";
 import { api, type Health } from "./api/client";
 import { useUndo } from "./state/undo";
 import { DatasetList, DatasetListHeader } from "./components/DatasetList";
@@ -163,6 +164,7 @@ export function App() {
 
       {browserOpen && <FileBrowser />}
       <DropZone />
+      <FocusLayer />
       <Toast />
     </div>
   );

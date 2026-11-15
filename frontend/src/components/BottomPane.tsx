@@ -37,6 +37,12 @@ export function BottomPane({ tabs, viewerRef, resizeLabel }: Props) {
   const setBottomFraction = useUi((s) => s.setBottomFraction);
   const setSplitFraction = useUi((s) => s.setSplitFraction);
   const setSplitRowFraction = useUi((s) => s.setSplitRowFraction);
+  // Focus mode: the active half lifted over the interface.
+  const lifted = useUi((s) => s.focus === "bottom");
+  // Leaving the view leaves its focus.
+  useEffect(() => () => {
+    if (useUi.getState().focus === "bottom") useUi.getState().setFocus(null);
+  }, []);
 
   // Split only if the view has both tabs; the stored split is kept otherwise.
   const ids = tabs.map((t) => t.id);
@@ -188,7 +194,7 @@ export function BottomPane({ tabs, viewerRef, resizeLabel }: Props) {
             ),
             <div
               key={id}
-              className={`viewer-half${i === 1 ? " second" : ""}${split && focused === id ? " focused" : ""}`}
+              className={`viewer-half${i === 1 ? " second" : ""}${split && focused === id ? " focused" : ""}${lifted && focused === id ? " focus-lifted" : ""}`}
               style={split && i === 0 ? { flexBasis: `${(rows ? splitRowFraction : splitFraction) * 100}%` } : undefined}
               onPointerDownCapture={() => focused !== id && focus(id)}
             >

@@ -1,12 +1,13 @@
 import { create } from "zustand";
 import {
   api, type CurveCatalogue, type CurveComponent, type CurveFitResult, type CurveModel, type CurveParam,
-  type DatasetSummary, type FitSource,
+  type DatasetSummary, type FitSource, type JobSummary,
 } from "../api/client";
+import { useDatasets } from "./datasets";
 import { energyRange } from "./background";
 
 /** Colours of a model's components, in the order they are added. */
-const COLOURS = ["#22d3ee", "#a3e635", "#f472b6", "#fbbf24", "#a78bfa", "#fb923c", "#34d399", "#60a5fa"];
+export const COLOURS = ["#22d3ee", "#a3e635", "#f472b6", "#fbbf24", "#a78bfa", "#fb923c", "#34d399", "#60a5fa"];
 
 /** A component of the model being built, with its colour. */
 export interface ModelComponent extends CurveComponent {
@@ -34,6 +35,16 @@ export interface CurveFitState {
    * fitted. null: everything fitted together. */
   bgLo: number | null;
   bgHi: number | null;
+  /** The background window is used (switched off, it keeps its place). */
+  bgOn: boolean;
+  /** Fitting every pixel: the job. */
+  job: JobSummary | null;
+  /** The cursor spectrum shows the fit of every pixel (when there is one)
+   * instead of the model being edited. On after fitting every pixel; off
+   * when a value is edited; the model's other settings leave it as it is. */
+  showPixel: boolean;
+  /** The fit of every pixel at the cursor (``at``: dataset, data and block). */
+  pixelFit: { at: string; result: CurveFitResult } | null;
 }
 
 interface CurveFitStore {
@@ -51,7 +62,8 @@ interface CurveFitStore {
 export function defaultCurveFit(_d: DatasetSummary): CurveFitState {
   return {
     components: [], source: "all", result: null, error: null, busy: false,
-    selected: null, selectedParam: null, placing: null, bgLo: null, bgHi: null,
+    selected: null, selectedParam: null, placing: null, bgLo: null, bgHi: null, bgOn: false,
+    job: null, showPixel: false, pixelFit: null,
   };
 }
 
@@ -63,7 +75,12 @@ export function cleanCurveFits(byId: Record<string, CurveFitState>): Record<stri
   return Object.fromEntries(
     Object.entries(byId)
       .filter(([, st]) => st?.components?.length)
-      .map(([id, st]) => [id, { ...st, busy: false, placing: null, error: null }]),
+      .map(([id, st]) => [id, {
+        ...st, busy: false, placing: null, error: null, job: null, pixelFit: null,
+        // Kept before this switch: the key of the model fitted at every pixel.
+        showPixel: st.showPixel ?? !!(st as { pixelKey?: string }).pixelKey,
+        bgOn: st.bgOn ?? (st.bgLo !== null && st.bgHi !== null),
+      }]),
   );
 }
 
@@ -118,18 +135,64 @@ export const useCurveFitState = (d: DatasetSummary) => useCurveFit((s) => s.byId
 const stateOf = (d: DatasetSummary) => useCurveFit.getState().byId[d.id] ?? defaultCurveFit(d);
 
 /** The spec sent to the backend. */
-export function modelOf(st: Pick<CurveFitState, "components" | "bgLo" | "bgHi">): CurveModel {
+export function modelOf(st: Pick<CurveFitState, "components" | "bgLo" | "bgHi" | "bgOn">): CurveModel {
+  const window = st.bgOn && st.bgLo !== null && st.bgHi !== null;
   return {
     lo: null,
     hi: null,
-    bg_lo: st.bgLo,
-    bg_hi: st.bgHi,
+    bg_lo: window ? st.bgLo : null,
+    bg_hi: window ? st.bgHi : null,
     components: st.components.map(({ name, kind, active, order, params }) => ({ name, kind, active, order, params })),
   };
 }
 
+/** Whether the cursor spectrum shows the fit of every pixel: there is one
+ * of the data as it is, it is switched on, and the model is drawn on the
+ * cursor's spectrum. */
+export const showsPixelFit = (d: DatasetSummary, st: CurveFitState | undefined, source: FitSource | null) =>
+  !!st && !!d.curve_pixel_fit && st.showPixel && source?.type === "pixel";
+
+/** Fit the model at every pixel (a job; ``source``: the spectrum it was made on). */
+export async function startPixelFits(d: DatasetSummary, source: FitSource) {
+  const st = stateOf(d);
+  const { patch } = useCurveFit.getState();
+  try {
+    const job = await api.startCurveFitMaps(d.id, source, modelOf(st));
+    patch(d, { job, error: null });
+  } catch (e) {
+    patch(d, { error: (e as Error).message });
+  }
+}
+
+/** Follow the job: on completion bring in the maps and show the fit at the cursor. */
+export async function pollPixelFits(d: DatasetSummary) {
+  const st = stateOf(d);
+  if (!st.job) return;
+  const job = await api.getJob(st.job.id);
+  const { patch } = useCurveFit.getState();
+  if (job.status === "done" && job.result) {
+    useDatasets.getState().replaceFile(job.result.file);
+    patch(d, { job, showPixel: true, pixelFit: null, source: "cursor" });
+  } else patch(d, { job });
+}
+
+const pixelFetches = new Set<string>();
+/** Fetch the fit of every pixel at the cursor's block ``at`` once (kept in ``pixelFit``). */
+export async function fetchPixelFit(d: DatasetSummary, at: string, x: number, y: number, size: number) {
+  if (stateOf(d).pixelFit?.at === at || pixelFetches.has(at)) return;
+  pixelFetches.add(at);
+  try {
+    const result = await api.curvePixelFit(d.id, x, y, size);
+    useCurveFit.getState().patch(d, { pixelFit: { at, result } });
+  } catch {
+    useCurveFit.getState().patch(d, { pixelFit: null }); // e.g. the fit failed at that pixel
+  } finally {
+    pixelFetches.delete(at);
+  }
+}
+
 /** What a result was made from: when it differs, the model is drawn again. */
-export const keyOf = (st: Pick<CurveFitState, "components" | "source" | "bgLo" | "bgHi">) =>
+export const keyOf = (st: Pick<CurveFitState, "components" | "source" | "bgLo" | "bgHi" | "bgOn">) =>
   JSON.stringify([modelOf(st), st.source]);
 
 const paramsFrom = (ps: CurveParam[]): ModelComponent["params"] =>

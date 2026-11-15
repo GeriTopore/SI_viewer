@@ -121,6 +121,21 @@ interface UiState {
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   setCollapsed: (side: "left" | "right", collapsed: boolean) => void;
+  /** Focus mode (Shift F): "bottom", the bottom pane's active half lifted
+   * over the blurred interface, with the right-hand pane beside it;
+   * "datasets" (over the datasets pane), the highlighted dataset's
+   * processing as a family tree. */
+  focus: "bottom" | "datasets" | null;
+  setFocus: (focus: "bottom" | "datasets" | null) => void;
+  /** In focus mode, the navigator image pulled out on the left (remembered). */
+  focusNav: boolean;
+  setFocusNav: (open: boolean) => void;
+  /** In focus mode, widths set by dragging (px; null: the default): the
+   * right-hand pane, and the navigator's flap (the most it takes; it keeps
+   * the image's shape). The pane takes the rest. Remembered. */
+  focusRightW: number | null;
+  focusNavW: number | null;
+  setFocusWidth: (which: "right" | "nav", px: number | null) => void;
   /** Widths of the side panes (px). */
   leftWidth: number;
   rightWidth: number;
@@ -245,6 +260,20 @@ export const useUi = create<UiState>((set, get) => ({
   setCollapsed: (side, collapsed) => {
     save(`si-viewer.${side}Collapsed`, String(collapsed));
     set(side === "left" ? { leftCollapsed: collapsed } : { rightCollapsed: collapsed });
+  },
+  focus: null,
+  setFocus: (focus) => set({ focus }),
+  focusNav: load<string>("si-viewer.focusNav", "false") === "true",
+  setFocusNav: (open) => {
+    save("si-viewer.focusNav", String(open));
+    set({ focusNav: open });
+  },
+  focusRightW: Number(load("si-viewer.focusRightW", "")) || null,
+  focusNavW: Number(load("si-viewer.focusNavW", "")) || null,
+  setFocusWidth: (which, px) => {
+    const v = px === null ? null : Math.round(px);
+    save(`si-viewer.focus${which === "right" ? "RightW" : "NavW"}`, v === null ? "" : String(v));
+    set(which === "right" ? { focusRightW: v } : { focusNavW: v });
   },
   leftWidth: loadNumber("si-viewer.leftWidth", PANE_SIZES.left),
   rightWidth: loadNumber("si-viewer.rightWidth", PANE_SIZES.right),

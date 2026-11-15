@@ -1,16 +1,17 @@
 import { Fragment, useEffect, useState, type KeyboardEvent } from "react";
-import type { DatasetSummary } from "../api/client";
+import { api, type DatasetSummary } from "../api/client";
 import { energyRange } from "../state/background";
 import { snapToAxis } from "../state/pca";
 import { EnergyInput } from "./BackgroundSection";
 import { formatValue, isLineScan } from "../format";
 import {
   PLACED, addComponent, drawModel, duplicateComponent, estimateComponent, fitModel, keyOf, modeOf, paramRole,
+  pollPixelFits, startPixelFits,
   removeComponent, renameComponent, setAllFree, setParamLimits, setParamMode, setTwin, updateComponent, useCurveFit,
   useCurveFitState, type ModelComponent, type ParamMode,
 } from "../state/curveFit";
 import { useSiState } from "../state/si";
-import { useCurveSource } from "../views/useCurveFitSeries";
+import { useCurveSource, usePixelCurveFit } from "../views/useCurveFitSeries";
 
 /** A number typed in a table cell: committed on Enter or leaving it; empty
  * gives null where ``optional``. */
@@ -152,10 +153,25 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
 
   const setParam = (c: ModelComponent, name: string, p: Partial<ModelComponent["params"][string]>) =>
     updateComponent(ds, c.name, { params: { ...c.params, [name]: { ...c.params[name], ...p } } });
+  // A value typed while the fit of a pixel is shown: back to editing the model.
+  const setValue = (c: ModelComponent, name: string, value: number) => {
+    setParam(c, name, { value });
+    if (st.showPixel) patch(ds, { showPixel: false });
+  };
   const kindOf = (kind: string) => catalogue?.components.find((k) => k.kind === kind);
-  const fitted = st.result?.fitted && st.result.key === key ? st.result : null;
-  const stdOf = (c: ModelComponent, name: string) =>
-    fitted?.components.find((f) => f.name === c.name)?.params.find((p) => p.name === name)?.std ?? null;
+  // The fit of every pixel at the cursor, while the plot shows it.
+  const pixel = usePixelCurveFit(ds, source);
+  const fitted = pixel ?? (st.result?.fitted && st.result.key === key ? st.result : null);
+  const fittedParam = (c: ModelComponent, name: string) =>
+    fitted?.components.find((f) => f.name === c.name)?.params.find((p) => p.name === name);
+  const stdOf = (c: ModelComponent, name: string) => fittedParam(c, name)?.std ?? null;
+  const job = st.job;
+  const running = !!job && (job.status === "queued" || job.status === "running");
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => void pollPixelFits(ds).catch(() => {}), 400);
+    return () => clearInterval(timer);
+  }, [running, job?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const groups = catalogue ? [...new Set(catalogue.components.map((c) => c.group))] : [];
 
   return (
@@ -184,16 +200,17 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
         >
           <input
             type="checkbox"
-            checked={st.bgLo !== null && st.bgHi !== null}
+            checked={st.bgOn}
             onChange={(e) => {
-              if (!e.target.checked) return patch(ds, { bgLo: null, bgHi: null });
+              if (!e.target.checked) return patch(ds, { bgOn: false });
+              if (st.bgLo !== null && st.bgHi !== null) return patch(ds, { bgOn: true });
               const r = energyRange(ds);
-              if (r) patch(ds, { bgLo: r.e0, bgHi: snapToAxis(ds, r.e0 + (r.e1 - r.e0) * 0.15) });
+              if (r) patch(ds, { bgOn: true, bgLo: r.e0, bgHi: snapToAxis(ds, r.e0 + (r.e1 - r.e0) * 0.15) });
             }}
           />
           Background window
         </label>
-        {st.bgLo !== null && st.bgHi !== null && (
+        {st.bgOn && st.bgLo !== null && st.bgHi !== null && (
           <label title="The window the background is fitted over (drag the hatched band on the spectrum)">
             <span>
               <i className="bg-swatch" style={{ background: CURVE_BG_COLOUR }} />
@@ -350,13 +367,13 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
                     <td>{name}</td>
                     <td>
                       <NumberCell
-                        value={mode === "twin" && drawn !== undefined ? drawn : p.value}
+                        value={pixel ? (fittedParam(c, name)?.value ?? p.value) : mode === "twin" && drawn !== undefined ? drawn : p.value}
                         disabled={mode === "twin"}
                         label={`${c.name} ${name}`}
-                        onCommit={(v) => setParam(c, name, { value: v ?? 0 })}
+                        onCommit={(v) => setValue(c, name, v ?? 0)}
                       />
                     </td>
-                    <td className="muted">{std !== null && p.free && mode !== "twin" ? formatValue(std) : ""}</td>
+                    <td className="muted">{std !== null && (p.free || pixel) && mode !== "twin" ? formatValue(std) : ""}</td>
                     <td>
                       <select
                         className="cell-input"
@@ -445,14 +462,63 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
         </button>
         {fitted && (
           <p className="muted small curve-fit-goodness">
-            {fitted.success === false && <span className="field-warning">Did not converge · </span>}
-            reduced χ² {fitted.red_chisq !== null && fitted.red_chisq !== undefined ? formatValue(fitted.red_chisq) : "–"}
-            {fitted.poisson ? "" : " (no noise estimate)"} · χ² {fitted.chisq != null ? formatValue(fitted.chisq) : "–"} ·{" "}
-            {fitted.dof} free parameters
-            {fitted.residual_ratio !== null && ` · residual ${formatValue(fitted.residual_ratio * 100)} % of the signal's spread`}
+            {[
+              pixel && source?.type === "pixel"
+                ? `Every pixel: ${pixel.pixels > 1 ? `${pixel.pixels} px at` : "pixel"} (${source.x}, ${source.y})`
+                : null,
+              fitted.success === false ? "Did not converge" : null,
+              `reduced χ² ${fitted.red_chisq != null ? formatValue(fitted.red_chisq) : "–"}${fitted.poisson ? "" : " (no noise estimate)"}`,
+              fitted.chisq != null ? `χ² ${formatValue(fitted.chisq)}` : null,
+              fitted.dof != null ? `${fitted.dof} free parameters` : null,
+              fitted.residual_ratio != null ? `residual ${formatValue(fitted.residual_ratio * 100)} % of the signal's spread` : null,
+            ].filter(Boolean).join(" · ")}
           </p>
         )}
       </section>
+
+      {isSi && !lineScan && (
+        <section className="q-form q-maps">
+          {running ? (
+            <div className="q-job">
+              <div className="q-progress" role="progressbar" aria-valuenow={Math.round(job.progress * 100)}>
+                <div style={{ width: `${Math.round(job.progress * 100)}%` }} />
+              </div>
+              <div className="q-job-row small">
+                <span>
+                  {job.message || "Starting…"} {Math.round(job.progress * 100)}%
+                </span>
+                <button className="link-button" onClick={() => api.cancelJob(job.id).then((j) => patch(ds, { job: j }))}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              className="secondary"
+              disabled={!source || !st.components.length || st.busy}
+              onClick={() => source && void startPixelFits(ds, source)}
+              title="Fit the model at every pixel, each starting from these values (amplitudes divided by the pixels of the spectrum they were set on): a map of each parameter that isn't fixed, and of the reduced χ²"
+            >
+              {ds.curve_pixel_fit ? "Fit every pixel again" : "Fit every pixel"}
+            </button>
+          )}
+          {ds.curve_pixel_fit && !running && (
+            <label className="q-check" title="The cursor spectrum shows the fit of its pixel instead of the model being edited">
+              <input
+                type="checkbox"
+                checked={st.showPixel}
+                onChange={(e) => patch(ds, e.target.checked ? { showPixel: true, source: "cursor" } : { showPixel: false })}
+              />
+              Show pixel fit
+            </label>
+          )}
+          {job?.status === "done" && job.result?.failed ? (
+            <p className="muted small">The fit failed at {job.result.failed} pixels</p>
+          ) : null}
+          {job?.status === "cancelled" && <p className="muted small">Cancelled.</p>}
+          {job?.status === "failed" && <p className="field-error">{job.error}</p>}
+        </section>
+      )}
     </div>
   );
 }

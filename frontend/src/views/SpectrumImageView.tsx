@@ -35,6 +35,7 @@ import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
 import { usePcaBand } from "./si/usePcaBand";
 import { useCurveFitSeries } from "./useCurveFitSeries";
+import { useCurveModelSeries } from "./useCurveModelSeries";
 import { useEelsBgBand } from "./si/useEelsBgBand";
 import { NormaliseToggle, useNormBand } from "../components/NormaliseSection";
 import { normaliseSeries, useNormSettings } from "../state/normalise";
@@ -459,9 +460,11 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const norm = useNormSettings(ds);
   // Curve fitting (Process tab): the model and its components.
   const curve = useCurveFitSeries(ds, axis.x, reduce === "mean");
+  // A curve model: the data it was fitted to and its components at the cursor.
+  const modelSeries = useCurveModelSeries(ds, axis.x, reduce === "mean");
   const plotted = useMemo(
-    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : [...previewed, ...curve.series]),
-    [norm, plain, previewed, axis.x, curve.series],
+    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : [...previewed, ...modelSeries, ...curve.series]),
+    [norm, plain, previewed, axis.x, curve.series, modelSeries],
   );
   const normBand = useNormBand(ds);
   const eelsBg = useEelsBgBand(ds);
@@ -678,6 +681,13 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           imageMenu={(p) => [...cursor2Menu(p), ...cropMenu(p), ...(ds.insitu?.view ? timeScanMenu(p) : [])]}
           histogramRegions={{ rois: st.rois, scale: scanK }}
           gridContext="si"
+          focusCorner={
+            <NavigatorCorner
+              options={[...sources.map((s) => ({ id: s.id, label: s.label })), { id: NONE, label: "None (maps only)" }]}
+              value={sourceId}
+              onChange={setSourceId}
+            />
+          }
           base={
             sourceId === NONE
               ? null
@@ -747,6 +757,37 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
           ]}
         />
       )}
+    </div>
+  );
+}
+
+/** Focus mode's navigator flap: which navigator is shown, from a tab in the
+ * image's top-left corner (faint until hovered; the list opens on hover). */
+function NavigatorCorner({ options, value, onChange }: {
+  options: { id: string; label: string }[];
+  value: string | null;
+  onChange: (id: string) => void;
+}) {
+  const current = options.find((o) => o.id === value)?.label ?? "Navigator";
+  return (
+    <div className="navigator-corner">
+      <span className="navigator-corner-tab" title="Navigator: choose which image is shown">
+        {current} <span aria-hidden>▾</span>
+      </span>
+      <ul className="navigator-corner-list" role="listbox" aria-label="Navigator">
+        {options.map((o) => (
+          <li key={o.id}>
+            <button
+              role="option"
+              aria-selected={o.id === value}
+              className={o.id === value ? "active" : undefined}
+              onClick={() => onChange(o.id)}
+            >
+              {o.label}
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

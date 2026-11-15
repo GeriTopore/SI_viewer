@@ -31,13 +31,15 @@ function countUnder(id: string, tree: FileTree): number {
 
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
-const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map ? "map" : d.kind}`;
+export const badgeClass = (d: DatasetSummary) =>
+  `badge badge-${d.origin === "curve-model" ? "model" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
-  isBackgroundRemoved(d) || isDeconvolved(d) || d.origin === "line-scan"
+  d.origin === "curve-model"
+    ? "Delete this model (and its maps)"
+    : isBackgroundRemoved(d) || isDeconvolved(d) || d.origin === "line-scan"
     ? `Delete this ${isLineScan(d) ? "LineScan" : "spectrum image"} (and what was made from it)`
-    : d.origin === "fitted" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
+    : d.origin === "fitted" || d.origin === "curve-fit" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
       ? "Delete this map"
       : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
         (d.origin === "file" ? ". The file on disk is not changed." : "");

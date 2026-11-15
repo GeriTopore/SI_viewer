@@ -22,6 +22,13 @@ const STOPS: Record<string, string[]> = {
   hot: ["#000000", "#800000", "#ff0000", "#ff8000", "#ffff00", "#ffffff"],
   // Circular (hue round the wheel, back to red): directions, e.g. of a DPC field.
   hsv: ["#ff0000", "#ffff00", "#00ff00", "#00ffff", "#0000ff", "#ff00ff", "#ff0000"],
+  // cmocean's "phase" (circular, as kemstem's plot_phase): phases over 0–2π.
+  phase: [
+    "#a8780d", "#b3701b", "#be6828", "#c75f35", "#cf5643", "#d54b53", "#db4066", "#de357b", "#df2a93",
+    "#dc25ad", "#d529c4", "#cc34d7", "#c041e5", "#b24fef", "#a25cf3", "#9168f4", "#7d73f0", "#687ce8",
+    "#5285dc", "#3d8bcd", "#2c90bc", "#2093ac", "#19959c", "#12978c", "#0c987c", "#119a69", "#249a52",
+    "#409839", "#5e9420", "#778d12", "#8b860d", "#9b7f0d", "#a8780d",
+  ],
   // Diverging (matplotlib RdBu): negative red, zero white, positive blue.
   rdbu: [
     "#67001f", "#b2182b", "#d6604d", "#f4a582", "#fddbc7", "#f7f7f7",

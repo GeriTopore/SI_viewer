@@ -12,7 +12,8 @@ import { percentile, sortedSample } from "../viewer/contrast";
 import type { DisplayParams } from "../viewer/renderer";
 import { ContrastControls } from "./ContrastControls";
 import { useFftBoxes, useViewFftBoxes, type FftBox } from "../state/fftBoxes";
-import { addPeak, deletePeak, peakAt, useAtomic, type FftPeak } from "../state/atomic";
+import { addPeak, deletePeak, peakAt, useAtomic, usedPeaks, type FftPeak } from "../state/atomic";
+import { allDatasets, useDatasets } from "../state/datasets";
 import { LoupeFrame, LoupeToggle, lastPointer, overFft } from "./Loupe";
 import { useShortcuts } from "../keyboard";
 
@@ -111,7 +112,9 @@ export function FftPanel() {
   const compare = useViewerImage((s) => s.compare);
   const setCompare = useViewerImage((s) => s.setCompare);
   // The Atomic section's image: its whole FFT, with its peaks to edit.
-  const atomicId = useAtomic((s) => s.shown);
+  // Only while the FFT is of that image (not of another one in the viewer).
+  const atomicShown = useAtomic((s) => s.shown);
+  const atomicId = atomicShown && image?.datasetId === atomicShown ? atomicShown : null;
   const atomic = useAtomic((s) => (atomicId ? s.byId[atomicId] : undefined));
   const peaks = useMemo(
     () =>
@@ -133,7 +136,17 @@ export function FftPanel() {
   const small = filters?.spatial === "bandpass" ? filters.small : null;
   const large = filters?.spatial === "bandpass" ? filters.large : null;
   const band = useMemo(() => (small !== null && large !== null ? { small, large } : null), [small, large]);
-  const overlay = fftMask ?? band;
+  // The Atomic section's Fourier filter: a Gaussian of σ (FFT px of the
+  // image) round each peak used, as kemstem's create_gaussian_filter.
+  const atomicDs = useDatasets((s) => (atomicId ? allDatasets(s.files).find((d) => d.id === atomicId) : undefined));
+  const rows = atomicDs?.axes[0]?.size;
+  const cols = atomicDs?.axes[1]?.size;
+  const sigma = atomic?.fourier.sigma;
+  const filter = useMemo((): PeakFilter | null => {
+    if (!atomic || !rows || !cols || !sigma) return null;
+    const used = usedPeaks(atomic);
+    return used.length ? { peaks: used.map((u) => u.f), sy: sigma / rows, sx: sigma / cols } : null;
+  }, [atomic, rows, cols, sigma]);
   // Dragging a ring changes the mask (an alignment's) or the bandpass.
   const onMask = useViewerImage((s) => s.editFftMask);
   const targetId = target?.id;
@@ -179,7 +192,9 @@ export function FftPanel() {
             Hann
           </button>
         )}
-        {open && overlay && (
+        {/* The Atomic section's filter has its toggle in the row below, so the
+            header doesn't change (and the FFT move) while peaks are picked. */}
+        {open && (fftMask || (band && !atomicId)) && (
           <button
             className={`fft-mask-toggle${showMask ? " active" : ""}`}
             aria-pressed={showMask}
@@ -239,6 +254,17 @@ export function FftPanel() {
           >
             View in main window
           </button>
+          {atomicId && !fftMask && (
+            <button
+              className={`fft-mask-toggle${showMask && filter ? " active" : ""}`}
+              aria-pressed={showMask}
+              disabled={!filter}
+              onClick={() => setShowMask(!showMask)}
+              title={filter ? "The Fourier filter round the peaks used" : "Tick peaks to use for Fourier filtering"}
+            >
+              Filter
+            </button>
+          )}
           <LoupeToggle which="fft" className="fft-loupe-toggle" />
         </div>
       )}
@@ -248,7 +274,8 @@ export function FftPanel() {
           box={box}
           zoom={zoom}
           mask={fftMask && showMask ? fftMask : null}
-          band={!fftMask && showMask ? band : null}
+          band={!fftMask && !filter && showMask ? band : null}
+          filter={!fftMask && showMask ? filter : null}
           measure={measure}
           onMask={fftMask ? onMask : null}
           onBand={fftMask ? null : onBand}
@@ -294,6 +321,26 @@ type Drag =
   | { id: "mask"; start: MaskSettings; rx: number; ry: number; angle: number }
   | { id: "small" | "large" };
 
+/** Gaussians round FFT peaks (frequencies in cycles per image pixel), σ as
+ * frequencies along y and x: the Atomic section's Fourier filter. */
+export interface PeakFilter {
+  peaks: [number, number][];
+  sy: number;
+  sx: number;
+}
+
+/** The filter's weight at frequency (fy, fx): its Gaussians summed, at most 1. */
+function peakFilterValue(f: PeakFilter, fy: number, fx: number): number {
+  let v = 0;
+  for (const [py, px] of f.peaks) {
+    const dy = (fy - py) / f.sy;
+    const dx = (fx - px) / f.sx;
+    const r2 = dx * dx + dy * dy;
+    if (r2 < 50) v += Math.exp(-r2 / 2);
+  }
+  return Math.min(1, v);
+}
+
 /** FFT peaks drawn and edited on the FFT (the Atomic section): clicks add
  * one, right-clicks delete the nearest. */
 export interface FftPeaks {
@@ -311,8 +358,10 @@ const LOUPE_N = 23;
 const LOUPE_PX = 92;
 
 export function FftView({
-  image, box, zoom, mask, band: bandProp, measure, onMask, onBand, compact = false, peaks = null,
+  image, box, zoom, mask, band: bandProp, measure, onMask, onBand, compact = false, peaks = null, filter = null,
 }: {
+  /** The Fourier filter to tint the FFT with. */
+  filter?: PeakFilter | null;
   /** FFT peaks to draw (the whole image is transformed while there are). */
   peaks?: FftPeaks | null;
   image: ViewerImage | null;
@@ -500,13 +549,17 @@ export function FftView({
         if (g0 !== 1) t **= g0;
         const k = Math.round(t * 255) * 4;
         const o = (cy * d + cx) * 4;
-        if (mask || band) {
+        if (mask || band || filter) {
           // Tint by the mask's (or bandpass's) weight at this frequency.
           const u = start + ((cx + 0.5) * span) / d - n / 2;
           const v = start + ((cy + 0.5) * span) / d - n / 2;
           const a =
             MASK_ALPHA *
-            (mask ? maskValue(mask, u * perPixel, v * perPixel) : bandpassValue(band!, Math.hypot(u, v) * perPixel));
+            (mask
+              ? maskValue(mask, u * perPixel, v * perPixel)
+              : filter
+                ? peakFilterValue(filter, v * perPixel, u * perPixel)
+                : bandpassValue(band!, Math.hypot(u, v) * perPixel));
           img.data[o] = lut[k] * (1 - a) + MASK_RGB[0] * a;
           img.data[o + 1] = lut[k + 1] * (1 - a) + MASK_RGB[1] * a;
           img.data[o + 2] = lut[k + 2] * (1 - a) + MASK_RGB[2] * a;
@@ -519,7 +572,7 @@ export function FftView({
       }
     }
     ctx.putImageData(img, 0, 0);
-  }, [shown, view, display, side, zoom, mask, band]);
+  }, [shown, view, display, side, zoom, mask, band, filter]);
 
   const p = shown?.patch;
   const toScreen = (u: number) => (shown ? (u / (shown.result.n / zoom) + 0.5) * side : 0);

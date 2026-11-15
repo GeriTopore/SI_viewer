@@ -258,6 +258,7 @@ export function ViewerGrid({
                     onRemove={onRemove?.(k) ?? null}
                     scanFactor={scanFactor}
                     fftView={fftView}
+                    loupeGroup={layoutKey ?? fftView ?? "grid"}
                     grip={gripProps(k)}
                     dropProps={dropProps(k)}
                     dropSide={drop?.key === k ? drop.side : null}
@@ -314,8 +315,10 @@ export function ViewerGrid({
 
 function GridCell({
   p, active, first, onActivate, interaction, renderOverlay, controlRef, onSave, onRemove, scanFactor, fftView,
-  grip, dropProps, dropSide, dragging,
+  loupeGroup, grip, dropProps, dropSide, dragging,
 }: {
+  /** The panels share the magnifier (see ImageView's ``loupeGroup``). */
+  loupeGroup?: string;
   p: GridPanel;
   active: boolean;
   first: boolean;
@@ -363,6 +366,7 @@ function GridCell({
         analysisKey={layer.key}
         publish={active}
         fftView={fftView}
+        loupeGroup={loupeGroup}
         scaleBar={first}
         readout={false}
         hoverChip

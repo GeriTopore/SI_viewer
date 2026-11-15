@@ -27,6 +27,7 @@
   --badge-dpc: #c026d3;
   --badge-pca: #0891b2;
   --badge-model: #059669;
+  --badge-atomic: #b45309;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -515,6 +516,7 @@ button.primary:disabled {
 .badge-dpc { background: var(--badge-dpc); }
 .badge-pca { background: var(--badge-pca); }
 .badge-model { background: var(--badge-model); }
+.badge-atomic { background: var(--badge-atomic); }
 
 .empty-list {
   margin: 0;
@@ -6109,4 +6111,46 @@ kbd {
 /* The FFT's magnifier button, beside "View in main window". */
 .icon-toggle.fft-loupe-toggle {
   padding: 2px 4px;
+}
+
+/* Contours over a phase map (as kemstem's plot_phase: black, 1 px). */
+.phase-contours path {
+  fill: none;
+  stroke: #000;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* kemstem's coarsening marker: the coarsening radius as a white disc edged in black. */
+.coarsening-marker {
+  fill: #fff;
+  stroke: #000;
+  stroke-width: 1;
+}
+
+/* Typing the display limits (right-click on a contrast histogram). */
+.contrast-limits {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  min-width: 150px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+}
+.contrast-limits > label:not(.q-check) {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+.contrast-limits .cell-input {
+  width: 100%;
+}
+.histogram-symmetric {
+  color: var(--accent);
 }

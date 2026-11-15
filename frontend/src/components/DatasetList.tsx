@@ -32,7 +32,7 @@ function countUnder(id: string, tree: FileTree): number {
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
 export const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${d.origin === "curve-model" ? "model" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
+  `badge badge-${d.origin === "curve-model" ? "model" : d.atomic ? "atomic" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
   d.origin === "curve-model"

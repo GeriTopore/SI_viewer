@@ -7,6 +7,8 @@ import type { AxisCal } from "../components/ImageView";
  * published for analysis such as the FFT panel. */
 export interface ViewerImage {
   label: string;
+  /** The dataset shown, when known (the FFT panel's overlays belong to one). */
+  datasetId?: string;
   frame: Frame;
   calX: AxisCal;
   calY: AxisCal;

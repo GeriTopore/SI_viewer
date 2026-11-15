@@ -51,6 +51,11 @@ export const isThickness = (d: DatasetSummary) => d.origin === "thickness";
 /** The energy shift zero-loss alignment applied at every pixel of a low loss (a map, or a profile along a line scan). */
 export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
 
+const ATOMIC_LABEL: Record<NonNullable<DatasetSummary["atomic"]>["output"], string> = {
+  amplitude: "Amp", grating: "Grating", phase: "Phase", "strain-par": "ε∥", "strain-perp": "ε⊥",
+  exx: "εxx", eyy: "εyy", exy: "εxy", oxy: "ωxy",
+};
+
 export function kindLabel(d: DatasetSummary): string {
   if (isWindowMap(d)) return "Window";
   if (d.origin === "pca") return "Decomp";
@@ -63,6 +68,7 @@ export function kindLabel(d: DatasetSummary): string {
   if (isZlpShift(d)) return "eV";
   if (d.survey) return "Survey";
   if (d.origin === "curve-model") return "Model";
+  if (d.atomic) return ATOMIC_LABEL[d.atomic.output];
   if (d.origin === "fitted" || d.origin === "curve-fit") return "Fit";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.
@@ -136,6 +142,11 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
   if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "curve-model") return `${base}\nThe curve fit of every pixel: the model at each pixel, its maps under it`;
+  if (d.atomic) {
+    const a = d.atomic;
+    const how = a.output === "amplitude" || a.output === "grating" ? "" : a.phase === "gpa" ? ", GPA" : `, lock-in σ ${formatValue(a.lock_sigma)}`;
+    return `${base}\nFourier filtered (kemstem) round peak${a.peaks.length > 1 ? "s" : ""} ${a.peaks.join(", ")}: σ ${formatValue(a.sigma)} px${how}; coarsening ${formatValue(a.coarsening)} px`;
+  }
   if (d.origin === "curve-fit") {
     return d.title === "Reduced χ²"
       ? `${base}\nReduced χ² of the curve fit at each pixel (the parameters' maps under it)`

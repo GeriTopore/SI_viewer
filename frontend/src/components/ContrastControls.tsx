@@ -14,14 +14,28 @@ interface Props {
 }
 
 const BINS = 96;
+// A limit line is grabbed within this many pixels.
+const GRAB_PX = 5;
+
+type Drag = { kind: "lo" | "hi" } | { kind: "move"; at: number; lo: number; hi: number };
+
+/** ±the larger of |lo| and |hi|. */
+const symmetricOf = (lo: number, hi: number): [number, number] => {
+  const m = Math.max(Math.abs(lo), Math.abs(hi));
+  return [-m, m];
+};
 const SOLID = "__solid";
 
-/** Colormap, histogram with draggable min/max handles, auto contrast and gamma. */
+/** Colormap, histogram with draggable min/max lines (dragging between them
+ * moves the window; right-click to type the limits or lock them symmetric),
+ * auto contrast and gamma. */
 export function ContrastControls({ frame, display, onChange }: Props) {
   const sample = useMemo(() => (frame ? sortedSample(frame.data) : null), [frame]);
   const theme = useUi((s) => s.theme); // histogram colours come from CSS
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const dragging = useRef<"lo" | "hi" | null>(null);
+  const dragging = useRef<Drag | null>(null);
+  const [hoverZone, setHoverZone] = useState<"line" | "inside" | null>(null);
+  const [limitsAt, setLimitsAt] = useState<{ x: number; y: number } | null>(null);
   // Colour restored when switching back to "solid colour".
   const lastColour = useRef(display && isColour(display.colormap) ? display.colormap : OVERLAY_COLOURS[0]);
   if (display && isColour(display.colormap)) lastColour.current = display.colormap;
@@ -72,18 +86,49 @@ export function ContrastControls({ frame, display, onChange }: Props) {
     const f = (clientX - rect.left) / rect.width;
     return range ? range[0] + f * (range[1] - range[0]) : 0;
   };
+  // What is under the pointer: a limit line (the nearer), between them, or neither.
+  const zoneAt = (clientX: number): "lo" | "hi" | "inside" | null => {
+    if (!range) return null;
+    const rect = canvasRef.current!.getBoundingClientRect();
+    const px = (v: number) => rect.left + ((v - range[0]) / (range[1] - range[0])) * rect.width;
+    const dLo = Math.abs(clientX - px(display.lo));
+    const dHi = Math.abs(clientX - px(display.hi));
+    // A narrow window keeps its middle for moving it.
+    const grab = Math.min(GRAB_PX, (px(display.hi) - px(display.lo)) / 4);
+    if (Math.min(dLo, dHi) <= Math.max(grab, 1.5)) return dLo <= dHi ? "lo" : "hi";
+    return clientX > px(display.lo) && clientX < px(display.hi) ? "inside" : null;
+  };
+  // Set the limits, kept symmetric when locked.
+  const setLimits = (lo: number, hi: number) => {
+    if (display.symmetric) [lo, hi] = symmetricOf(lo, hi);
+    onChange({ lo, hi });
+  };
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const v = valueAt(e.clientX);
-    dragging.current = Math.abs(v - display.lo) < Math.abs(v - display.hi) ? "lo" : "hi";
+    if (e.button !== 0) return;
+    const zone = zoneAt(e.clientX);
+    // Locked symmetric, the window can't move off 0: dragging inside does nothing.
+    if (!zone || (zone === "inside" && display.symmetric)) return;
+    dragging.current =
+      zone === "inside" ? { kind: "move", at: valueAt(e.clientX), lo: display.lo, hi: display.hi } : { kind: zone };
     e.currentTarget.setPointerCapture(e.pointerId);
-    onPointerMove(e);
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!dragging.current) return;
+    const d = dragging.current;
+    if (!d) {
+      const zone = zoneAt(e.clientX);
+      setHoverZone(zone === "lo" || zone === "hi" ? "line" : zone === "inside" && !display.symmetric ? "inside" : null);
+      return;
+    }
     const v = valueAt(e.clientX);
-    if (dragging.current === "lo") onChange({ lo: Math.min(v, display.hi) });
+    if (d.kind === "move") {
+      const shift = v - d.at;
+      onChange({ lo: d.lo + shift, hi: d.hi + shift });
+    } else if (display.symmetric) {
+      const m = Math.abs(v);
+      onChange({ lo: -m, hi: m });
+    } else if (d.kind === "lo") onChange({ lo: Math.min(v, display.hi) });
     else onChange({ hi: Math.max(v, display.lo) });
   };
 
@@ -117,18 +162,33 @@ export function ContrastControls({ frame, display, onChange }: Props) {
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={() => (dragging.current = null)}
-          title="Drag to set the display range"
+          onPointerLeave={() => !dragging.current && setHoverZone(null)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setLimitsAt({ x: e.clientX, y: e.clientY });
+          }}
+          style={{ cursor: dragging.current?.kind === "move" ? "grabbing" : hoverZone === "line" ? "ew-resize" : hoverZone === "inside" ? "grab" : undefined }}
+          title="Drag a limit line to set it, or between them to move the range; right-click to type the limits"
         />
         <div className="histogram-labels">
           <span>{formatValue(display.lo)}</span>
+          {display.symmetric && <span className="histogram-symmetric" title="Locked symmetric about 0">±</span>}
           <span>{formatValue(display.hi)}</span>
         </div>
       </div>
+      {limitsAt && (
+        <LimitsPopover
+          at={limitsAt}
+          display={display}
+          onChange={onChange}
+          onClose={() => setLimitsAt(null)}
+        />
+      )}
 
       <div className="contrast-buttons">
         <button
           disabled={!sample}
-          onClick={() => sample && setRange(autoRange(sample), onChange)}
+          onClick={() => sample && setLimits(...autoRange(sample))}
           title="Auto: clip 0.5 % at each end"
           aria-label="Auto contrast"
         >
@@ -136,7 +196,7 @@ export function ContrastControls({ frame, display, onChange }: Props) {
         </button>
         <button
           disabled={!sample}
-          onClick={() => sample && setRange(fullRange(sample), onChange)}
+          onClick={() => sample && setLimits(...fullRange(sample))}
           title="Min–max: the full data range"
           aria-label="Full data range"
         >
@@ -372,6 +432,99 @@ function GammaInput({ gamma, onChange, onDone }: { gamma: number; onChange: (gam
   );
 }
 
-function setRange([lo, hi]: [number, number], onChange: Props["onChange"]) {
-  onChange({ lo, hi });
+/** Typing the limits (right-click on the histogram): min and max, or ±one
+ * value when locked symmetric about 0. Applied as typed; Enter, Esc or a
+ * click elsewhere closes it. */
+function LimitsPopover({ at, display, onChange, onClose }: {
+  at: { x: number; y: number };
+  display: DisplayParams;
+  onChange: (patch: Partial<DisplayParams>) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const m = 6;
+    setPos({
+      left: Math.max(m, Math.min(at.x, window.innerWidth - el.offsetWidth - m)),
+      top: Math.max(m, Math.min(at.y + 4, window.innerHeight - el.offsetHeight - m)),
+    });
+  }, [at.x, at.y]);
+  // Focus the first field once placed (a hidden element can't take focus).
+  useEffect(() => {
+    if (!pos) return;
+    const input = ref.current?.querySelector<HTMLInputElement>("input[type=number]");
+    input?.focus();
+    input?.select();
+  }, [pos === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const sym = !!display.symmetric;
+  const field = (key: "lo" | "hi" | "pm", label: string, value: number, apply: (v: number) => void) => (
+    <label>
+      <span>{label}</span>
+      <input
+        type="number"
+        className="cell-input"
+        step="any"
+        value={drafts[key] ?? formatValue(value)}
+        onChange={(e) => {
+          setDrafts({ ...drafts, [key]: e.target.value });
+          const v = Number(e.target.value);
+          if (e.target.value.trim() !== "" && Number.isFinite(v)) apply(v);
+        }}
+        onFocus={(e) => e.currentTarget.select()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onClose();
+          e.stopPropagation();
+        }}
+      />
+    </label>
+  );
+
+  return createPortal(
+    <div
+      ref={ref}
+      className="contrast-limits"
+      style={{ left: pos?.left ?? at.x, top: pos?.top ?? at.y, visibility: pos ? "visible" : "hidden" }}
+      role="dialog"
+      aria-label="Display limits"
+    >
+      {sym ? (
+        field("pm", "±", display.hi, (v) => onChange({ lo: -Math.abs(v), hi: Math.abs(v) }))
+      ) : (
+        <>
+          {field("lo", "Min", display.lo, (v) => onChange({ lo: v }))}
+          {field("hi", "Max", display.hi, (v) => onChange({ hi: v }))}
+        </>
+      )}
+      <label className="q-check" title="Keep the limits at ±the same value (e.g. strain)">
+        <input
+          type="checkbox"
+          checked={sym}
+          onChange={(e) => {
+            setDrafts({});
+            if (e.target.checked) {
+              const [lo, hi] = symmetricOf(display.lo, display.hi);
+              onChange({ symmetric: true, lo, hi });
+            } else onChange({ symmetric: false });
+          }}
+        />
+        Symmetric about 0
+      </label>
+    </div>,
+    document.body,
+  );
 }

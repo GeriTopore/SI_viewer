@@ -1,11 +1,14 @@
 import { create } from "zustand";
-import { api, type DatasetSummary, type FftPeakOptions } from "../api/client";
+import { api, type AtomicOutput, type DatasetSummary, type FftPeakOptions, type FileSummary, type FourierSettings, type JobSummary } from "../api/client";
+import { useDatasets } from "./datasets";
 
 /** An FFT peak: a spatial frequency in cycles per image pixel (y down, x
  * right), as clicked; ``refined`` once refined (null: not yet, or edited). */
 export interface FftPeak {
   fy: number;
   fx: number;
+  /** Used for Fourier filtering (its maps; the strain tensor from two). */
+  use?: boolean;
   refined: {
     fy: number;
     fx: number;
@@ -25,6 +28,13 @@ export interface AtomicState {
   conjugates: boolean;
   busy: boolean;
   error: string | null;
+  /** Fourier filtering (M22b): how, what is made per peak used, and the
+   * strain tensor from the two peaks used; the job making them. */
+  fourier: FourierSettings;
+  outputs: AtomicOutput[];
+  tensor: boolean;
+  job: JobSummary | null;
+  fourierError: string | null;
 }
 
 export const defaultAtomic = (): AtomicState => ({
@@ -34,6 +44,11 @@ export const defaultAtomic = (): AtomicState => ({
   conjugates: false,
   busy: false,
   error: null,
+  fourier: { sigma: 20, phase: "lockin", lock_sigma: null, edge: "none", mask_threshold: null },
+  outputs: ["amplitude", "phase", "strain"],
+  tensor: false,
+  job: null,
+  fourierError: null,
 });
 
 interface AtomicStore {
@@ -52,7 +67,7 @@ export function cleanAtomic(byId: Record<string, AtomicState>): Record<string, A
   return Object.fromEntries(
     Object.entries(byId)
       .filter(([, st]) => st?.peaks?.length)
-      .map(([id, st]) => [id, { ...defaultAtomic(), ...st, busy: false, error: null }]),
+      .map(([id, st]) => [id, { ...defaultAtomic(), ...st, busy: false, error: null, job: null, fourierError: null }]),
   );
 }
 
@@ -126,5 +141,56 @@ export async function refinePeaks(d: DatasetSummary) {
     });
   } catch (e) {
     patch(d.id, { busy: false, error: (e as Error).message });
+  }
+}
+
+/** The peaks used for Fourier filtering: their numbers (1-based) and frequencies. */
+export function usedPeaks(st: AtomicState): { n: number; f: [number, number] }[] {
+  return st.peaks
+    .map((p, i) => ({ p, n: i + 1 }))
+    .filter(({ p }) => p.use !== false)
+    .map(({ p, n }) => {
+      const at = peakAt(p);
+      return { n, f: [at.fy, at.fx] as [number, number] };
+    });
+}
+
+/** Which made map to show first: the strain tensor's εxx, else ε∥, the phase or the amplitude. */
+const SHOW_FIRST = ["exx", "strain-par", "phase", "amplitude", "grating"];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Make the Fourier-filtered maps (a job), then bring them into the dataset
+ * list and show the most telling one. */
+export async function makeFourierMaps(d: DatasetSummary) {
+  const st = stateOf(d.id);
+  const used = usedPeaks(st);
+  const { patch } = useAtomic.getState();
+  const tensor = st.tensor && used.length === 2 ? ([used[0].n, used[1].n] as [number, number]) : null;
+  patch(d.id, { fourierError: null });
+  try {
+    let job = await api.atomicFourier(d.id, {
+      ...st.fourier,
+      peaks: Object.fromEntries(used.map(({ n, f }) => [String(n), f])),
+      per_peak: st.outputs.length ? used.map(({ n }) => n) : [],
+      outputs: st.outputs,
+      tensor,
+    });
+    patch(d.id, { job });
+    while (job.status === "queued" || job.status === "running") {
+      await sleep(400);
+      job = await api.getJob(job.id);
+      patch(d.id, { job });
+    }
+    if (job.status === "done" && job.result) {
+      const result = job.result as { file: FileSummary; ids: string[] };
+      useDatasets.getState().replaceFile(result.file);
+      const made = result.file.datasets.filter((x) => result.ids.includes(x.id));
+      const first = SHOW_FIRST.map((o) => made.find((x) => x.atomic?.output === o)).find(Boolean) ?? made[0];
+      if (first) useDatasets.getState().select(first.id);
+      patch(d.id, { job: null });
+    } else patch(d.id, { job: null, fourierError: job.status === "failed" ? job.error ?? "Failed" : null });
+  } catch (e) {
+    patch(d.id, { job: null, fourierError: (e as Error).message });
   }
 }

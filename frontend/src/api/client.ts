@@ -195,6 +195,28 @@ export interface FftPeakOptions {
   edge: "none" | "hann" | "pplus";
 }
 
+/** What Fourier filtering makes (per peak), and how (kemstem). */
+export type AtomicOutput = "amplitude" | "grating" | "phase" | "strain";
+
+export interface FourierSettings {
+  sigma: number;
+  phase: "lockin" | "gpa";
+  /** The lock-in's low-pass σ; null: twice the filter's. */
+  lock_sigma: number | null;
+  edge: "none" | "hann" | "pplus";
+  /** |ε| beyond this is replaced by its median-filtered surroundings; null: kept. */
+  mask_threshold: number | null;
+}
+
+export interface AtomicMapInfo extends Omit<FourierSettings, "lock_sigma"> {
+  output: "amplitude" | "grating" | "phase" | "strain-par" | "strain-perp" | "exx" | "eyy" | "exy" | "oxy";
+  peaks: number[];
+  freqs: [number, number][];
+  lock_sigma: number;
+  /** Real-space coarsening radius (image px). */
+  coarsening: number;
+}
+
 export interface RefinedPeak {
   fy: number;
   fx: number;
@@ -312,7 +334,7 @@ export interface DatasetSummary {
    * background); "fitted": from fitting every pixel; "curve-fit": maps of the curve fit of every pixel. */
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
-    | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc"
+    | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
     | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
@@ -329,6 +351,8 @@ export interface DatasetSummary {
   /** A curve model (origin "curve-model"): the spectrum image it was fitted
    * to and the model per pixel. */
   curve_model?: { source_id: string; model: CurveModel } | null;
+  /** Atomic-resolution maps (kemstem): how each was made. */
+  atomic?: AtomicMapInfo | null;
   /** Spectrum image a computed map was made from. */
   parent_id: string | null;
   /** Bumped when the data is recomputed or rebinned. */
@@ -1372,6 +1396,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ peaks, ...options }),
     }),
+  atomicFourier: (
+    id: string,
+    body: FourierSettings & {
+      peaks: Record<string, [number, number]>;
+      per_peak: number[];
+      outputs: AtomicOutput[];
+      tensor: [number, number] | null;
+    },
+  ) => request<JobSummary>(`/api/datasets/${id}/atomic/fourier`, { method: "POST", body: JSON.stringify(body) }),
   makeDpc: (settings: DpcSettings) =>
     request<{ ids: Record<"colour" | "x" | "y" | "idpc", string>; files: FileSummary[] }>("/api/dpc", {
       method: "POST",

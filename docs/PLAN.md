@@ -145,6 +145,8 @@ SI_viewer/
     Picking the cursor or region tools brings back the spectrum.
   - Image and stack views get the same pane for line profiles only, once the
     line tool is picked or a line exists.
+  - The **Histogram** tab is always there (also with no regions), so every
+    image and map has a pane under it.
 - **Resizable panes:** drag the gaps beside the side panes to set their
   widths, and the bar between the image and the pane below to set its
   height. Double-click a handle to reset it. Sizes and the active tab are
@@ -152,6 +154,18 @@ SI_viewer/
 - **Spectrum plot:** log/linear y, zoom/pan, auto-range, an energy readout
   under the mouse, and overlay of several spectra with a colour per ROI.
 - **Composite maps:** RGB/CMY overlay of up to 3 to 6 element maps on the HAADF.
+- **Contrast histogram** (toolbar above the image):
+  - Dragging a limit line sets that limit. The lines are grabbed within
+    5 px, or a quarter of the window's width if narrower, so a narrow
+    window can still be moved. Dragging between the lines moves the window,
+    keeping its width. Dragging elsewhere does nothing. The cursor shows
+    which (resize, grab).
+  - Right-click opens a small popover to type Min and Max, with "Symmetric
+    about 0". Locked symmetric, there is one ± field; dragging a line sets
+    ±|value|; dragging between the lines does nothing; Auto and Min–max are
+    made symmetric; "±" shows between the limits.
+  - The lock is part of the layer's display (`DisplayParams.symmetric`).
+    Maps drawn with the diverging map (strain, rotation) start locked.
 
 ### 4.3 Cursor and area spectra (SI)
 - **Point cursor:** a draggable crosshair, nudged with arrow keys. Optional
@@ -2021,6 +2035,10 @@ with projects.
     ticked) and a right-click deletes the nearest. Each peak is a numbered
     ring, with a dot where it was refined. Peaks are kept as cycles per
     image pixel, so they survive zooming and re-binning.
+  - The FFT panel's peaks, filter tint and whole-image FFT apply only while
+    the FFT is of the section's image. Viewer layers carry their dataset id,
+    published with the FFT's image. With the FFT of another layer (e.g. a
+    strain map) or another dataset, the panel is as usual.
   - A magnifier can follow the pointer (`components/Loupe.tsx`): a square
     to its right, or to its left near the window's edge, with a crosshair
     at the pointer.
@@ -2035,6 +2053,10 @@ with projects.
       square, drawn by a second WebGL renderer from the same layers at 4×
       the view's zoom. It shows every visible layer in its own display, but
       not the overlays (regions, lines).
+    - In a grid, the panels share it (`useLoupeLink`). The panel under the
+      pointer publishes the data point, and every other panel of the grid
+      magnifies the same point beside where it falls in its own view, when
+      that point is in sight. All go when the pointer leaves.
   - The table gives each peak's d (Å or px) and direction. Peaks are kept
     per image (in this browser, and in saved analyses).
   - Refine: `POST /api/datasets/{id}/atomic/fft-peaks` (`processing/atomic.py`)
@@ -2054,12 +2076,74 @@ with projects.
     - The film/substrate peak is doubled, so the first converges to the
       side nearer the click; the notebook's start gives 1201.3.
     - kemstem's tqdm bars are silenced (`TQDM_DISABLE`).
-- **M22b: Fourier filtering and strain.**
-  - Filter one peak (σ, with the coarsening length shown), giving amplitude
-    and grating maps.
-  - Phase by lock-in (second σ, default 2×) or GPA.
-  - Strain from one peak, or the tensor from two.
-  - Domain mapping: the amplitudes of several peaks as a composite overlay.
+- **M22b: Fourier filtering and strain (done).**
+  - In the Atomic section, under the peaks:
+    - Each peak has a "Use" box. Ticked peaks get the chosen maps:
+      amplitude, grating, phase, strain ε∥/ε⊥.
+    - "Strain tensor" uses the two ticked peaks and gives εxx, εyy, εxy
+      and ωxy.
+    - Settings: σ (with kemstem's coarsening length in Å and px), lock-in
+      (σ, empty = 2σ) or GPA, and an optional outlier limit |ε| (kemstem's
+      `mask_threshold`).
+    - "Make maps" runs a job (`POST /api/datasets/{id}/atomic/fourier`)
+      with progress per peak.
+  - The maps (origin "atomic", badge in amber) go under the image, titled
+    e.g. "Phase g1" or "εxx (g1, g2)".
+    - Each records how it was made (`atomic`: output, peaks, frequencies,
+      σ, method, coarsening), shown in its tooltip and saved in projects.
+    - Making them again replaces the same output and peaks in place. They
+      can be deleted.
+    - The most telling map is shown when done.
+  - Display:
+    - Phase is drawn as kemstem's `plot_phase` draws it:
+      - cmocean's `phase` colormap (sampled from cmocean, 33 stops) over
+        0–2π;
+      - black 1 px contours: for each of its angles a (0, 2π/3, 4π/3), the
+        zero of sin(φ − a) where cos(φ − a) < 0, i.e. φ = a + π.
+      - The contours are found in the browser by marching squares over the
+        map's own pixels; a cell with a masked corner is skipped, as
+        matplotlib's contour does. They are drawn over the map in the
+        merged and grid views and hidden with the annotations (eye).
+      - Checked side by side with `plot_phase` of the same map on the
+        strain example: same colours, lines and dislocation cores.
+    - Strains and rotation use the diverging map, symmetric about 0.
+    - Each peak's amplitude gets its own colour, so overlaying them
+      (Merged) is the domain map of notebook 1b.
+  - Glue (`processing/atomic.fourier_maps`):
+    - kemstem's `fourier_filter`, then `phaselock`/`gpa`,
+      `phase_to_strain` and `calculate_strain_tensor`.
+    - The filter is centred on the FFT array's pixel (zero at N // 2).
+    - The references and strain get kemstem's N / 2 convention for the
+      same frequency. Passing them array pixels, as the notebooks do,
+      gives odd-sized images a false strain: −2 % on a 255 px test lattice,
+      about 0.3 % on the 2031-row example.
+  - Non-square images, when strain is asked for:
+    - "kemstem assumes a square image", with "Crop to a square" (the
+      existing crop of the centred square).
+    - `phase_to_strain` scales by the first axis.
+  - Checks:
+    - Equal to the notebook's calls on a 512² crop.
+    - GPA phase in 0–2π.
+    - Collinear peaks are refused.
+    - In the browser on the strain example, εxx separates film and
+      substrate and shows each misfit dislocation as a dipole.
+  - The filter on the FFT panel:
+    - While the section is open, the FFT is tinted orange by the filter.
+      The tint is kemstem's Gaussians of σ round each peak used, summed and
+      capped at 1, as the alignment's mask is drawn.
+    - It follows σ and the "Use" boxes.
+    - A "Filter" toggle sits beside "View in main window" rather than in
+      the header. The header then keeps its layout, and the FFT doesn't
+      move between clicks while peaks are picked.
+  - The coarsening length is drawn as kemstem's `coarsening_marker` draws
+    it:
+    - a white disc edged in black, of the coarsening radius in image px
+      (scaling with zoom);
+    - centred at 95 % of the image's width and height (bottom right, with
+      matshow's axes);
+    - over every Fourier-filtered map. With several maps merged, one marker
+      at the largest radius.
+    - Hidden with the annotations (eye).
 - **M22c: Local wave fitting.**
   - Patch size and step.
   - The test fit at the cursor.
@@ -2144,7 +2228,7 @@ with projects.
 | M19 | Decomposition of spectrum images: PCA with denoising (M19a), blind source separation (M19b), diffusion maps (M19c) | In progress |
 | M20 | Focus mode (Shift F) over a blurred interface: the spectrum pane with the right-hand pane and a navigator flap; the datasets pane as a processing tree (§4.22) | Done |
 | M21 | Curve fitting with HyperSpy's `Model1D`: model on one spectrum (M21a), placing peaks and twins (M21b), every pixel (M21c), optimizers, losses and linear fitting (M21d), expression and pattern components, stored models (M21e), SAMFire and big data (M21f) (§4.23) | In progress (M21a, M21b but excluded windows, M21c but line scans and per-pixel active components) |
-| M22 | Atomic-resolution images with kemstem: FFT peaks (M22a), Fourier filtering and strain (M22b), local wave fitting (M22c), columns and sublattices (M22d), neighbourhoods and measurements (M22e), periodic lattice displacements (M22f) (§4.25) | In progress (M22a done) |
+| M22 | Atomic-resolution images with kemstem: FFT peaks (M22a), Fourier filtering and strain (M22b), local wave fitting (M22c), columns and sublattices (M22d), neighbourhoods and measurements (M22e), periodic lattice displacements (M22f) (§4.25) | In progress (M22a, M22b done) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

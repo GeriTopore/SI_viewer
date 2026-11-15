@@ -14,6 +14,8 @@ export interface DisplayParams {
   gamma: number;
   /** A named colormap, or a "#rrggbb" colour (black → colour). */
   colormap: string;
+  /** The limits are kept symmetric about 0 (lo = −hi), e.g. for strain. */
+  symmetric?: boolean;
 }
 
 /** Image data for one layer; may be binned relative to the full image. */

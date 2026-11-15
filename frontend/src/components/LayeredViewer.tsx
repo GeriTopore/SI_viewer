@@ -26,6 +26,7 @@ import { getViewProfiles, useProfiles, useViewProfiles, type ProfileLine } from 
 import { lineAt, useLineTool } from "../views/useLineTool";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { LoupeToggle } from "./Loupe";
+import { CoarseningMarker, PhaseContours } from "./PhaseContours";
 import { AnnotationsToggle } from "./AnnotationsToggle";
 import { lineMenuItems } from "./ProfilePanel";
 import { useFftBoxTool } from "../views/useFftBoxTool";
@@ -198,6 +199,10 @@ export function LayeredViewer({
   const images = [...new Map(entries.map((e) => [e.dataset.id, e.dataset])).values()];
   const displayKeyOf = (key: string) => entryOf(key)?.displayKey ?? key;
   const isStack = (key: string) => !!entryOf(key)?.stack;
+  // Phase maps (kemstem) get its contours drawn over them.
+  const isPhase = (key: string) => entryOf(key)?.dataset.atomic?.output === "phase";
+  // Fourier-filtered maps (kemstem): the coarsening radius, drawn as its marker.
+  const coarseningOf = (key: string) => entryOf(key)?.dataset.atomic?.coarsening;
   const baseDataset = base?.dataset;
   const baseDisplay = useImageDisplay(
     base?.key ?? `${viewKey}:none`,
@@ -225,10 +230,11 @@ export function LayeredViewer({
   );
   const layers: ViewLayer[] = [
     ...(base
-      ? [{ key: BASE, label: base.label, frame: base.frame, display: baseDisplay.display, ...baseProps }]
+      ? [{ key: BASE, datasetId: baseDataset?.id, label: base.label, frame: base.frame, display: baseDisplay.display, ...baseProps }]
       : []),
     ...entries.map((e) => ({
       key: e.key,
+      datasetId: e.dataset.id,
       label: e.label,
       frame: e.frame ? stretch(e.frame, scanFactor) : null,
       display: displays[e.displayKey],
@@ -426,8 +432,8 @@ export function LayeredViewer({
         ]
       : []),
   ];
-  // With regions drawn, the histogram tab is offered (to see a region's).
-  if (tabs.length || (ownRegions && regionState.rois.length > 0)) {
+  // The histogram tab is always offered (with regions drawn, also theirs).
+  {
     // The layer's own pixels (not stretched over the scan).
     const own = isBase ? (base?.frame ?? null) : activeLayer ? (entryOf(activeLayer.key)?.frame ?? null) : null;
     tabs.push({
@@ -631,6 +637,10 @@ export function LayeredViewer({
                       {surveys.filter((d) => d.id === p.layer.key).map((d) => (
                         <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
                       ))}
+                      {isPhase(p.layer.key) && p.layer.frame && <PhaseContours t={t} frame={p.layer.frame} />}
+                      {coarseningOf(p.layer.key) && (
+                        <CoarseningMarker t={t} width={p.width} height={p.height} radius={coarseningOf(p.layer.key)!} />
+                      )}
                       <LineOverlay t={t} view={viewKey} calX={p.calX} calY={p.calY} />
                     </>
                   )}
@@ -668,6 +678,14 @@ export function LayeredViewer({
                       {surveys.map((d) => (
                         <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
                       ))}
+                      {layers.filter((l) => l.visible && l.frame && isPhase(l.key)).map((l) => (
+                        <PhaseContours key={l.key} t={t} frame={l.frame!} />
+                      ))}
+                      {(() => {
+                        // One marker: the largest coarsening of the maps shown.
+                        const r = Math.max(0, ...layers.filter((l) => l.visible).map((l) => coarseningOf(l.key) ?? 0));
+                        return r > 0 && <CoarseningMarker t={t} width={geometry.width} height={geometry.height} radius={r} />;
+                      })()}
                       <LineOverlay t={t} view={viewKey} calX={geometry.calX} calY={geometry.calY} />
                     </>
                   )}

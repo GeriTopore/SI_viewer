@@ -15,10 +15,19 @@ export function autoContrast(key: string, frame: Frame, version = "", colormap?:
   const seen = contrastedFor.get(key);
   contrastedFor.set(key, version);
   if (display[key] && (seen === undefined || seen === version)) return;
-  // A direction drawn with its magnitude as brightness (DPC): the whole circle.
-  const [lo, hi] = frame.shade ? [-180, 180] : autoRange(sortedSample(frame.data));
-  if (display[key]) setDisplay(key, { lo, hi });
-  else initDisplay(key, { lo, hi, gamma: 1, colormap: colormap?.() ?? DEFAULT_COLORMAP });
+  const cmap = display[key]?.colormap ?? colormap?.() ?? DEFAULT_COLORMAP;
+  const sorted = sortedSample(frame.data);
+  // A direction drawn with its magnitude as brightness (DPC): the whole
+  // circle. A phase (cmocean's phase map): 0–2π, as kemstem plots it.
+  // Diverging maps (strain): symmetric about 0.
+  let [lo, hi] = frame.shade ? [-180, 180] : cmap === "phase" ? [0, 2 * Math.PI] : autoRange(sorted);
+  if (cmap === "rdbu" && !frame.shade) {
+    const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+    [lo, hi] = [-m, m];
+  }
+  if (display[key]) setDisplay(key, display[key].symmetric ? { lo: -Math.max(Math.abs(lo), Math.abs(hi)), hi: Math.max(Math.abs(lo), Math.abs(hi)) } : { lo, hi });
+  // Diverging maps start with their limits locked symmetric.
+  else initDisplay(key, { lo, hi, gamma: 1, colormap: cmap, ...(cmap === "rdbu" && !frame.shade && { symmetric: true }) });
 }
 
 /** Display settings for ``key``, auto-contrasted from the first frame seen.

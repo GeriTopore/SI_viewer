@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { create } from "zustand";
 import { useUi } from "../state/ui";
 import { ImageRenderer } from "../viewer/renderer";
 import type { ViewLayer } from "./ImageView";
@@ -109,6 +110,18 @@ export function LoupeToggle({ which, className = "" }: { which: "fft" | "viewer"
     </button>
   );
 }
+
+/** The data point magnified in a group of linked views (a grid's panels):
+ * set by the panel under the pointer, followed by the others. */
+export const useLoupeLink = create<{
+  at: { group: string; owner: string; x: number; y: number } | null;
+  set: (at: { group: string; owner: string; x: number; y: number }) => void;
+  clear: (owner: string) => void;
+}>((set, get) => ({
+  at: null,
+  set: (at) => set({ at }),
+  clear: (owner) => get().at?.owner === owner && set({ at: null }),
+}));
 
 /** The pointer's last position in the window, so a magnifier switched on
  * with M appears at once, before the pointer moves. */

@@ -243,6 +243,12 @@ class Dataset:
     # model as a spectrum image, its maps under it. {"source_id", "model": the
     # model per pixel (processing/curve_fit.ModelSpec, dumped)}.
     curve_model: dict | None = None
+    # Atomic-resolution maps (kemstem, M22; origin "atomic"): {"output"
+    # (amplitude, grating, phase, strain-par, strain-perp, exx, eyy, exy,
+    # oxy), "peaks": the FFT peaks' numbers, "freqs": their frequencies
+    # (cycles/px), "sigma", "phase", "lock_sigma", "edge", "mask_threshold",
+    # "coarsening" (image px)}.
+    atomic: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -441,6 +447,7 @@ class Dataset:
             "dpc": self.dpc,
             "pca": self.pca,
             "curve_model": self.curve_model,
+            "atomic": self.atomic,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -1770,6 +1777,38 @@ class Session:
             dx, dy = dx.mean(axis=0), dy.mean(axis=0)
         return find_rotation(dx, dy)
 
+    def add_atomic_maps(self, image: Dataset, made: list[dict], settings: dict) -> list[Dataset]:
+        """Maps of kemstem's analysis (``processing.atomic.fourier_maps``)
+        under ``image``, each with its calibration. A map of the same output
+        and peaks made before is replaced in place. Returns them."""
+        with self._lock:
+            earlier = {
+                (d.atomic["output"], tuple(d.atomic["peaks"])): d for d in self.datasets.values()
+                if d.origin == "atomic" and d.parent_id == image.id and d.atomic
+            }
+        out: list[Dataset] = []
+        for m in made:
+            signal = image.signal._deepcopy_with_new_data(m["data"])
+            signal.metadata.General.title = m["title"]
+            info = {**settings, "output": m["output"], "peaks": m["peaks"],
+                    "freqs": [settings["freqs"][str(n)] for n in m["peaks"]]}
+            info.pop("all_freqs", None)
+            ds = earlier.get((m["output"], tuple(m["peaks"])))
+            if ds is not None:
+                ds.replace_signal(signal)
+                ds.atomic = info
+            else:
+                ds = Dataset(id=_new_id(), file_id=image.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                             origin="atomic", parent_id=image.id, atomic=info)
+                with self._lock:
+                    self.datasets[ds.id] = ds
+                    ids = self.files[image.file_id].dataset_ids
+                    prev = [o.id for o in out if o.id in ids]
+                    at = ids.index(prev[-1]) if prev else ids.index(image.id)
+                    ids.insert(at + 1, ds.id)
+            out.append(ds)
+        return out
+
     def make_dpc(
         self, inputs: dict[str, str], normalise: bool = True, theta: float = 0.0, mirror: bool = False,
     ) -> list[Dataset]:
@@ -2324,7 +2363,7 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model"):
+        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model", "atomic"):
             if dataset.origin == "curve-model" and dataset.parent_id in self.datasets:
                 self.datasets[dataset.parent_id].curve_fits = None  # its fit at the cursor goes with it
             entry["restore"] = self._tree_places(dataset)

@@ -8,7 +8,7 @@ import { isTyping, useShortcuts } from "../keyboard";
 import { safeFileName } from "../download";
 import type { SnapshotPanel } from "../viewer/snapshot";
 import { PngExportDialog } from "./PngExportDialog";
-import { ViewerLoupe, lastPointer, overFft } from "./Loupe";
+import { ViewerLoupe, lastPointer, overFft, useLoupeLink } from "./Loupe";
 import { useUi } from "../state/ui";
 import { scanPixel } from "../views/si/scan";
 
@@ -52,6 +52,8 @@ export interface Interaction {
 /** One image layer. The first is the base; later ones are added on top. */
 export interface ViewLayer {
   key: string;
+  /** The dataset it shows, if one (published with it, e.g. for the FFT panel). */
+  datasetId?: string;
   label: string;
   frame: Frame | null;
   display: DisplayParams | undefined;
@@ -97,6 +99,9 @@ interface Props {
   /** Follow the view stored under ``viewKey`` when another view with the
    * same key changes it (linked panels of a grid). */
   follow?: boolean;
+  /** Views sharing the magnifier (a grid's panels): the one under the pointer
+   * magnifies a point, the others the same point of theirs. */
+  loupeGroup?: string;
   /** Show the hovered pixel and value over the image (for panels without a
    * readout bar). */
   hoverChip?: boolean;
@@ -133,7 +138,7 @@ let hoveredView: string | null = null;
 
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
-  interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true, fftView,
+  interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true, fftView, loupeGroup,
   readout = true, follow = false, hoverChip = false, onSave, controlRef, scanFactor = 1,
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
@@ -152,6 +157,8 @@ export function ImageView({
   // The magnifier (when on): the data point under the pointer, and the pointer in the window.
   const loupeOn = useUi((s) => s.viewerLoupe);
   const [loupeAt, setLoupeAt] = useState<{ x: number; y: number; cx: number; cy: number } | null>(null);
+  // Another view of the group magnifying a point: this one magnifies it too.
+  const linked = useLoupeLink((s) => (loupeOn && loupeGroup && s.at?.group === loupeGroup ? s.at : null));
   const drag = useRef<{ x: number; y: number; view: ViewTransform } | null>(null);
 
   const setView = useCallback(
@@ -263,6 +270,7 @@ export function ImageView({
     const hh = size.h / 2 / view.zoom;
     publish(owner, {
       label: analysed.label,
+      datasetId: analysed.datasetId,
       frame: analysed.frame,
       calX,
       calY,
@@ -272,7 +280,7 @@ export function ImageView({
       x1: Math.min(fullWidth, Math.ceil(view.cx + hw)),
       y1: Math.min(fullHeight, Math.ceil(view.cy + hh)),
     });
-  }, [owner, publishes, analysed?.frame, analysed?.label, view, size.w, size.h, fullWidth, fullHeight, calX.scale, calX.units, calY.scale, fftView]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [owner, publishes, analysed?.frame, analysed?.label, analysed?.datasetId, view, size.w, size.h, fullWidth, fullHeight, calX.scale, calX.units, calY.scale, fftView]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => useViewerImage.getState().clear(owner), [owner]);
 
   const toData = (clientX: number, clientY: number, v: ViewTransform) => {
@@ -346,7 +354,10 @@ export function ImageView({
       return;
     }
     const p = toData(e.clientX, e.clientY, view);
-    if (loupeOn) setLoupeAt({ x: p.x, y: p.y, cx: e.clientX, cy: e.clientY });
+    if (loupeOn) {
+      setLoupeAt({ x: p.x, y: p.y, cx: e.clientX, cy: e.clientY });
+      if (loupeGroup) useLoupeLink.getState().set({ group: loupeGroup, owner, x: p.x, y: p.y });
+    }
     if (tooling.current) interaction?.onMove?.(p, e, transform!);
     else interaction?.onHover?.(p, transform!);
     const ix = Math.floor(p.x);
@@ -452,6 +463,7 @@ export function ImageView({
           if (hoveredView === owner) hoveredView = null;
           setHover(null);
           setLoupeAt(null);
+          useLoupeLink.getState().clear(owner);
           interaction?.onHover?.(null);
         }}
         onDoubleClick={(e) => {
@@ -466,6 +478,14 @@ export function ImageView({
         {loupeOn && loupeAt && view && (
           <ViewerLoupe layers={layers} x={loupeAt.x} y={loupeAt.y} zoom={view.zoom} cx={loupeAt.cx} cy={loupeAt.cy} />
         )}
+        {!loupeAt && linked && linked.owner !== owner && view && wrapRef.current && (() => {
+          // The same data point in this view, if it is in sight.
+          const rect = wrapRef.current.getBoundingClientRect();
+          const cx = rect.left + (linked.x - view.cx) * view.zoom + size.w / 2;
+          const cy = rect.top + (linked.y - view.cy) * view.zoom + size.h / 2;
+          if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return null;
+          return <ViewerLoupe layers={layers} x={linked.x} y={linked.y} zoom={view.zoom} cx={cx} cy={cy} />;
+        })()}
         {renderOverlay && transform && (
           <svg className="image-overlay-svg" width={size.w} height={size.h}>
             {renderOverlay(transform)}

@@ -55,9 +55,35 @@ export interface PlotWindow {
    * "threshold" is the Thickness tool's zero-loss threshold: a single
    * vertical line (lo = hi, labelled) that is dragged, not resized. */
   kind?: "background" | "signal" | "threshold";
+  /** Opacity of the band's fill (default: by kind). */
+  fillOpacity?: number;
+  /** Only its edges are dragged (a press inside goes to the plot: curves, zoom). */
+  edgesOnly?: boolean;
   /** Limits that its edges and moves stay within. */
   min?: number;
   max?: number;
+}
+
+/** A point on the plot that can be dragged (e.g. a peak's top), in data
+ * coordinates (energy, and counts as plotted). */
+export interface PlotHandle {
+  id: string;
+  x: number;
+  y: number;
+  color: string;
+  /** Which way it moves: both ways (default), along energy, or up and down. */
+  axis?: "xy" | "x" | "y";
+  /** Hint under the pointer. */
+  title?: string;
+}
+
+/** A dashed line on the plot, in data coordinates (e.g. the span between two handles). */
+export interface PlotGuide {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  color: string;
 }
 
 interface Props {
@@ -104,6 +130,22 @@ interface Props {
   /** Remembers this plot's energy zoom while it is unmounted (e.g. on
    * another tab) and across rebuilds. */
   zoomKey?: string;
+  /** Points dragged on the plot (``onHandleDrag``: data coordinates, final
+   * on release). */
+  handles?: PlotHandle[];
+  /** Dashed lines drawn under the handles. */
+  guides?: PlotGuide[];
+  onHandleDrag?: (id: string, x: number, y: number, final: boolean) => void;
+  /** Click-to-place: a crosshair, and a click gives the point (Esc: ``onPlace(null)``). */
+  placing?: boolean;
+  onPlace?: (p: { x: number; y: number } | null) => void;
+  /** Series (by label) picked by clicking near them; null: a click elsewhere. */
+  pickable?: string[];
+  onPick?: (label: string | null) => void;
+  /** A pickable series was right-clicked (client coordinates); true: handled. */
+  onSeriesMenu?: (label: string, x: number, y: number) => boolean;
+  /** A menu (or other floating element) shown with the plot. */
+  menu?: ReactNode;
 }
 
 const zoomMemory = new Map<string, { min: number; max: number }>();
@@ -121,6 +163,7 @@ const cssVar = (name: string) =>
 export function SpectrumPlot({
   x, series, xLabel, xUnits, loading, error, markers = [], windows = [], mainToggle, selectedId = null, onSelectWindow, onWindow,
   onEditWindow, onWindowMenu, onWindowDoubleClick, onMarkerClick, toolbar, legend, name = "spectrum", log: logProp, onLog, zoomKey,
+  handles = [], guides = [], onHandleDrag, placing = false, onPlace, pickable, onPick, onSeriesMenu, menu,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
@@ -151,11 +194,13 @@ export function SpectrumPlot({
   const builtZoom = useRef<{ min: number; max: number } | null>(null);
   const live = useRef({
     markers, windows, selectedId, showWindows, onSelectWindow, onWindow, onEditWindow, onWindowMenu,
-    onWindowDoubleClick, onMarkerClick, series, xUnits,
+    onWindowDoubleClick, onMarkerClick, series, xUnits, handles, guides, onHandleDrag, placing, onPlace, pickable, onPick,
+    onSeriesMenu,
   });
   live.current = {
     markers, windows, selectedId, showWindows, onSelectWindow, onWindow, onEditWindow, onWindowMenu,
-    onWindowDoubleClick, onMarkerClick, series, xUnits,
+    onWindowDoubleClick, onMarkerClick, series, xUnits, handles, guides, onHandleDrag, placing, onPlace, pickable, onPick,
+    onSeriesMenu,
   };
 
   const toData = (): uPlot.AlignedData => [
@@ -166,7 +211,7 @@ export function SpectrumPlot({
   ];
 
   // (Re)build when the series layout or scale type changes; otherwise setData.
-  const layoutKey = `${log}|${theme}|${series.map((s) => `${s.label}:${s.color}`).join(",")}|${xLabel}`;
+  const layoutKey = `${log}|${theme}|${series.map((s) => `${s.label}:${s.color}:${s.width ?? ""}`).join(",")}|${xLabel}`;
 
   useLayoutEffect(() => {
     const el = wrapRef.current!;
@@ -258,6 +303,7 @@ export function SpectrumPlot({
           (u) => {
             const l = live.current;
             [labelBoxes.current, numberBoxes.current] = drawOverlays(u, l.markers, visibleWindows(l), l.selectedId, l.xUnits);
+            drawHandles(u, l.handles, l.guides);
           },
         ],
       },
@@ -298,7 +344,7 @@ export function SpectrumPlot({
       if (best) return { w: best.w, part: best.part };
       for (const w of editable()) {
         // A window spanning the whole spectrum can't move: its inside zooms.
-        if (w.lo <= xFirst + step / 2 && w.hi >= xLast - step / 2) continue;
+        if (w.edgesOnly || (w.lo <= xFirst + step / 2 && w.hi >= xLast - step / 2)) continue;
         if (px > plot.valToPos(w.lo, "x") && px < plot.valToPos(w.hi, "x")) return { w, part: "in" };
       }
       return null;
@@ -322,6 +368,91 @@ export function SpectrumPlot({
       return box ? { box, canvas, dpr } : null;
     };
 
+    // ---------- handles, click-to-place, picking series ----------
+    /** The pointer in plot (css) pixels. */
+    const plotXY = (e: MouseEvent) => {
+      const o = plot.over.getBoundingClientRect();
+      return [e.clientX - o.left, e.clientY - o.top] as const;
+    };
+    const handleAt = (e: MouseEvent) => {
+      const [px, py] = plotXY(e);
+      let best: { h: PlotHandle; d: number } | null = null;
+      for (const h of live.current.handles) {
+        if (log && h.y <= 0) continue;
+        const d = Math.hypot(plot.valToPos(h.x, "x") - px, plot.valToPos(h.y, "y") - py);
+        if (d <= HANDLE_PX + 4 && (!best || d < best.d)) best = { h, d };
+      }
+      return best?.h ?? null;
+    };
+    /** The pickable series nearest the pointer (within a few pixels), by label. */
+    const seriesAt = (e: MouseEvent): string | null => {
+      const labels = live.current.pickable;
+      if (!labels?.length) return null;
+      const [px, py] = plotXY(e);
+      const i = plot.posToIdx(px);
+      if (i == null || i < 0) return null;
+      let label: string | null = null;
+      let nearest = PICK_PX;
+      for (const sr of live.current.series) {
+        if (!labels.includes(sr.label)) continue;
+        // The nearest of the channel's value and its neighbours' (steep curves).
+        for (const j of [i - 1, i, i + 1]) {
+          const v = sr.data[j];
+          if (v == null || (log && v <= 0) || j < 0 || j >= x.length) continue;
+          const d = Math.hypot(plot.valToPos(x[j], "x") - px, plot.valToPos(v, "y") - py);
+          if (d <= nearest) [label, nearest] = [sr.label, d];
+        }
+      }
+      return label;
+    };
+    let handleDrag: { h: PlotHandle; moved: boolean; x0: number; y0: number } | null = null;
+    const handleValue = (e: MouseEvent) => {
+      const [px, py] = plotXY(e);
+      const h = handleDrag!.h;
+      return {
+        x: h.axis === "y" ? h.x : plot.posToVal(px, "x"),
+        y: h.axis === "x" ? h.y : plot.posToVal(py, "y"),
+      };
+    };
+    const onHandleMove = (e: MouseEvent) => {
+      if (!handleDrag) return;
+      if (!handleDrag.moved && Math.hypot(e.clientX - handleDrag.x0, e.clientY - handleDrag.y0) <= 2) return;
+      handleDrag.moved = true;
+      const v = handleValue(e);
+      live.current.onHandleDrag?.(handleDrag.h.id, v.x, v.y, false);
+    };
+    const onHandleUp = (e: MouseEvent) => {
+      document.removeEventListener("mousemove", onHandleMove);
+      document.removeEventListener("mouseup", onHandleUp);
+      const done = handleDrag;
+      if (done?.moved) {
+        const v = handleValue(e);
+        live.current.onHandleDrag?.(done.h.id, v.x, v.y, true);
+      }
+      handleDrag = null;
+      plot.over.style.cursor = "";
+    };
+    const onInteractDown = (e: MouseEvent) => {
+      if (e.button !== 0 || !plot.over.contains(e.target as Node)) return;
+      const l = live.current;
+      if (l.placing && l.onPlace) {
+        e.stopImmediatePropagation(); // not the window edit on this element either
+        e.preventDefault();
+        const [px, py] = plotXY(e);
+        l.onPlace({ x: plot.posToVal(px, "x"), y: plot.posToVal(py, "y") });
+        return;
+      }
+      const h = l.onHandleDrag ? handleAt(e) : null;
+      if (!h) return;
+      e.stopImmediatePropagation(); // not a zoom drag, nor a window edit on this element
+      e.preventDefault();
+      handleDrag = { h, moved: false, x0: e.clientX, y0: e.clientY };
+      plot.over.style.cursor = "grabbing";
+      document.addEventListener("mousemove", onHandleMove);
+      document.addEventListener("mouseup", onHandleUp);
+    };
+    plot.root.addEventListener("mousedown", onInteractDown, true);
+
     // Shift-drag draws a window (live while dragging); other drags zoom.
     let down = false;
     let downX = 0;
@@ -333,6 +464,24 @@ export function SpectrumPlot({
       if (shiftDrag && !live.current.showWindows) useSi.getState().setShowWindows(true);
     };
     const onMove = (e: MouseEvent) => {
+      if (!down && !handleDrag) {
+        if (live.current.placing) {
+          plot.over.style.cursor = "crosshair";
+          return;
+        }
+        const h = live.current.onHandleDrag ? handleAt(e) : null;
+        if (h) {
+          plot.over.style.cursor = h.axis === "x" ? "ew-resize" : h.axis === "y" ? "ns-resize" : "move";
+          plot.over.title = h.title ?? "";
+          return;
+        }
+        const picked = seriesAt(e);
+        plot.over.title = picked ?? "";
+        if (picked) {
+          plot.over.style.cursor = "pointer";
+          return;
+        }
+      }
       if (!down) {
         // Pointer over an editable window: edges resize, inside moves.
         if (numberAt(e)) {
@@ -363,6 +512,11 @@ export function SpectrumPlot({
           live.current.onMarkerClick(hit.marker);
           return;
         }
+      }
+      if (live.current.onPick) {
+        const picked = seriesAt(e);
+        live.current.onPick(picked);
+        if (picked) return;
       }
       clickWindow(plotX(e));
     };
@@ -461,6 +615,11 @@ export function SpectrumPlot({
       resetScales(plot);
     };
     const onContextMenu = (e: MouseEvent) => {
+      const picked = live.current.onSeriesMenu ? seriesAt(e) : null;
+      if (picked && live.current.onSeriesMenu!(picked, e.clientX, e.clientY)) {
+        e.preventDefault();
+        return;
+      }
       const id = windowAt(plotX(e));
       if (id && live.current.onWindowMenu?.(id, e.clientX, e.clientY)) e.preventDefault();
     };
@@ -555,6 +714,8 @@ export function SpectrumPlot({
       ro.disconnect();
       document.removeEventListener("mousemove", onEditMove);
       document.removeEventListener("mouseup", onEditUp);
+      document.removeEventListener("mousemove", onHandleMove);
+      document.removeEventListener("mouseup", onHandleUp);
       const { min, max } = plot.scales.x;
       const eps = x.length > 1 ? (x[1] - x[0]) * 0.5 : 0;
       // Zoomed in (not the whole axis): kept if the next axis only moves.
@@ -577,7 +738,17 @@ export function SpectrumPlot({
 
   useEffect(() => {
     plotRef.current?.redraw(false);
-  }, [markers, windows, selectedId, showWindows]);
+  }, [markers, windows, selectedId, showWindows, handles, guides]);
+
+  // Esc leaves click-to-place.
+  useEffect(() => {
+    if (!placing || !onPlace) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !isTyping(e)) onPlace(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [placing, onPlace]);
   const hasBands = windows.some((w) => w.kind === "background" || w.kind === "signal");
 
   // Esc deselects the window.
@@ -764,12 +935,17 @@ export function SpectrumPlot({
               {onWindow && " · Shift-drag for a new energy window"}
               {" · drag an axis to zoom it, Shift-drag to pan"}
               {onWindow && showWindows && selectedId && " · drag a window's edges or inside to edit, or click its numbers to type them · right-click a window for more · Esc"}
-              {hasBands && ` · drag the ${windows.filter((w) => w.kind === "background" || w.kind === "signal").map((w) => w.label).join(" and ")} bands' edges or inside to move them`}
+              {hasBands && (() => {
+                const bands = windows.filter((w) => w.kind === "background" || w.kind === "signal");
+                const inside = bands.some((w) => !w.edgesOnly);
+                return ` · drag the ${bands.map((w) => w.label).join(" and ")} band${bands.length > 1 ? "s'" : "'s"} edges${inside ? " or inside" : ""} to change ${bands.length > 1 ? "them" : "it"}`;
+              })()}
               {onMarkerClick && markers.length > 0 && " · click a line label to map it"}
             </span>
           )}
         </span>
       </div>
+      {menu}
     </div>
   );
 }
@@ -795,6 +971,47 @@ interface LabelBox {
 }
 
 const EDGE_PX = 4;
+/** Radius of a drag handle, and how near (css px) a click picks a curve. */
+const HANDLE_PX = 5;
+const PICK_PX = 6;
+
+/** The drag handles: filled circles in their colour, ringed in the panel colour. */
+function drawHandles(u: uPlot, handles: PlotHandle[], guides: PlotGuide[] = []) {
+  if (!handles.length && !guides.length) return;
+  const ctx = u.ctx;
+  const dpr = devicePixelRatio || 1;
+  const { left, top, width, height } = u.bbox;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, top, width, height);
+  ctx.clip();
+  ctx.setLineDash([4 * dpr, 3 * dpr]);
+  ctx.lineWidth = 1.5 * dpr;
+  for (const g of guides) {
+    const [x0, y0] = [u.valToPos(g.x0, "x", true), u.valToPos(g.y0, "y", true)];
+    const [x1, y1] = [u.valToPos(g.x1, "x", true), u.valToPos(g.y1, "y", true)];
+    if (![x0, y0, x1, y1].every(Number.isFinite)) continue;
+    ctx.strokeStyle = g.color;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  for (const h of handles) {
+    const px = u.valToPos(h.x, "x", true);
+    const py = u.valToPos(h.y, "y", true);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+    ctx.beginPath();
+    ctx.arc(px, py, HANDLE_PX * dpr, 0, 2 * Math.PI);
+    ctx.fillStyle = h.color;
+    ctx.fill();
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.strokeStyle = cssVar("--panel") || "#fff";
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 
 const hatches = new Map<string, CanvasPattern>();
 
@@ -866,7 +1083,7 @@ function drawOverlays(
     const a = u.valToPos(Math.min(w.lo, w.hi), "x", true);
     const b = u.valToPos(Math.max(w.lo, w.hi), "x", true);
     ctx.fillStyle = w.color;
-    ctx.globalAlpha = sel ? 0.3 : w.kind === "background" ? 0.08 : 0.14;
+    ctx.globalAlpha = sel ? 0.3 : (w.fillOpacity ?? (w.kind === "background" ? 0.08 : 0.14));
     ctx.fillRect(a, top, b - a, height);
     if (w.kind === "background") {
       ctx.globalAlpha = 1;

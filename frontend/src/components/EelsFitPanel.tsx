@@ -76,8 +76,17 @@ function mainEdges(ds: DatasetSummary, lo: number, hi: number): Map<string, { ed
 /** Quantify tab, EELS: fit one spectrum with exSpy's model (a power-law
  * background and the edges of the chosen elements, shaped by their
  * cross-sections), and every pixel of a 2D spectrum image as a job. */
+export const EELS_BG_COLOUR = "#f59e0b";
+
 export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
   const key = datasetKey(ds);
+  // The background window is drawn on the spectrum while this is open.
+  useEffect(() => {
+    useEelsFit.getState().setShown(ds.id);
+    return () => {
+      if (useEelsFit.getState().shown === ds.id) useEelsFit.getState().setShown(null);
+    };
+  }, [ds.id]);
   const options = useEelsFit((s) => s.options[ds.id]) ?? EELS_FIT_DEFAULTS;
   const fits = useEelsFit((s) => s.fits[key]);
   const chosen = useEelsFit((s) => s.sources[key]);
@@ -249,6 +258,39 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
             eV
           </span>
         </label>
+        <label
+          className="q-check"
+          title="Fit the background over a window of your choice (drawn on the spectrum), then keep it fixed while the edges are fitted; off: exSpy's smart fit (the background up to the first edge)"
+        >
+          <input
+            type="checkbox"
+            checked={options.bg_lo !== null && options.bg_hi !== null}
+            onChange={(e) => {
+              if (!e.target.checked) return setOptions(ds.id, { bg_lo: null, bg_hi: null });
+              // From the start of the fitted range to just before the first edge.
+              const start = options.lo ?? e0;
+              const first = Math.min(...(ds.edges?.subshells ?? []).map((s) => s.onset).filter((o) => o > start));
+              const end = Number.isFinite(first) ? Math.max(start + 5 * (axis?.scale ?? 1), first - 3) : start + (e1 - start) * 0.2;
+              setOptions(ds.id, { bg_lo: start, bg_hi: Math.min(end, options.hi ?? e1) });
+            }}
+            disabled={busy}
+          />
+          Background window
+        </label>
+        {options.bg_lo !== null && options.bg_hi !== null && (
+          <label title="The window the background is fitted over (drag the hatched band on the spectrum)">
+            <span>
+              <i className="bg-swatch" style={{ background: EELS_BG_COLOUR }} />
+              Window
+            </span>
+            <span className="q-inline bg-range">
+              <OptionalEnergy value={options.bg_lo} fallback={null} label="Background from" disabled={busy} onCommit={(v) => v !== null && setOptions(ds.id, { bg_lo: v })} />
+              –
+              <OptionalEnergy value={options.bg_hi} fallback={null} label="Background to" disabled={busy} onCommit={(v) => v !== null && setOptions(ds.id, { bg_hi: v })} />
+              eV
+            </span>
+          </label>
+        )}
         <label className="q-check" title="Fit the fine structure after each onset with a spline">
           <input
             type="checkbox"

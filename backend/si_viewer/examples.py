@@ -47,6 +47,48 @@ def _two_gaussians():
     return hyperspy.data.two_gaussians()
 
 
+def _fit_two_gaussians() -> list:
+    """HyperSpy's "Two Gaussians" simulation (the docs' example), as a fitting
+    test: a 32 × 32 spectrum image of two Gaussians (σ 10 and 20) whose
+    centres and areas vary at random from pixel to pixel, with Poisson noise.
+    The seed is fixed, and the true centre and area maps come with it."""
+    import hyperspy.api as hs
+
+    rng = np.random.default_rng(20261114)
+    n, channels = 32, 1024
+    s = hs.signals.Signal1D(np.zeros((n, n, channels)))
+    for ax, name in zip(s.axes_manager.navigation_axes, ("x", "y")):
+        ax.name, ax.units = name, "nm"
+    e = s.axes_manager.signal_axes[0]
+    e.name, e.units, e.scale, e.offset = "Energy", "eV", 1.0, 0.0
+    m = s.create_model()
+    truth = {}
+    for name, sigma, centre, spread, area in (("Gaussian 1", 10, 256, 10, 10000), ("Gaussian 2", 20, 768, 20, 20000)):
+        g = hs.model.components1D.Gaussian()
+        g.name = name
+        m.append(g)
+        g.sigma.map["values"][:] = sigma
+        g.centre.map["values"][:] = centre + (rng.random((n, n)) - 0.5) * spread
+        g.A.map["values"][:] = area * rng.random((n, n))
+        for p in g.parameters:
+            p.map["is_set"][:] = True
+        truth[name] = {"centre": g.centre.map["values"].copy(), "A": g.A.map["values"].copy(), "sigma": sigma}
+    si = m.as_signal(show_progressbar=False)
+    si.data = rng.poisson(np.clip(si.data, 0, None)).astype(np.float32)
+    si.set_signal_origin("simulation")
+    si.metadata.General.title = "Two Gaussians (fit test)"
+    si.metadata.set_item("Simulation.description", "Gaussian 1: σ 10, centre 256 ± 5, A 0–10000; "
+                         "Gaussian 2: σ 20, centre 768 ± 10, A 0–20000; Poisson noise")
+    image_axes = [{**ax.get_axis_dictionary(), "navigate": False} for ax in s.axes_manager.navigation_axes[::-1]]
+    out = [si]
+    for name, t in truth.items():
+        for param in ("centre", "A"):
+            img = hs.signals.Signal2D(t[param].astype(np.float32), axes=image_axes)
+            img.metadata.General.title = f"Truth: {name} {param}"
+            out.append(img)
+    return out
+
+
 @cache
 def _fept_shapes() -> dict[str, np.ndarray]:
     """Fe, Pt, Cu and background spectra (counts per channel, full energy
@@ -155,6 +197,13 @@ EXAMPLES = [
         "HyperSpy example: 32×32 spectrum image of two Gaussian peaks varying across the scan "
         "(not EDS), for the cursor and regions.",
         lambda: [_two_gaussians()],
+    ),
+    Example(
+        "fit-two-gaussians",
+        "Fitting test: two Gaussians (synthetic)",
+        "HyperSpy's two-Gaussians simulation with a fixed seed: 32×32 pixels, Gaussians of σ 10 and 20 at "
+        "256 ± 5 and 768 ± 10 with random areas, Poisson noise; the true centre and area maps come with it.",
+        _fit_two_gaussians,
     ),
 ]
 

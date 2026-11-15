@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useUi } from "../state/ui";
 import { api, dataVersion, type DatasetSummary, type EelsFitResult } from "../api/client";
 import type { SpectrumSeries } from "../components/SpectrumPlot";
 import { useDisplay } from "../state/display";
@@ -62,9 +63,11 @@ export function useFitSeries(
   const pixelFit = usePixelFit(ds, cursor, showFit && !!ds.edges);
   const showComponents = useQuant((s) => s.showComponents);
   const colours = useDisplay((s) => s.elementColours);
+  // Fits belong to the Quantify tab: drawn only while it is shown.
+  const quantify = useUi((s) => s.rightTab === "quantify");
 
   return useMemo(() => {
-    if (!showFit || x.length < 2) return [];
+    if (!quantify || !showFit || x.length < 2) return [];
     const visible = (source: string) =>
       !shown ||
       (source === "all"
@@ -103,5 +106,5 @@ export function useFitSeries(
       series.push({ label: named("Fit", label), data: place(r.model), color: FIT_COLOR, width: 1.6, fill: false });
       return series;
     });
-  }, [ds.edges, edsFit, eelsFits, pixelFit, shown, showFit, showComponents, colours, x, perPixel]);
+  }, [quantify, ds.edges, edsFit, eelsFits, pixelFit, shown, showFit, showComponents, colours, x, perPixel]);
 }

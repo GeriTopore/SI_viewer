@@ -51,6 +51,12 @@ class EelsFitOptions(BaseModel):
     hi: float | None = None
     # Convolve the model with the low loss, when there is one.
     convolve: bool = True
+    # The background window (eV): the background is fitted there alone (the
+    # edges off), then fixed while the edges are fitted over the whole range.
+    # None: exSpy's smart fit (the background up to the first edge, refitted
+    # with each edge).
+    bg_lo: float | None = None
+    bg_hi: float | None = None
 
     @field_validator("onsets")
     @classmethod
@@ -210,6 +216,51 @@ def build_model(signal, options: EelsFitOptions, low_loss=None) -> EelsModel:
     return EelsModel(m, s, masters, [el for el in elements if el not in masters], low_loss is not None)
 
 
+def run_fit(built: EelsModel, options: EelsFitOptions, mask: np.ndarray | None = None) -> None:
+    """Fit the model (``mask``: every pixel it leaves False, with
+    ``multifit``; None: the current one). Without a background window this is
+    exSpy's smart fit; with one, the background components are fitted over
+    the window alone with the edges switched off, then fixed while the edges
+    are fitted over the whole range (and freed again afterwards)."""
+    m = built.model
+
+    def fit():
+        if mask is None:
+            m.fit()
+        else:
+            m.multifit(mask=mask, show_progressbar=False)
+
+    if options.bg_lo is None or options.bg_hi is None:
+        if mask is None:
+            m.smart_fit()
+        else:
+            m.multifit(kind="smart", mask=mask, show_progressbar=False)
+        return
+    lo, hi = sorted((float(options.bg_lo), float(options.bg_hi)))
+    axis = built.signal.axes_manager.signal_axes[0]
+    if lo < axis.low_value - axis.scale / 2 or hi > axis.high_value + axis.scale / 2:
+        raise ValueError("The background window is outside the fitted range")
+    if int(axis.value2index(min(hi, axis.high_value))) - int(axis.value2index(max(lo, axis.low_value))) < 3:
+        raise ValueError("The background window is too narrow")
+    edges = [c for c in m if hasattr(c, "onset_energy") and c.active]
+    background = [c for c in m if not hasattr(c, "onset_energy")]
+    m.disable_edges(edges)
+    try:
+        m.set_signal_range(max(lo, axis.low_value), min(hi, axis.high_value))
+        fit()
+    finally:
+        m.reset_signal_range()
+        m.enable_edges(edges)
+    was = [(p, p.free) for c in background for p in c.parameters]
+    for p, _ in was:
+        p.free = False
+    try:
+        fit()
+    finally:
+        for p, free in was:
+            p.free = free
+
+
 def _component_curve(m, components) -> np.ndarray:
     with _quiet():  # "Using slow as_signal implementation"
         return np.asarray(m.as_signal(component_list=components, show_progressbar=False).data, float).ravel()
@@ -222,7 +273,9 @@ def fit_spectrum(spec, options: EelsFitOptions, low_loss=None) -> dict:
     built = build_model(spec, options, low_loss)
     m, s = built.model, built.signal
     try:
-        m.smart_fit()
+        run_fit(built, options)
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"The fit failed: {e}") from e
 
@@ -282,8 +335,8 @@ class PixelFits:
 def fit_maps(
     signal, options: EelsFitOptions, low_loss=None, report: Callable[[float], None] = lambda f: None,
 ) -> tuple[dict[str, np.ndarray], list[str], PixelFits]:
-    """Fit every spectrum of the spectrum image ``signal`` (exSpy's smart fit
-    at each pixel) and return each element's intensity at every pixel
+    """Fit every spectrum of the spectrum image ``signal`` (``run_fit`` at
+    each pixel: exSpy's smart fit, or the background window then the edges) and return each element's intensity at every pixel
     (navigation shape; NaN where the fit failed), the elements skipped and
     the fits themselves. ``report`` gets the fraction done after each chunk
     (and may raise to stop)."""
@@ -297,15 +350,23 @@ def fit_maps(
         mask = np.ones(n, bool)
         mask[start:stop] = False
         try:
-            m.multifit(kind="smart", mask=mask.reshape(nav), show_progressbar=False)
+            run_fit(built, options, mask.reshape(nav))
+        except ValueError as e:
+            if "background window" in str(e):
+                raise
+            failed_chunk = True
         except Exception:
+            failed_chunk = True
+        else:
+            failed_chunk = False
+        if failed_chunk:
             # One spectrum that can't be fitted (e.g. no counts) stops exSpy's
             # loop: fit the chunk's pixels one by one and leave that one out.
             for i in range(start, stop):
                 one = np.ones(n, bool)
                 one[i] = False
                 try:
-                    m.multifit(kind="smart", mask=one.reshape(nav), show_progressbar=False)
+                    run_fit(built, options, one.reshape(nav))
                 except Exception:
                     failed[i] = True
         report(stop / n)

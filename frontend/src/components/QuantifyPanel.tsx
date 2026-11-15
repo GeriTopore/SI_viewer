@@ -36,7 +36,10 @@ const BACKGROUND_ORDERS = [2, 3, 4, 5, 6, 7, 8, 10];
 /** Quantify tab: fit one spectrum with exSpy's model and quantify it
  * (EDS: Cliff-Lorimer with editable k-factors; EELS: see ``EelsFitPanel``). */
 export function QuantifyPanel() {
-  const { ds, lineScan, other, eels } = useEdsTarget();
+  return <ElementsQuantify {...useEdsTarget()} />;
+}
+
+function ElementsQuantify({ ds, lineScan, other, eels }: ReturnType<typeof useEdsTarget>) {
   if (eels) return <EelsFitPanel key={datasetKey(eels)} ds={eels} />;
   if (!ds && lineScan) {
     return <p className="muted">Fitting and quantification need a 2D spectrum image or a spectrum; LineScans can't be quantified yet.</p>;

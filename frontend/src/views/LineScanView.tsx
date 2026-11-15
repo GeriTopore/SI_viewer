@@ -25,6 +25,8 @@ import { useFitSeries } from "./useFitSeries";
 import { useImageDisplay } from "./useImageDisplay";
 import { useMarkers } from "./si/xray";
 import { NormaliseToggle, useNormBand } from "../components/NormaliseSection";
+import { useCurveFitSeries } from "./useCurveFitSeries";
+import { useEelsBgBand } from "./si/useEelsBgBand";
 import { normaliseSeries, useNormSettings } from "../state/normalise";
 
 const scaled = (data: Float32Array, k: number) => (k === 1 ? data : data.map((v) => v * k));
@@ -203,14 +205,19 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
   const normBand = useNormBand(ds);
-  const bands = useMemo(() => [...bg.bands, ...zlp.windows, ...normBand.bands], [bg.bands, zlp.windows, normBand.bands]);
+  const curve = useCurveFitSeries(ds, axis.x, reduceMode === "mean");
+  const eelsBg = useEelsBgBand(ds);
+  const bands = useMemo(
+    () => [...bg.bands, ...zlp.windows, ...normBand.bands, ...curve.bands, ...eelsBg.bands],
+    [bg.bands, zlp.windows, normBand.bands, curve.bands, eelsBg.bands],
+  );
   // The model fit (Quantify tab) and the elements' edges.
   const fitSeries = useFitSeries(ds, axis.x, reduceMode === "mean", null, st);
   // Normalised (Process tab, the plot's toggle): the spectra alone, each normalised.
   const norm = useNormSettings(ds);
   const withFit = useMemo(
-    () => (norm.on ? normaliseSeries(series, axis.x, norm) : [...plotted, ...fitSeries]),
-    [norm, series, axis.x, plotted, fitSeries],
+    () => (norm.on ? normaliseSeries(series, axis.x, norm) : [...plotted, ...fitSeries, ...curve.series]),
+    [norm, series, axis.x, plotted, fitSeries, curve.series],
   );
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(ds, preview, axis.x);
@@ -265,6 +272,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
   const ownLog = useLossLog(ds.eels?.role, linked);
   const spectrumPlot = (
     <SpectrumPlot
+      {...curve.plot}
       name={`${ds.title}_spectra`}
       zoomKey={`${ds.id}:spectra`}
       {...ownLog}
@@ -272,7 +280,8 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
       series={withFit}
       markers={markers}
       windows={bands}
-      onEditWindow={(id, range, final) => normBand.onEdit(id, range) || zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
+      onEditWindow={(id, range, final) =>
+        normBand.onEdit(id, range) || curve.onEdit(id, range) || eelsBg.onEdit(id, range) || zlp.onEdit(id, range, final) || bg.onEditBand(id, range, final)}
       xLabel={axis.label}
       xUnits={axis.units}
       loading={whole.data ? null : ready ? "Summing spectra…" : "Loading LineScan into memory…"}

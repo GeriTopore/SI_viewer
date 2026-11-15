@@ -94,6 +94,84 @@ export interface MicroscopeInfo {
   collection_angle: number | null;
 }
 
+/** Curve fitting (M21): a parameter of a HyperSpy component. */
+export interface CurveParam {
+  name: string;
+  value: number;
+  free: boolean;
+  bmin: number | null;
+  bmax: number | null;
+  /** Its error after a fit. */
+  std?: number | null;
+}
+
+export interface CurveComponentKind {
+  kind: string;
+  group: string;
+  summary: string;
+  /** It has ``estimate_parameters``. */
+  estimate: boolean;
+  params: CurveParam[];
+}
+
+export interface CurveCatalogue {
+  components: CurveComponentKind[];
+  max_order: number;
+}
+
+/** One component of a model, as sent to the backend. */
+export interface CurveComponent {
+  name: string;
+  kind: string;
+  active: boolean;
+  /** Polynomial only. */
+  order?: number;
+  params: Record<string, CurveParamSpec>;
+}
+
+/** A parameter following another (HyperSpy's twin): ``expr`` of its value (``x``). */
+export interface CurveTwin {
+  component: string;
+  param: string;
+  expr: string;
+}
+
+export interface CurveParamSpec {
+  value: number;
+  free: boolean;
+  bmin: number | null;
+  bmax: number | null;
+  twin?: CurveTwin | null;
+}
+
+export interface CurveModel {
+  components: CurveComponent[];
+  lo: number | null;
+  hi: number | null;
+  /** Background window: the background components are fitted there alone, then fixed. */
+  bg_lo: number | null;
+  bg_hi: number | null;
+}
+
+export interface CurveFitResult {
+  x: number[];
+  model: number[];
+  components: { name: string; curve: number[] | null; params: CurveParam[] }[];
+  range: [number, number];
+  /** Plotted counts per channel = a component's function × this. */
+  factor: number;
+  residual_ratio: number | null;
+  fitted: boolean;
+  pixels: number;
+  chisq?: number | null;
+  red_chisq?: number | null;
+  dof?: number;
+  /** The noise variance is Poisson's (counts): the errors and χ² mean something. */
+  poisson?: boolean;
+  success?: boolean;
+  message?: string;
+}
+
 /** An ionisation edge of an element inside a spectrum's energy range. */
 export interface EelsSubshell {
   /** e.g. "Mn_L3". */
@@ -653,6 +731,10 @@ export interface EelsFitOptions {
   hi: number | null;
   /** Convolve the model with the group's low loss, when it has one. */
   convolve: boolean;
+  /** Background window (eV): the background is fitted there alone, then
+   * fixed while the edges are fitted. null: exSpy's smart fit. */
+  bg_lo: number | null;
+  bg_hi: number | null;
 }
 
 export interface EelsFitRow {
@@ -997,6 +1079,21 @@ export const api = {
   /** The per-pixel fit at the cursor: pixel (x, y), or the ``size`` × ``size`` block there added up. */
   eelsPixelFit: (id: string, x: number, y: number, size: number, signal?: AbortSignal) =>
     request<EelsFitResult>(`/api/datasets/${id}/eels-pixel-fit?x=${x}&y=${y}&size=${size}`, { signal }),
+  /** Curve fitting (M21): HyperSpy's 1D components offered. */
+  curveComponents: () => request<CurveCatalogue>("/api/curve-fit/components"),
+  /** Starting values of one component (its ``estimate_parameters`` over the fit range). */
+  curveEstimate: (id: string, source: FitSource, model: CurveModel, component: string) =>
+    request<{ params: CurveParam[]; pixels: number }>(`/api/datasets/${id}/curve-fit/estimate`, {
+      method: "POST",
+      body: JSON.stringify({ source, model, component }),
+    }),
+  /** Fit the model to one spectrum (``fit`` false: draw it with its current values). */
+  curveFit: (id: string, source: FitSource, model: CurveModel, fit = true, signal?: AbortSignal) =>
+    request<CurveFitResult>(`/api/datasets/${id}/curve-fit`, {
+      method: "POST",
+      body: JSON.stringify({ source, model, fit }),
+      signal,
+    }),
   eelsFit: (id: string, source: FitSource, options: EelsFitOptions) =>
     request<EelsFitResult>(`/api/datasets/${id}/eels-fit`, { method: "POST", body: JSON.stringify({ source, options }) }),
   /** Job: fit every pixel; its result's file has a fitted map per element (and at% maps). */

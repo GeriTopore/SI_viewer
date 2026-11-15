@@ -11,6 +11,7 @@ export interface StoredEelsFit {
 
 export const EELS_FIT_DEFAULTS: EelsFitOptions = {
   gos: "dft", fine_structure: false, fine_structure_width: 30, onsets: {}, lo: null, hi: null, convolve: true,
+  bg_lo: null, bg_hi: null,
 };
 
 interface EelsFitState {
@@ -23,6 +24,9 @@ interface EelsFitState {
   /** Per-pixel fit job per dataset key, and whether it also makes at% maps. */
   jobs: Record<string, JobSummary>;
   composition: boolean;
+  /** The dataset whose EELS fit panel is open: its background window is drawn. */
+  shown: string | null;
+  setShown: (id: string | null) => void;
   setOptions: (id: string, patch: Partial<EelsFitOptions>) => void;
   setFits: (key: string, fits: StoredEelsFit[]) => void;
   setSources: (key: string, sources: SourceChoice[]) => void;
@@ -36,6 +40,8 @@ export const useEelsFit = create<EelsFitState>((set) => ({
   sources: {},
   jobs: {},
   composition: true,
+  shown: null,
+  setShown: (shown) => set({ shown }),
   setOptions: (id, patch) =>
     set((s) => ({ options: { ...s.options, [id]: { ...(s.options[id] ?? EELS_FIT_DEFAULTS), ...patch } } })),
   setFits: (key, fits) => set((s) => ({ fits: { ...s.fits, [key]: fits } })),

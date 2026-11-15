@@ -1,12 +1,14 @@
 import type { StoreApi, UseBoundStore } from "zustand";
 import { api, type JobSummary, type SaveLevel } from "../api/client";
 import { useBackground } from "./background";
+import { cleanCurveFits, useCurveFit } from "./curveFit";
 import { layoutPane, paneFiles, useDatasets, workspaceOf } from "./datasets";
 import { useDeconvolution } from "./deconvolution";
 import { useDisplay } from "./display";
 import { useEelsFit } from "./eelsFit";
 import { useFftBoxes } from "./fftBoxes";
 import { useLayers } from "./layers";
+import { useNorm } from "./normalise";
 import { useProfiles } from "./profiles";
 import { useQuant } from "./quant";
 import { useSi } from "./si";
@@ -30,6 +32,8 @@ const PARTS: Record<string, [Store, string[]]> = {
   thickness: [useThickness, ["byId"]],
   eelsFit: [useEelsFit, ["options", "fits", "sources", "composition"]],
   quant: [useQuant, ["options", "fits", "source", "lineChoice", "excluded", "showFit", "showComponents", "mapComposition", "minCounts"]],
+  curveFit: [useCurveFit, ["byId"]],
+  norm: [useNorm, ["byId"]],
   ui: [useUi, ["foldedNodes", "gridLayouts", "rightTab", "bottomTab", "bottomSplit", "splitDir"]],
 };
 
@@ -39,7 +43,7 @@ const BY_ID = new Set([
   "datasets.workspaces", "si.bySi", "display.display", "display.views", "display.windowColours",
   "display.imageLog", "layers.props", "profiles.byView", "fftBoxes.byView", "background.byId",
   "deconvolution.byId", "thickness.byId", "eelsFit.options", "eelsFit.fits", "eelsFit.sources",
-  "quant.fits", "quant.source", "quant.lineChoice", "quant.excluded", "ui.foldedNodes", "ui.gridLayouts",
+  "curveFit.byId", "norm.byId", "quant.fits", "quant.source", "quant.lineChoice", "quant.excluded", "ui.foldedNodes", "ui.gridLayouts",
 ]);
 
 const VERSION = 1;
@@ -73,6 +77,7 @@ function restoreViews(views: Record<string, unknown>) {
       .map((k) => [k, BY_ID.has(`${name}.${k}`) ? { ...(s[k] ?? {}), ...(saved[k] as object) } : saved[k]]);
     store.setState(Object.fromEntries(patch));
   }
+  useCurveFit.setState((s) => ({ byId: cleanCurveFits(s.byId) }));
 }
 
 /** What Save analysis saves: the active workspace (an experiment, or a file

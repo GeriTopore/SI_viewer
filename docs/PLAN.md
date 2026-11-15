@@ -1187,6 +1187,19 @@ are atomic ratios.
 - **Onset:** the database's, or typed per element (as the tutorial does for
   O K at 524 eV).
 - **Fit range:** the whole spectrum, or typed limits.
+- **Background window:** off by default (exSpy's `smart_fit`: the background
+  over the range up to the first edge, refitted with each edge). On, a window
+  of the user's (default: the range's start to 3 eV before the first edge;
+  typed, or dragged as a hatched band on the spectrum while the Quantify
+  panel is open): the background components are fitted over it alone with
+  the edges switched off (`disable_edges`, `set_signal_range`, `fit`), then
+  fixed while the edges are fitted over the whole range, for one spectrum and
+  for every pixel (`multifit`). Options `bg_lo`, `bg_hi`; tested equal to
+  those exSpy steps.
+- **Shown with the Quantify tab only:** the fits (EDS and EELS, also the fit
+  at the cursor), the background window and the elements' markers (X-ray
+  lines, edge onsets) are drawn only while the Quantify tab is open; the
+  element hovered in the periodic table is still previewed anywhere.
 
 **M13a — Edges in the periodic table.** The *Elements* button on EELS
 spectra, spectrum images and line scans. Elements without an edge inside the
@@ -1514,6 +1527,306 @@ Later in M19: blind source separation (HyperSpy's `blind_source_separation`
 on the kept components) and diffusion maps (pydiffmap, as in the user's own
 `dm.py`).
 
+### 4.22 Focus mode (M20, planned)
+
+As panes and tabs multiply, a way to work on one of them without the rest of
+the interface around it: e.g. the spectrum tab while adjusting the
+components of a curve fit one by one.
+
+**The idea (the user's):** a button or shortcut that lifts the current pane
+or tab out of the layout and shows it at about 80–90 % of the window, on top
+of the interface, with everything behind it blurred and dimmed.
+
+**Suggested shape (to settle when it is built):**
+
+- **Independent of any process.** Any pane can be focused: the viewer (single
+  or grid), a bottom tab (spectrum, profile, histogram, scree, exploded…),
+  the FFT, a Process section. Processes with many decisions (curve fitting,
+  drift correction, background removal) can *offer* it, e.g. a "Focus"
+  button in their section or opening in focus by choice, but nothing
+  requires it.
+- **The same component, moved, not a copy.** The focused pane is the live one
+  (same state, zoom, selection), rendered in an overlay; leaving focus puts
+  it back where it was. Edits made while focused are just edits.
+- **What comes with it.** A pane alone is often not enough: fitting a
+  spectrum needs its controls. A focused pane can bring a slim side strip
+  with the controls it depends on (the Process section that drives it, the
+  legend), rather than the whole right-hand pane.
+- **In and out.** A focus button in each pane's header (an expand icon, next
+  to Split / Save PNG), a shortcut (F is taken by "fit"; e.g. Shift F or `),
+  and Esc, a click on the blurred background, or the same button to leave.
+  One pane focused at a time; switching focus to another pane is allowed.
+- **Look.** Rounded panel with the app's border and shadow, the backdrop
+  blurred (CSS `backdrop-filter`) and dimmed; animated open/close kept short.
+  The focused size is remembered per pane.
+
+**Open questions:** whether focus is per pane or a saved layout (several
+panes side by side in focus, e.g. the spectrum and its map); whether
+processes like curve fitting open in focus by default; how it interacts with
+the split bottom pane (focus the split as a whole, or one side).
+
+### 4.23 Curve fitting (M21, planned)
+
+General model fitting of spectra, spectrum images and line scans with
+HyperSpy's `Model1D`, covering what its user guide's *Model fitting* chapter
+offers (creating a model, components, adding and switching them, indexing,
+parameters, fitting, storing, big data, SAMFire). As everywhere: HyperSpy does
+the fitting; our code builds the model from the user's choices, runs it as a
+job, and turns its results into datasets. The EELS edge fit (§4.15) stays as
+it is; it is an exSpy `EELSModel`, which is a `Model1D`, so the two share the
+same plumbing (jobs, per-pixel results, drawing on the spectrum) and an EELS
+model can later be opened here to add components to it.
+
+**Where it lives.** A **Curve fitting** process in the Process tab of
+spectra, spectrum images and line scans (any signal type, not only
+EELS/EDS), driving the spectrum plot: its model and handles are
+drawn while the section is open. (First built in the Quantify tab; moved.)
+**The whole spectrum is always fitted**: there is no fit range to set; to fit
+part of it, crop the data to an energy window first (Crop to this window) and
+fit the new spectrum (image). The components are listed in a panel beside the plot (a bottom
+tab, *Model*), with their curves drawn in their colours on the spectrum. It
+is the first process to offer **focus mode** (§4.22): the spectrum, the
+component list and the fit controls together, the rest blurred.
+
+#### The model
+
+- **Creating it** (`Signal1D.create_model()`): on a chosen spectrum (the sum,
+  the cursor, a region, as the EELS fit) for building and checking it, then
+  on every pixel, over the whole energy axis.
+  Before creating it, the energy axis's `is_binned` is checked and shown
+  (counts per channel vs. intensity); data from DM that is stored as an
+  average is flagged (HyperSpy's warning), with a switch to treat it as
+  binned or not.
+- **One model per spectrum (image)**, kept on the dataset while it is
+  unchanged, and saved with an analysis (`store()` into the signal's
+  `models`; restored on open, see *Storing*). Several named models can be
+  kept and switched between (`models.restore(name)`), e.g. "3 Gaussians" and
+  "2 Voigts" on the same data.
+
+#### Components
+
+- **Built-in** (`hs.model.components1D`): Gaussian, GaussianHF, Lorentzian,
+  Voigt, SplitVoigt, SkewNormal, Doniach, PowerLaw, Exponential, Polynomial
+  (order chosen), Offset, Arctan, Erf, HeavisideStep, Logistic, Bleasdale. An
+  **Add** menu, grouped (*peaks*, *backgrounds*, *steps*, *other*), each with
+  a small icon of its shape and its formula on hover.
+- **From an expression** (`Expression`): a formula typed with its parameter
+  names, e.g. `A * exp(-(x - x0)**2 / (2 * s**2))`, checked by SymPy as typed
+  (errors shown under the field); substitutions with `;` for long ones.
+  Saved expressions become user components offered in the Add menu.
+- **From a reference spectrum** (`ScalableFixedPattern`): any spectrum in the
+  session (a dataset, or the sum/cursor/region of a spectrum image), scaled
+  and shifted (`yscale`, `xscale`, `shift`) — e.g. fitting a known edge shape
+  or a standard.
+- **Custom Python components** (subclassing `Component`): not from the UI;
+  later, a folder of user components loaded at start-up.
+- **Placing peaks by hand.** *Add* then click on the spectrum puts the peak
+  there (centre and height from the click, width from the zoom); dragging
+  its handles on the plot (centre, height, half-width) sets the starting
+  values, as HyperSpy's interactive widgets do in Jupyter. Other components
+  start from `estimate_parameters` over the spectrum (or, since 2.5, over
+  several intervals for PowerLaw, Polynomial and Offset: drawn as windows on
+  the spectrum, as the background removal's).
+- **Each component** in the list: its name (editable; unique, as HyperSpy
+  requires), colour, an on/off switch (`active`), and its parameters below
+  it. Switching off at every pixel or at the current one only
+  (`active_is_multidimensional`, `set_component_active_value(only_current=…)`)
+  — e.g. a peak present only in part of a map. Duplicate, delete, reorder.
+
+#### Parameters
+
+Shown as a table per component, as the axes table of the Info tab: value,
+± error after a fit, free/fixed, min and max, and the twin.
+
+- **Values**: typed, dragged on the plot, or `estimate_parameters`. At the
+  current pixel or every pixel (`set_parameters_value(only_current=…)`).
+- **Free / fixed** (`free`; `set_parameters_free` / `set_parameters_not_free`,
+  also for a whole component or the whole model, by parameter name, e.g.
+  "fix every centre").
+- **Bounds** (`bmin`, `bmax`), used when fitting bounded.
+- **Twins** (`twin`, `twin_function_expr`, `twin_inverse_function_expr`): tie a
+  parameter to another, optionally through an expression, e.g. a spin–orbit
+  doublet (second centre = first + 5.4 eV, area ratio 1:2) or equal widths.
+  Picked from a menu of the model's parameters; twinned parameters show what
+  they follow and are not editable.
+- **Per pixel**: after a fit of every pixel, the cursor shows that pixel's
+  values (`Parameter.map`), and any parameter can be opened as a map.
+
+#### Background window (built)
+
+As in the EELS edge fit: *Background window* (Process tab), typed or
+dragged as a hatched band. The background components (PowerLaw,
+Exponential, Polynomial, Offset) are fitted over the window alone with the
+others switched off, then fixed while the others are fitted over the whole
+spectrum (their free state restored after). `ModelSpec.bg_lo/bg_hi`; tested
+equal to HyperSpy's fit over the window. Edge steps go on top as `Logistic`
+components (0 below the step, unlike Arctan and Erf); two steps fitted freely
+trade off against each other, so their 2 : 1 ratio is set with twins.
+
+#### Excluded data
+
+The whole spectrum is fitted. Windows can still be *excluded*
+(`remove_signal_range`, e.g. a spike or an unmodelled feature; drawn
+hatched on the spectrum, M21b) and *Reset* (`reset_signal_range`); a mask
+(`set_signal_range_from_mask`): later. A narrower range is a crop, not a
+setting.
+
+#### Fitting
+
+- **Fit one spectrum** (`fit()`): the curve, each component and the residual
+  drawn on the plot, live; the parameter table updated with the errors.
+- **Optimizer**: a menu with HyperSpy's choices, the default first —
+  local: `lm` (default), `trf`, `dogbox`, `odr`; linear: `lstsq`, `ols`,
+  `nnls`, `ridge`; global: Differential Evolution, Dual Annealing, SHGO; and
+  scipy's `minimize` methods (Nelder-Mead, Powell, L-BFGS-B, …). Options the
+  chosen one does not support are disabled (bounds, gradients, lazy data),
+  following the guide's table.
+- **Loss function**: least squares (default; errors and χ²), Poisson maximum
+  likelihood (`ML-poisson`, for very low counts) and Huber (outliers); the
+  last two switch to a suitable optimizer and note that errors are not
+  available.
+- **Bounded** (`bounded=True`): a checkbox, available for the optimizers that
+  support it.
+- **Gradients** (`grad="analytical"` / `"fd"` / none): advanced.
+- **Linear fitting**: when every free parameter is linear (HyperSpy says
+  which are not), a *Linear* option: no starting values needed, fast,
+  vectorised over every pixel; bounds not available.
+- **Goodness of fit**: χ², reduced χ² and degrees of freedom (`chisq`,
+  `red_chisq`, `dof`) shown after each fit, with a note that they need the
+  noise variance (Poisson by default for counts: `estimate_poissonian_noise_variance`,
+  or set). The optimisation result (converged, iterations, message) on hover.
+
+#### Fitting every pixel
+
+- **Fit every pixel** (`multifit()`) as a job with progress and cancel: the
+  path (`iterpath`: serpentine (default) or flyback), starting each pixel from
+  the last, or from the values set (*same start for every pixel*). With the
+  same options as the single fit (optimizer, loss, bounded, linear).
+- **SAMFire** (`create_samfire()`, `start(...)`): for maps with poor starting
+  values or local minima. Seed pixels are fitted first (picked on the
+  navigator: the cursor and regions, or several clicked points), then
+  SAMFire's strategies (local: reduced χ², global: histogram) spread the fit.
+  Its tolerance (goodness test) set in the dialog; workers from the machine's
+  cores.
+- **Big data**: lazy spectrum images and in-situ series are fitted chunk by
+  chunk (HyperSpy's lazy model support; linear `lstsq` only for lazy data),
+  progress per chunk; the results are written as they come.
+- **Results**: each free parameter of each component as a map under the
+  dataset (origin `fitted`, as the EELS maps, e.g. "Gaussian 1 · centre"),
+  plus the reduced χ² map (where the model fits badly). Line scans: as
+  profiles. The fitted model at the cursor is drawn on its spectrum (as the
+  EELS *Show fit*). The residual as a new spectrum image on request
+  (`s - m.as_signal()`), and the model itself (`m.as_signal()`), or one
+  component's contribution (`as_signal(component_list=…)`), e.g. a
+  background-free spectrum image.
+
+#### Indexing
+
+A fitted model of a spectrum image can be sliced like the data (`m.inav`,
+`m.isig`): the fit of a region alone, or of a narrower energy range, as a new
+model (goodness of fit recomputed). Used for "refit this region with another
+model" and when cropping a dataset that has a model (its model is cropped
+with it).
+
+#### Storing and exporting
+
+- **Stored with the data** (`m.store(name)`, `s.models`), so saving an
+  analysis keeps every model and its fitted values; opening restores them
+  (`models.restore`). The old `save_parameters2file` route is not used.
+- **Export**: the parameter table as CSV (single spectrum: values ± errors;
+  every pixel: one row per pixel), each map as image/HSPY, and HyperSpy's own
+  `export_results` / `Component.export` / `Parameter.export` for the formats
+  it supports. The model plot as PNG/CSV like other plots.
+
+#### Phases
+
+| Phase | Content |
+| --- | --- |
+| M21a | Model on one spectrum: built-in components from the Add menu, parameter table (value, free, bounds), `estimate_parameters`, `fit()` of the whole spectrum with the default optimizer, curves drawn on the plot, goodness of fit |
+| M21b | Peaks placed and dragged on the plot; component on/off, rename, duplicate; twins with expressions; batch free/fixed; excluded windows |
+| M21c | Fit every pixel as a job: parameter maps, reduced χ² map, fit at the cursor; per-pixel active components |
+| M21d | Optimizer, loss function, bounded, gradients and linear fitting; residual, model and component signals |
+| M21e | Expression and fixed-pattern components; several stored models, saved with an analysis; export |
+| M21f | SAMFire with seed pixels; lazy/big data; slicing a model (regions, cropping); focus mode for fitting (§4.22) |
+
+**M21a — built.** Process tab → *Curve fitting* (any spectrum, spectrum
+image or line scan). The spectrum (all pixels, the cursor
+or a region), an *Add* menu of HyperSpy's components in groups (Peaks, Backgrounds, Steps,
+Other; not `Expression` and `ScalableFixedPattern`, M21e), each estimated over
+the spectrum when it can (`estimate_parameters`; *Estimate* again any time).
+Each component: on/off, Polynomial order, a parameter table (value, ± after a
+fit, free, min, max). The model and its components are drawn on the spectrum
+with their current values as they are edited (evaluate without fitting), and
+*Fit* runs `fit()` (bounded when a free parameter has a limit) and shows the
+reduced χ², χ², the number of free parameters and the residual. The spectrum
+is turned into a plain `Signal1D` (so an EELS or EDS spectrum doesn't get
+exSpy's model) with Poisson noise variance for counts. The model is a spec
+(`processing/curve_fit.py`) rebuilt for every request (`api/curve_fit.py`:
+`GET /api/curve-fit/components`, `POST …/curve-fit/estimate`,
+`POST …/curve-fit`); tested equal to HyperSpy's own fit. The component list
+sits in the Process section for now (the *Model* bottom tab and focus mode
+come with M21b/M21f). A channel with no counts gets a variance of 1 (Poisson's
+estimate is 0 there, which would give it an infinite weight). Data stored as averages (e.g. DM's "Stack_Averaged") gives
+a large reduced χ²: the Poisson variance assumes counts.
+
+**Interacting with components — built** (the first half of M21b):
+- **Selecting:** click a component's curve on the plot or its row in the list;
+  the selected one is drawn solid and thicker, the others faded and dashed;
+  its parameter table unfolds (the others fold to their header).
+- **Handles** on the selected component, placed from its drawn curve (so any
+  peak shape works): peaks — the top (moves the centre, scales the
+  amplitude) and the half-height points (scale the widths, the area with
+  them so the height stays; SplitVoigt one side each); Offset — its level;
+  Polynomial — its level and slope; PowerLaw and Exponential — two points
+  (the curve through both); steps — the position and the height.
+- **Click to place:** choosing a peak in *Add* waits for a click on the
+  spectrum (crosshair; Esc or *Cancel* stops): the centre there, a width of
+  1.5 % of the spectrum's range, the amplitude so the model reaches the click.
+  Backgrounds and steps still start from their estimate. (The fit range
+  that was dragged here has gone: the whole spectrum is always fitted.)
+- **Live:** dragging redraws the model and components as it goes (one
+  request in flight; the latest position sent when it returns).
+- **List:** double-click a name to rename it (names stay unique), duplicate
+  (⧉), remove (×); for the selected one *Estimate*, *Fix all*, *Free all*.
+- **Right-click a curve:** Estimate, Duplicate, Fix all, Free all, Delete.
+- **Parameter limits on the spectrum:** each parameter is *Free*, *Limit*
+  (fitted within Min–Max: HyperSpy's `bmin`/`bmax`, the fit then bounded) or
+  *Fixed* (`free = False`). Choosing *Limit* without limits gives some around
+  the value (a position ± 5 % of the spectrum; others half to twice it, an
+  amplitude from 0). Clicking a parameter's row selects it, and while it is
+  limited, a position's limits (centre, x0, origin) are drawn on the spectrum
+  as a band on the energy axis in the component's colour, dragged there as
+  well as typed. A band edge dragged to the end of the axis means no limit on
+  that side; the value is kept within its limits, also while dragging the
+  component's handles. Other parameters (widths, amplitudes, exponents) are
+  limited by typing only: their limits don't map cleanly onto the spectrum.
+- **Kept (built):** each dataset's model (components, settings, last result)
+  is kept in the browser, so a reload keeps it, and saved with an analysis
+  (with the normalisation settings).
+- **Twins (built):** a fourth choice, *Twin*: the parameter follows another
+  (any component's parameter, from a menu) through a formula of `x`, its
+  value (`x + 5.4`, `0.5*x`; `x` alone: the same), HyperSpy's `twin` and
+  `twin_function_expr`; it is not fitted and its value is shown greyed as
+  last drawn. A missing target, a loop or a formula SymPy can't read is
+  refused; renaming a component keeps the twins following it, removing one
+  unlinks them. E.g. the Ti L₂ step at half the L₃ step's height, the same
+  steepness, 5.2 eV higher.
+
+#### Testing
+
+Fitting is tried on real EELS data:
+`examples/003_EELS-SI_1.7nm_2mmAp_TiO_Stack_Averaged_x_1_38_y_1_235_445.05_488.05_eV_PCA_4.hspy`
+(TiO, 19 × 117 pixels, 445–488 eV, PCA-denoised with 4 components), whose Ti
+L₂,₃ edge (L₃ and L₂, each split by the crystal field) gives overlapping
+peaks on a background. HyperSpy's two-Gaussians simulation is also in the
+Examples menu (*Fitting test: two Gaussians*, with its true maps), for a
+quick check where the answer is known; no further simulated datasets are
+planned.
+
+**Later:** 2D models of images (`Signal2D.create_model()`, e.g. Gaussian2D for
+atomic columns), user Python components, opening an EELS edge model here to
+add peaks (fine structure) to it.
+
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
@@ -1551,6 +1864,8 @@ on the kept components) and diffusion maps (pydiffmap, as in the user's own
 | M17 | Undo a deletion (⌘/Ctrl Z): datasets, regions, line profiles, FFT boxes | Done |
 | M18 | Save and open an analysis (HDF5 project, HyperSpy-readable): in place / new dataset for operations (M18a), save and open (M18b), stored arrays and checks (M18c), embedding and relinking (M18d) | Done (choosing which datasets to store set aside) |
 | M19 | Decomposition of spectrum images: PCA with denoising (M19a), blind source separation (M19b), diffusion maps (M19c) | In progress |
+| M20 | Focus mode: any pane or tab lifted to most of the window over a blurred interface, with the controls it needs (§4.22) | Planned |
+| M21 | Curve fitting with HyperSpy's `Model1D`: model on one spectrum (M21a), placing peaks and twins (M21b), every pixel (M21c), optimizers, losses and linear fitting (M21d), expression and pattern components, stored models (M21e), SAMFire and big data (M21f) (§4.23) | In progress (M21a and M21b built but excluded windows) |
 
 ## 7. Verification
 - **Backend:** pytest against the example `.emd`: signal kinds and shapes,

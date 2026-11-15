@@ -18,6 +18,7 @@ import { ZlpSection } from "./ZlpSection";
 import { DpcSection, canMakeDpc } from "./DpcSection";
 import { PcaSection, hasPcaSection } from "./PcaSection";
 import { NormaliseSection } from "./NormaliseSection";
+import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
 import { GridIcon, ListIcon } from "./DatasetList";
@@ -454,6 +455,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       id: "deconvolution", title: "Deconvolution",
       tip: "Remove plural scattering (or sharpen) with the low loss; makes a new spectrum image",
       body: <DeconvolutionSection d={d} />,
+    },
+    (d.kind === "spectrum" || d.kind === "spectrum_image") && {
+      id: "curvefit", title: "Curve fitting",
+      tip: "Fit a model of HyperSpy's components (peaks, backgrounds, steps) to a spectrum",
+      body: <CurveFitPanel key={d.id} ds={d} />,
     },
     hasPcaSection(d) && {
       id: "pca", title: "Decomposition and denoising",

@@ -34,6 +34,8 @@ import { memberLabel, memberTabs, useGroup, useLossLog } from "./si/LinkedSpectr
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
 import { usePcaBand } from "./si/usePcaBand";
+import { useCurveFitSeries } from "./useCurveFitSeries";
+import { useEelsBgBand } from "./si/useEelsBgBand";
 import { NormaliseToggle, useNormBand } from "../components/NormaliseSection";
 import { normaliseSeries, useNormSettings } from "../state/normalise";
 import { useDeconvPreview } from "./si/useDeconvPreview";
@@ -455,17 +457,20 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   // Normalised (Process tab, the plot's toggle): the spectra alone, each
   // normalised (fits and previews are on the spectra's own scale).
   const norm = useNormSettings(ds);
+  // Curve fitting (Process tab): the model and its components.
+  const curve = useCurveFitSeries(ds, axis.x, reduce === "mean");
   const plotted = useMemo(
-    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : previewed),
-    [norm, plain, previewed, axis.x],
+    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : [...previewed, ...curve.series]),
+    [norm, plain, previewed, axis.x, curve.series],
   );
   const normBand = useNormBand(ds);
+  const eelsBg = useEelsBgBand(ds);
   // Thickness (Process tab): the zero-loss threshold on a low loss.
   const zlp = useThresholdLine(ds);
   const pcaBand = usePcaBand(ds);
   const allWindows = useMemo(
-    () => [...plotWindows, ...bg.bands, ...zlp.windows, ...pcaBand.bands, ...normBand.bands],
-    [plotWindows, bg.bands, zlp.windows, pcaBand.bands, normBand.bands],
+    () => [...plotWindows, ...bg.bands, ...zlp.windows, ...pcaBand.bands, ...normBand.bands, ...curve.bands, ...eelsBg.bands],
+    [plotWindows, bg.bands, zlp.windows, pcaBand.bands, normBand.bands, curve.bands, eelsBg.bands],
   );
   const windowMapIds = plotWindows.filter((w) => w.id !== MAIN && w.id !== DRAFT).map((w) => w.id);
   const selectedWindow = plotWindows.some((w) => w.id === st.selectedWindow) ? st.selectedWindow : null;
@@ -524,7 +529,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   const editWindow = async (id: string, range: EnergyRange, final: boolean) => {
     if (
       bg.onEditBand(id, range, final) || zlp.onEdit(id, range, final) || pcaBand.onEdit(id, range, final) ||
-      normBand.onEdit(id, range)
+      normBand.onEdit(id, range) || curve.onEdit(id, range) || eelsBg.onEdit(id, range)
     ) return;
     if (id === MAIN) return setMain(range);
     setEdit({ id, ...range });
@@ -589,6 +594,7 @@ export function SpectrumImageView({ ds, images }: { ds: DatasetSummary; images: 
   );
   const spectrumPlot = (
     <SpectrumPlot
+      {...curve.plot}
       name={`${ds.title}_spectra`}
       zoomKey={`${ds.id}:spectra`}
       {...ownLog}

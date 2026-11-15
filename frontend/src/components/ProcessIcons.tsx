@@ -107,6 +107,15 @@ const ICONS: Record<string, () => ReactNode> = {
       <circle cx="29" cy="20" r="7.5" fill={ACCENT} fillOpacity="0.35" stroke={ACCENT} />
     </>
   ),
+  // Two peaks (dashed) and the model through them.
+  curvefit: () => (
+    <>
+      <path d="M4 42H44" />
+      <path d="M6 41C13 41 14 16 18 16S23 41 30 41" strokeWidth="1.5" strokeDasharray="3 2.5" />
+      <path d="M18 41C25 41 26 24 30 24S35 41 42 41" strokeWidth="1.5" strokeDasharray="3 2.5" />
+      <path d="M5 41C12 41 14 15 18 15S22 30 25 30S28 23 30 23S35 41 43 41" stroke={ACCENT} />
+    </>
+  ),
   // Two spectra of different heights, scaled to meet between 0 and 1.
   normalise: () => (
     <>

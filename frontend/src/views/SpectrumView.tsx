@@ -9,6 +9,8 @@ import { useMarkers } from "./si/xray";
 import { useFitSeries } from "./useFitSeries";
 import { useBackgroundPreview } from "./si/useBackgroundPreview";
 import { NormaliseToggle, useNormBand } from "../components/NormaliseSection";
+import { useCurveFitSeries } from "./useCurveFitSeries";
+import { useEelsBgBand } from "./si/useEelsBgBand";
 import { canNormalise, normaliseSeries, useNormSettings } from "../state/normalise";
 
 export const SPECTRUM_COLOR = "#4c8dff";
@@ -54,22 +56,25 @@ export function SpectrumView({ ds }: { ds: DatasetSummary }) {
   const bg = useBackgroundPreview(ds, axis.x, series);
   // Normalised (Process tab, the plot's checkbox): the spectrum alone, normalised.
   const norm = useNormSettings(ds);
+  const curve = useCurveFitSeries(ds, axis.x);
   const plotted = useMemo(
-    () => (norm.on && data ? normaliseSeries([series[0]], axis.x, norm) : bg.series),
-    [norm, data, series, axis.x, bg.series],
+    () => (norm.on && data ? normaliseSeries([series[0]], axis.x, norm) : [...bg.series, ...curve.series]),
+    [norm, data, series, axis.x, bg.series, curve.series],
   );
   const normBand = useNormBand(ds);
-  const windows = useMemo(() => [...bg.bands, ...normBand.bands], [bg.bands, normBand.bands]);
+  const eelsBg = useEelsBgBand(ds);
+  const windows = useMemo(() => [...bg.bands, ...normBand.bands, ...curve.bands, ...eelsBg.bands], [bg.bands, normBand.bands, curve.bands, eelsBg.bands]);
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(ds, preview, axis.x);
   return (
     <div className="view">
       <SpectrumPlot
+      {...curve.plot}
         name={ds.title}
         x={axis.x}
         series={plotted}
         windows={windows}
-        onEditWindow={(id, range, final) => normBand.onEdit(id, range) || bg.onEditBand(id, range, final)}
+        onEditWindow={(id, range, final) => normBand.onEdit(id, range) || curve.onEdit(id, range) || eelsBg.onEdit(id, range) || bg.onEditBand(id, range, final)}
         xLabel={axis.label}
         xUnits={axis.units}
         loading={data ? null : "Loading spectrum…"}

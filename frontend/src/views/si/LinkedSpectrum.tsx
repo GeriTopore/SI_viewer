@@ -14,6 +14,8 @@ import { useFitSeries } from "../useFitSeries";
 import { useMarkers } from "./xray";
 import { ElementsPicker } from "../../components/ElementsPicker";
 import { NormaliseToggle, useNormBand } from "../../components/NormaliseSection";
+import { useCurveFitSeries } from "../useCurveFitSeries";
+import { useEelsBgBand } from "./useEelsBgBand";
 import { normaliseSeries, useNormSettings } from "../../state/normalise";
 
 /** The link group ``ds`` is in, itself included (low loss first, then core
@@ -149,7 +151,12 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
   const bgPixels = useMemo(() => sel.map((s) => (s?.kind === "pixel" ? { x: s.x, y: s.y, size: s.size } : null)), [sel]);
   const bg = useBackgroundPreview(member, axis.x, plain, bgPixels);
   const normBand = useNormBand(member);
-  const windows = useMemo(() => [...bg.bands, ...zlp.windows, ...normBand.bands], [bg.bands, zlp.windows, normBand.bands]);
+  const curve = useCurveFitSeries(member, axis.x, reduce === "mean");
+  const eelsBg = useEelsBgBand(member);
+  const windows = useMemo(
+    () => [...bg.bands, ...zlp.windows, ...normBand.bands, ...curve.bands, ...eelsBg.bands],
+    [bg.bands, zlp.windows, normBand.bands, curve.bands, eelsBg.bands],
+  );
   // Deconvolution (Process tab): the deconvolved spectra, dashed.
   const deconvolved = useDeconvPreview(member, bg.series, sel, reduce === "mean");
   // The member's model fit (Quantify tab) and its elements' edges.
@@ -160,8 +167,8 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
   const fitSeries = useFitSeries(member, axis.x, reduce === "mean", fitCursor, st);
   const norm = useNormSettings(member);
   const series = useMemo(
-    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : [...deconvolved, ...fitSeries]),
-    [norm, plain, axis.x, deconvolved, fitSeries],
+    () => (norm.on ? normaliseSeries(plain, axis.x, norm) : [...deconvolved, ...fitSeries, ...curve.series]),
+    [norm, plain, axis.x, deconvolved, fitSeries, curve.series],
   );
   const [preview, setPreview] = useState<string | null>(null);
   const markers = useMarkers(member, preview, axis.x);
@@ -169,13 +176,14 @@ export function LinkedSpectrum({ member, st, lineScan, legend }: Props) {
   const role = member.eels?.role === "low_loss" ? "low loss" : "core loss";
   return (
     <SpectrumPlot
+      {...curve.plot}
       name={`${member.title}_spectra`}
       zoomKey={`${member.id}:spectra`}
       x={axis.x}
       series={series}
       windows={windows}
       onEditWindow={(id, range, final) => {
-        if (!bg.onEditBand(id, range, final) && !normBand.onEdit(id, range)) zlp.onEdit(id, range, final);
+        if (!bg.onEditBand(id, range, final) && !normBand.onEdit(id, range) && !curve.onEdit(id, range) && !eelsBg.onEdit(id, range)) zlp.onEdit(id, range, final);
       }}
       xLabel={axis.label}
       xUnits={axis.units}

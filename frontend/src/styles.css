@@ -5337,3 +5337,109 @@ kbd {
 .microscope-dialog .axes td:nth-child(2) {
   width: 40%;
 }
+
+/* Process tab: the curve-fitting model. */
+.curve-component {
+  margin-top: 12px;
+}
+.curve-component.off .curve-params {
+  opacity: 0.5;
+}
+.curve-component .section-header {
+  margin: 0 0 4px;
+}
+.curve-component-header {
+  cursor: pointer;
+  padding: 3px 4px;
+  margin: 0 -4px 4px;
+  border-radius: 4px;
+}
+.curve-component-header:hover {
+  background: var(--hover);
+}
+.curve-component.selected .curve-component-header {
+  background: var(--hover);
+}
+.curve-component-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 600;
+}
+.curve-component-tools {
+  display: flex;
+  gap: 12px;
+  margin: 0 0 4px;
+}
+.curve-placing {
+  margin: 4px 0 0;
+}
+.curve-component-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.curve-params {
+  table-layout: fixed;
+}
+.curve-params th:nth-child(1) {
+  width: 19%;
+}
+.curve-params th:nth-child(2) {
+  width: 20%;
+}
+.curve-params th:nth-child(3) {
+  width: 10%;
+}
+.curve-params th:nth-child(4) {
+  width: 21%;
+}
+.curve-params th:nth-child(5),
+.curve-params th:nth-child(6) {
+  width: 15%;
+}
+.curve-params td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.curve-params tbody tr {
+  cursor: pointer;
+}
+.curve-params tbody tr:hover td {
+  background: var(--hover);
+}
+.curve-params tbody tr.selected td {
+  background: var(--hover);
+  box-shadow: inset 0 -1px 0 var(--accent);
+}
+.curve-params select.cell-input {
+  padding: 1px 0;
+  font-family: inherit;
+}
+.curve-params .cell-input:disabled {
+  opacity: 0.45;
+}
+.curve-fit-goodness {
+  margin: 6px 0 0;
+}
+
+/* A twinned parameter's formula and target, under its row. */
+.curve-params .curve-twin-row td {
+  padding-top: 0;
+  border-bottom: 1px solid var(--border);
+}
+.curve-twin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.curve-twin .curve-twin-expr {
+  width: 6em;
+  flex: 0 0 auto;
+}
+.curve-twin select.cell-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}

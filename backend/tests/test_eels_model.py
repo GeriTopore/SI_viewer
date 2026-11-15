@@ -311,3 +311,48 @@ def test_microscope_parameters_set_in_the_info_tab(client, eels_cuzn, tmp_path):
     assert other.post("/api/project/open", json={"path": saved}).status_code == 200
     again = other.app.state.session.get_dataset(ds["id"]).signal
     assert again.metadata.Acquisition_instrument.TEM.convergence_angle == 21.5
+
+
+def test_background_window(client, eels_cuzn):
+    """With a background window the power law is exSpy's fit over the window
+    alone (edges off), kept fixed while the edges are fitted; it is refused
+    outside the fitted range."""
+    ds = _elements(client, _si(_open(client, eels_cuzn)), ["Cu", "Zn"])
+    r = _fit(client, ds, bg_lo=800, bg_hi=920, **HYDROGENIC)
+    assert r.status_code == 200, r.text
+    out = r.json()
+
+    ref = hs.load(eels_cuzn).sum()
+    ref.change_dtype(float)
+    ref.add_elements(("Cu", "Zn"))
+    m = ref.create_model(GOS="hydrogenic")
+    m.disable_edges()
+    m.set_signal_range(800, 920)
+    m.fit()
+    power_law = next(c for c in m if hasattr(c, "r"))
+    assert out["background_r"] == pytest.approx(power_law.r.value, rel=1e-6)
+    m.reset_signal_range()
+    m.enable_edges()
+    power_law.set_parameters_not_free()
+    m.fit()
+    rows = {row["element"]: row for row in out["rows"]}
+    assert rows["Cu"]["intensity"] == pytest.approx(m.components.Cu_L3.intensity.value, rel=1e-5)
+    # The background under the edges is the window's extrapolation.
+    assert np.allclose(out["background"], m.as_signal(component_list=[power_law]).data, rtol=1e-6)
+
+    assert _fit(client, ds, bg_lo=600, bg_hi=650, **HYDROGENIC).status_code == 422
+    assert _fit(client, ds, bg_lo=800, bg_hi=801, **HYDROGENIC).status_code == 422
+
+
+def test_maps_with_background_window(client, tmp_path):
+    """Maps of every pixel with a background window before the first edge
+    (O K at 532 eV) recover the known intensities."""
+    path, oxygen, manganese = _synthetic(tmp_path)
+    ds = _elements(client, _si(_open(client, path)), ["O", "Mn"])
+    r = client.post(f"/api/datasets/{ds['id']}/eels-fit-maps", json={"options": {**HYDROGENIC, "bg_lo": 455, "bg_hi": 525}})
+    assert r.status_code == 200, r.text
+    job = _wait(client, r.json())
+    assert job["status"] == "done", job["error"]
+    fitted = _maps(job, "fitted")
+    assert np.allclose(_data(client, fitted["O"]["id"]), oxygen, rtol=1e-2)
+    assert np.allclose(_data(client, fitted["Mn"]["id"]), manganese, rtol=2e-2)

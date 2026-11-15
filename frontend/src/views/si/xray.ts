@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useUi } from "../../state/ui";
 import { api, type DatasetSummary, type EdgesInfo } from "../../api/client";
 import type { Marker } from "../../components/SpectrumPlot";
 import { useDatasets } from "../../state/datasets";
@@ -129,11 +130,14 @@ export function useEdgeMarkers(edges: EdgesInfo | null, preview: string | null, 
 }
 
 /** The markers of a spectrum plot: X-ray lines (EDS) or edge onsets (EELS)
- * of the dataset's elements and of the element hovered in the periodic table. */
+ * of the dataset's elements (only while the Quantify tab is shown) and of the
+ * element hovered in the periodic table (always). */
 export function useMarkers(ds: DatasetSummary, preview: string | null, x: Float64Array): Marker[] {
   const range: [number, number] = [x[0], x[x.length - 1]];
-  const lines = useLineMarkers(ds.eds?.elements ?? [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, range);
-  const edges = useEdgeMarkers(ds.edges, preview, range);
+  const quantify = useUi((s) => s.rightTab === "quantify");
+  const noEdges = useMemo(() => (ds.edges ? { ...ds.edges, elements: [], subshells: [] } : null), [ds.edges]);
+  const lines = useLineMarkers(quantify ? (ds.eds?.elements ?? []) : [], preview, ds.eds?.beam_energy ?? null, ds.eds?.xray_lines, range);
+  const edges = useEdgeMarkers(quantify ? ds.edges : noEdges, preview, range);
   return ds.edges ? edges : lines;
 }
 

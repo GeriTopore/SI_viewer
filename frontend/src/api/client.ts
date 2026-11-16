@@ -208,8 +208,37 @@ export interface FourierSettings {
   mask_threshold: number | null;
 }
 
+/** Finding and fitting atomic columns (kemstem). */
+export interface ColumnSettings {
+  /** Gaussian blur (σ, px) of the normalised image first. */
+  blur: number;
+  /** Least distance between columns (px). */
+  distance: number;
+  /** Intensity threshold (0–1). */
+  threshold: number;
+  /** Fit window (odd, px). */
+  window: number;
+}
+
+/** One column fitted, to choose the window: patches and its row of the table. */
+export interface ColumnTest {
+  data: number[][];
+  fit: number[][];
+  row: (number | null)[];
+  fields: string[];
+}
+
 export interface AtomicMapInfo extends Omit<FourierSettings, "lock_sigma"> {
-  output: "amplitude" | "grating" | "phase" | "strain-par" | "strain-perp" | "exx" | "eyy" | "exy" | "oxy";
+  output: "amplitude" | "grating" | "phase" | "strain-par" | "strain-perp" | "exx" | "eyy" | "exy" | "oxy" | "columns" | "sublattice";
+  /** Columns: how many, how many fits failed, and how they were found and fitted. */
+  count?: number;
+  failed?: number;
+  window?: number;
+  /** A sublattice (a dataset under its Columns, holding its columns' rows): its order. */
+  index?: number;
+  blur?: number;
+  distance?: number;
+  threshold?: number;
   peaks: number[];
   freqs: [number, number][];
   lock_sigma: number;
@@ -1405,6 +1434,21 @@ export const api = {
       tensor: [number, number] | null;
     },
   ) => request<JobSummary>(`/api/datasets/${id}/atomic/fourier`, { method: "POST", body: JSON.stringify(body) }),
+  findColumns: (id: string, s: ColumnSettings) =>
+    request<{ columns: [number, number][] }>(`/api/datasets/${id}/atomic/columns/find`, { method: "POST", body: JSON.stringify(s) }),
+  testColumn: (id: string, s: ColumnSettings, at: [number, number]) =>
+    request<ColumnTest>(`/api/datasets/${id}/atomic/columns/test`, { method: "POST", body: JSON.stringify({ ...s, at }) }),
+  refineColumns: (id: string, s: ColumnSettings, columns: [number, number][]) =>
+    request<JobSummary>(`/api/datasets/${id}/atomic/columns/refine`, { method: "POST", body: JSON.stringify({ ...s, columns }) }),
+  columnsTable: (id: string) =>
+    request<{ fields: string[]; rows: (number | null)[][] }>(`/api/datasets/${id}/atomic/columns`),
+  setSublattices: (id: string, labels: (number | null)[], names: string[]) =>
+    request<{ file: FileSummary; ids: string[] }>(`/api/datasets/${id}/atomic/columns/sublattices`, {
+      method: "PUT",
+      body: JSON.stringify({ labels, names }),
+    }),
+  kmeans: (values: (number | null)[], k: number) =>
+    request<{ centres: number[] }>("/api/atomic/kmeans", { method: "POST", body: JSON.stringify({ values, k }) }),
   makeDpc: (settings: DpcSettings) =>
     request<{ ids: Record<"colour" | "x" | "y" | "idpc", string>; files: FileSummary[] }>("/api/dpc", {
       method: "POST",

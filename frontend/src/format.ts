@@ -53,7 +53,7 @@ export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
 
 const ATOMIC_LABEL: Record<NonNullable<DatasetSummary["atomic"]>["output"], string> = {
   amplitude: "Amp", grating: "Grating", phase: "Phase", "strain-par": "ε∥", "strain-perp": "ε⊥",
-  exx: "εxx", eyy: "εyy", exy: "εxy", oxy: "ωxy",
+  exx: "εxx", eyy: "εyy", exy: "εxy", oxy: "ωxy", columns: "Columns", sublattice: "Sublattice",
 };
 
 export function kindLabel(d: DatasetSummary): string {
@@ -142,6 +142,13 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
   if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "curve-model") return `${base}\nThe curve fit of every pixel: the model at each pixel, its maps under it`;
+  if (d.atomic?.output === "columns") {
+    const a = d.atomic;
+    return `${d.title}\n${a.count} atomic columns fitted with 2D Gaussians (kemstem)${a.failed ? `, ${a.failed} failed` : ""}: window ${a.window} px, blur σ ${a.blur} px; shown over ${parentTitle ?? "its image"}`;
+  }
+  if (d.atomic?.output === "sublattice") {
+    return `${d.title}\n${d.atomic.count} of ${parentTitle ?? "the columns"}; shown over their image`;
+  }
   if (d.atomic) {
     const a = d.atomic;
     const how = a.output === "amplitude" || a.output === "grating" ? "" : a.phase === "gpa" ? ", GPA" : `, lock-in σ ${formatValue(a.lock_sigma)}`;

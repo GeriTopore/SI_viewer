@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import type { Frame } from "../api/arrays";
 import { contrastVersion, type DatasetSummary } from "../api/client";
 import { allDatasets, cropDataset, initialColormap, planeSize, setMapColour, useDatasets } from "../state/datasets";
@@ -8,6 +8,7 @@ import { RoiOverlay } from "./RoiOverlay";
 import { useDisplay } from "../state/display";
 import { DEFAULT_LAYER, baseLayerKey, useLayers } from "../state/layers";
 import { useViewerImage } from "../state/viewerImage";
+import { useLayersTab } from "../state/layersTab";
 import { isColour } from "../viewer/colormaps";
 import type { DisplayParams } from "../viewer/renderer";
 import { imageGeometry, type ImageGeometry } from "../views/geometry";
@@ -15,7 +16,7 @@ import { autoContrast, useImageDisplay } from "../views/useImageDisplay";
 import { useOverlayFrames } from "../views/useOverlayFrames";
 import { ContrastControls } from "./ContrastControls";
 import { ImageView, type Interaction, type Pt, type Transform, type ViewLayer } from "./ImageView";
-import { LayersPanel } from "./LayersPanel";
+import { LayersPanel, type LayersPanelProps } from "./LayersPanel";
 import { LineOverlay } from "./LineOverlay";
 import { FftBoxOverlay } from "./FftBoxOverlay";
 import { FftCompare } from "./FftCompare";
@@ -27,6 +28,8 @@ import { lineAt, useLineTool } from "../views/useLineTool";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { LoupeToggle } from "./Loupe";
 import { CoarseningMarker, PhaseContours } from "./PhaseContours";
+import { ColumnsOverlay, parseColumnsKey, useColumnLayers, useColumnsContrast } from "./ColumnsOverlay";
+import { useColumns } from "../state/columns";
 import { AnnotationsToggle } from "./AnnotationsToggle";
 import { lineMenuItems } from "./ProfilePanel";
 import { useFftBoxTool } from "../views/useFftBoxTool";
@@ -280,7 +283,10 @@ export function LayeredViewer({
   const [active, setActive] = useState<string>(BASE);
   const imageIds = entries.map((e) => e.key).join(",");
   useEffect(() => {
-    if (focusId && entries.some((e) => e.key === focusId)) setActive(focusId);
+    if (focusId && entries.some((e) => e.key === focusId)) {
+      setActive(focusId);
+      setActiveShape(null);
+    }
   }, [focusId, imageIds]); // eslint-disable-line react-hooks/exhaustive-deps
   const activeLayer = layers.find((l) => l.key === active) ?? layers[0];
   // Tell the view which layer is edited (not on mount), and honour its requests.
@@ -298,7 +304,23 @@ export function LayeredViewer({
     setActive(requestActive.key);
     if (requestActive.key !== BASE) setFocus(entryOf(requestActive.key)?.dataset.id ?? requestActive.key);
   }, [requestActive]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Shape layers (atomic columns) of the images in view, drawn over them.
+  const shapeLayers = useColumnLayers(
+    [...new Set([baseDataset?.id, ...images.map((d) => d.id)].filter((x): x is string => !!x))],
+  );
+  // A shape layer selected in the list: when coloured by a value, the
+  // contrast toolbar and the Histogram tab edit its limits.
+  const [activeShape, setActiveShape] = useState<string | null>(null);
+  const shapeKey = activeShape && shapeLayers.some((l) => l.id === activeShape) ? activeShape : null;
+  const shapeContrast = useColumnsContrast(shapeKey);
+  // A sublattice focused in the tree: its layer is the one edited.
+  useEffect(() => {
+    const layer = focusId ? shapeLayers.find((l) => l.kind === "fitted" && l.dataset === focusId) : undefined;
+    if (layer) setActiveShape(layer.id);
+  }, [focusId, shapeLayers.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shapeDisplay = shapeKey && shapeContrast ? displays[shapeKey] : undefined;
   const activate = (key: string) => {
+    setActiveShape(null);
     setActive(key);
     if (key !== BASE) setFocus(entryOf(key)?.dataset.id ?? key);
     onActive.current?.(key);
@@ -441,9 +463,9 @@ export function LayeredViewer({
       label: "Histogram",
       content: (
         <HistogramPanel
-          frame={own}
-          label={activeLayer?.label ?? ""}
-          display={activeLayer?.display}
+          frame={shapeContrast ? shapeContrast.frame : own}
+          label={shapeContrast ? shapeContrast.label : (activeLayer?.label ?? "")}
+          display={shapeContrast ? shapeDisplay : activeLayer?.display}
           regions={ownRegions ? { rois: regionState.rois, scale: 1 } : histogramRegions}
         />
       ),
@@ -465,31 +487,56 @@ export function LayeredViewer({
     }
   };
 
-  // The layer list appears as soon as any map is shown.
-  const showPanel = entries.length > 0;
-  const panel = showPanel ? (
-    <LayersPanel
-      layers={layers.map((l) => ({
+  // The layer list (over the image as soon as any map is shown; always in the Layers tab).
+  const showPanel = entries.length > 0 || shapeLayers.length > 0;
+  const panelProps: LayersPanelProps = {
+      layers: [...layers.map((l) => ({
         id: l.key,
         label: l.label,
         visible: l.visible,
         opacity: l.opacity,
         display: l.display,
         removable: l.key !== BASE && (entryOf(l.key)?.removable ?? true),
-      }))}
-      active={activeLayer?.key ?? BASE}
-      onActivate={activate}
-      onChange={(id, patch) => setProps(id === BASE ? baseLayerKey(viewKey) : id, patch)}
-      onColour={(id, colour) => {
+      })), ...shapeLayers],
+      active: shapeKey ?? activeLayer?.key ?? BASE,
+      onActivate: (id) => {
+        const shape = parseColumnsKey(id);
+        if (!shape) return activate(id);
+        setActiveShape(id);
+        // The fitted columns: their dataset (or the sublattice's) gets the focus (its info).
+        const all = allDatasets(files);
+        const ds = shape.kind === "fitted" &&
+          (all.find((d) => d.id === shape.group) ?? all.find((d) => d.parent_id === shape.image && d.atomic?.output === "columns"));
+        if (ds) setFocus(ds.id);
+      },
+      onChange: (id, patch) => {
+        // Shape layers may start hidden: keep that unless the eye changes it.
+        const shape = shapeLayers.find((l) => l.id === id);
+        setProps(id === BASE ? baseLayerKey(viewKey) : id, shape ? { visible: shape.visible, ...patch } : patch);
+      },
+      onColour: (id, colour) => {
+        if (parseColumnsKey(id)) return setProps(id, { visible: shapeLayers.find((l) => l.id === id)?.visible ?? true, colour, colourBy: undefined });
         const d = id === BASE ? baseDataset : entryOf(id)?.dataset;
         if (d && isStack(id)) setDisplay(displayKeyOf(id), { colormap: colour });
         else if (d) setMapColour(d, colour);
         else baseDisplay.setDisplay({ colormap: colour });
-      }}
-      onRemove={(id) => id !== BASE && (entryOf(id)?.removable ?? true) && deselect(entryOf(id)?.dataset.id ?? id)}
-      opacity={!grid}
-    />
-  ) : null;
+      },
+      onRemove: (id) => {
+        const shape = parseColumnsKey(id);
+        if (shape?.kind === "found") return useColumns.getState().patch(shape.image, { found: null, test: null });
+        if (shape) return;
+        if (id !== BASE && (entryOf(id)?.removable ?? true)) deselect(entryOf(id)?.dataset.id ?? id);
+      },
+      opacity: !grid,
+  };
+  const panel = showPanel ? <LayersPanel {...panelProps} /> : null;
+  // The Layers tab shows this list: the first viewer mounted owns it until it goes.
+  const tabOwner = useId();
+  useEffect(() => {
+    const { owner, publish } = useLayersTab.getState();
+    if (owner === null || owner === tabOwner) publish(tabOwner, panelProps);
+  });
+  useEffect(() => () => useLayersTab.getState().clear(tabOwner), [tabOwner]);
 
   // Focus mode with the navigator pulled out: the image goes into the flap,
   // sized to the image's shape (no dead space around it): as tall as the
@@ -595,11 +642,19 @@ export function LayeredViewer({
             </div>
           )}
           <FitQuantitySwitch ds={baseDataset ? [baseDataset, ...images] : images} />
-          <ContrastControls
-            frame={activeLayer?.frame ?? null}
-            display={activeLayer?.display}
-            onChange={onDisplayChange}
-          />
+          {shapeContrast && shapeKey ? (
+            <ContrastControls
+              frame={shapeContrast.frame}
+              display={shapeDisplay}
+              onChange={(patch) => setDisplay(shapeKey, patch)}
+            />
+          ) : (
+            <ContrastControls
+              frame={activeLayer?.frame ?? null}
+              display={activeLayer?.display}
+              onChange={onDisplayChange}
+            />
+          )}
         </div>
         <div className="viewer-row">
           {lifted && focusCorner && <div className="focus-corner">{focusCorner}</div>}
@@ -638,6 +693,7 @@ export function LayeredViewer({
                         <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
                       ))}
                       {isPhase(p.layer.key) && p.layer.frame && <PhaseContours t={t} frame={p.layer.frame} />}
+                      <ColumnsOverlay t={t} image={p.layer.datasetId} />
                       {coarseningOf(p.layer.key) && (
                         <CoarseningMarker t={t} width={p.width} height={p.height} radius={coarseningOf(p.layer.key)!} />
                       )}
@@ -680,6 +736,9 @@ export function LayeredViewer({
                       ))}
                       {layers.filter((l) => l.visible && l.frame && isPhase(l.key)).map((l) => (
                         <PhaseContours key={l.key} t={t} frame={l.frame!} />
+                      ))}
+                      {layers.filter((l) => l.visible && l.datasetId).map((l) => (
+                        <ColumnsOverlay key={`columns-${l.key}`} t={t} image={l.datasetId} />
                       ))}
                       {(() => {
                         // One marker: the largest coarsening of the maps shown.

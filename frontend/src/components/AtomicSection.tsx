@@ -11,7 +11,7 @@ import { useUi } from "../state/ui";
 export const canAnalyseAtomic = (d: DatasetSummary) => d.kind === "image" && !d.is_element_map && d.origin !== "atomic";
 
 /** Pixel size along y and x (Å when a length, else its units or px). */
-function pixelSize(d: DatasetSummary) {
+export function pixelSize(d: DatasetSummary) {
   const [ay, ax] = d.axes;
   if (!ax?.units) return { y: 1, x: 1, units: "px" };
   const x = inAngstrom(ax.scale, ax.units);

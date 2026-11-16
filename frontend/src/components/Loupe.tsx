@@ -2,7 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { create } from "zustand";
 import { useUi } from "../state/ui";
 import { ImageRenderer } from "../viewer/renderer";
-import type { ViewLayer } from "./ImageView";
+import type { Transform, ViewLayer } from "./ImageView";
 
 /** Gap between the pointer and the magnifier (px). */
 const GAP = 18;
@@ -39,8 +39,10 @@ export function LoupeFrame({ cx, cy, size, children }: { cx: number; cy: number;
 }
 
 /** The magnifier of an image viewer: its visible layers drawn by a second
- * renderer around the data point (x, y), VIEWER_LOUPE_MAG × the view's zoom. */
-export function ViewerLoupe({ layers, x, y, zoom, cx, cy }: {
+ * renderer around the data point (x, y), VIEWER_LOUPE_MAG × the view's zoom,
+ * and the viewer's overlays (``overlay``: columns, regions, contours …) drawn
+ * again at that zoom. */
+export function ViewerLoupe({ layers, x, y, zoom, cx, cy, overlay }: {
   layers: ViewLayer[];
   /** Data point under the pointer (full-resolution px) and the view's zoom. */
   x: number;
@@ -49,6 +51,7 @@ export function ViewerLoupe({ layers, x, y, zoom, cx, cy }: {
   /** The pointer in the window. */
   cx: number;
   cy: number;
+  overlay?: (t: Transform) => ReactNode;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<ImageRenderer | null>(null);
@@ -83,8 +86,19 @@ export function ViewerLoupe({ layers, x, y, zoom, cx, cy }: {
   return (
     <LoupeFrame cx={cx} cy={cy} size={VIEWER_LOUPE_PX}>
       <canvas ref={canvasRef} style={{ width: VIEWER_LOUPE_PX, height: VIEWER_LOUPE_PX }} />
+      {overlay && (
+        <svg className="loupe-overlay" width={VIEWER_LOUPE_PX} height={VIEWER_LOUPE_PX}>
+          {overlay(loupeTransform(x, y, zoom * VIEWER_LOUPE_MAG))}
+        </svg>
+      )}
     </LoupeFrame>
   );
+}
+
+/** Data to magnifier coordinates, (x, y) at its centre. */
+function loupeTransform(x: number, y: number, zoom: number): Transform {
+  const c = VIEWER_LOUPE_PX / 2;
+  return { zoom, toScreen: (px, py) => [(px - x) * zoom + c, (py - y) * zoom + c] };
 }
 
 /** The magnifier on or off: for the FFT panel or for the image viewers (M

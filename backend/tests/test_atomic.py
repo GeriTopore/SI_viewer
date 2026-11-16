@@ -220,3 +220,123 @@ def test_fourier_endpoint(client):
     assert client.post(f"/api/datasets/{d['id']}/atomic/fourier", json={**body, "per_peak": [], "tensor": None}).status_code == 422
     # Deletable.
     assert client.delete(f"/api/datasets/{ids[0]}").status_code == 200
+
+
+# ---------- M22d: atomic columns ----------
+
+def test_find_and_refine_columns_match_kemstem(crop):
+    """Notebook 2's settings on a crop of the double perovskite."""
+    import kemstem
+
+    opts = atomic.ColumnOptions(blur=0.5, distance=4, threshold=0.1, window=7)
+    found = atomic.find_columns(crop, opts)
+    blurred = gaussian_filter(kemstem.normalize(crop), 0.5)
+    ref = kemstem.find_columns(blurred, distance=4, threshold=0.1)
+    assert np.array_equal(found, ref) and len(found) > 100
+
+    table = atomic.refine_columns(crop, found, opts)
+    assert table.shape == (len(found), len(atomic.COLUMN_FIELDS))
+    pos, errs, params, _ = kemstem.refine_columns(blurred, found, window_dimension=7, remove_unfit=False, verbose=False)
+    assert np.allclose(table[:, :2], pos) and np.array_equal(table[:, 8].astype(bool), errs)
+    ok = ~errs
+    assert np.allclose(table[ok, 2], params[ok, 0]) and np.allclose(table[ok, 7], params[ok, 0] + params[ok, 6])
+    # Refined columns stay near where they were found.
+    assert np.median(np.hypot(*(table[ok, :2] - found[ok]).T)) < 1.0
+
+    t = atomic.test_column(crop, tuple(found[len(found) // 2]), opts)
+    assert np.array(t["data"]).shape == (7, 7) == np.array(t["fit"]).shape
+    assert t["row"][:2] == pytest.approx(list(table[len(found) // 2, :2]))
+    with pytest.raises(ValueError):
+        atomic.ColumnOptions(window=6).check()
+
+
+def test_columns_endpoints(client):
+    d = client.post("/api/examples/kemstem-sites").json()["datasets"][0]
+    url = f"/api/datasets/{d['id']}/atomic/columns"
+    found = client.post(f"{url}/find", json={"distance": 4, "threshold": 0.1}).json()["columns"]
+    assert len(found) > 1000
+    # A small part, to keep the test quick.
+    part = [c for c in found if 300 <= c[0] < 420 and 300 <= c[1] < 420]
+    t = client.post(f"{url}/test", json={"at": part[0], "window": 7}).json()
+    assert t["fields"][0] == "y" and len(t["data"]) == 7
+    job = _wait(client, client.post(f"{url}/refine", json={"columns": part, "window": 7}).json())
+    assert job["status"] == "done", job
+    cid = job["result"]["id"]
+    made = next(x for x in job["result"]["file"]["datasets"] if x["id"] == cid)
+    assert made["kind"] == "other" and made["parent_id"] == d["id"] and made["title"] == "Columns"
+    assert made["atomic"]["output"] == "columns" and made["atomic"]["count"] == len(part)
+    table = client.get(f"/api/datasets/{cid}/atomic/columns").json()
+    assert len(table["rows"]) == len(part) and table["fields"][-1] == "failed"
+    # Again: the same dataset, in place.
+    again = _wait(client, client.post(f"{url}/refine", json={"columns": part[:10], "window": 7}).json())
+    assert again["result"]["id"] == cid
+    assert len(client.get(f"/api/datasets/{cid}/atomic/columns").json()["rows"]) == 10
+    # Sublattices: datasets under the Columns, the table's "sublattice" field from them.
+    rows = client.get(f"/api/datasets/{cid}/atomic/columns").json()["rows"]
+    intensity = [r[7] for r in rows]
+    centres = client.post("/api/atomic/kmeans", json={"values": intensity, "k": 2}).json()["centres"]
+    assert centres[0] > centres[1]
+    cut = sum(centres) / 2
+    labels = [None if v is None else (0 if v > cut else 1) for v in intensity]
+    sub_url = f"/api/datasets/{cid}/atomic/columns/sublattices"
+    r = client.put(sub_url, json={"labels": labels, "names": ["A", "B"]})
+    assert r.status_code == 200, r.text
+    subs = [x for x in r.json()["file"]["datasets"] if x["parent_id"] == cid]
+    assert [x["title"] for x in subs] == ["Sublattice A", "Sublattice B"] and [x["id"] for x in subs] == r.json()["ids"]
+    assert all(x["atomic"]["output"] == "sublattice" and x["kind"] == "other" for x in subs)
+    assert sum(x["atomic"]["count"] for x in subs) == sum(v is not None for v in labels)
+    table = client.get(f"/api/datasets/{cid}/atomic/columns").json()
+    assert table["fields"][-1] == "sublattice" and [row[-1] for row in table["rows"]] == labels
+    # Deleting one leaves its columns in none; again replaces them.
+    assert client.delete(f"/api/datasets/{subs[1]['id']}").status_code == 200
+    assert [row[-1] for row in client.get(f"/api/datasets/{cid}/atomic/columns").json()["rows"]] == [
+        x if x == 0 else None for x in labels]
+    r = client.put(sub_url, json={"labels": [0] * 10, "names": ["X"]})
+    assert [x["title"] for x in r.json()["file"]["datasets"] if x["parent_id"] == cid] == ["Sublattice X"]
+    assert client.put(sub_url, json={"labels": [2] * 10, "names": ["A"]}).status_code == 422
+    assert client.put(sub_url, json={"labels": [0], "names": ["A"]}).status_code == 422
+    assert client.post("/api/atomic/kmeans", json={"values": [1.0], "k": 2}).status_code == 422
+    # Cleared: none left, no field.
+    r = client.put(sub_url, json={"labels": [None] * 10, "names": []})
+    assert not [x for x in r.json()["file"]["datasets"] if x["parent_id"] == cid]
+    assert client.get(f"/api/datasets/{cid}/atomic/columns").json()["fields"][-1] == "failed"
+    client.put(sub_url, json={"labels": [0] * 10, "names": ["A"]})
+    # Fitting again: the old sublattices go.
+    again = _wait(client, client.post(f"{url}/refine", json={"columns": part[:10], "window": 7}).json())
+    assert not [x for x in again["result"]["file"]["datasets"] if x["parent_id"] == cid]
+    assert client.post(f"{url}/refine", json={"columns": [], "window": 7}).status_code == 422
+    assert client.post(f"{url}/find", json={"window": 4}).status_code == 422
+    assert client.get(f"/api/datasets/{d['id']}/atomic/columns").status_code == 400
+    assert client.delete(f"/api/datasets/{cid}").status_code == 200
+
+
+def test_columns_and_maps_saved_in_analyses(tmp_path):
+    """A Columns dataset and an atomic map come back when an analysis opens."""
+    import shutil
+
+    raw = shutil.copy(kemstem_data() / SITES, tmp_path / "sites.tif")
+    a = TestClient(create_app())
+    d = a.post("/api/files", json={"path": str(raw)}).json()["datasets"][0]
+    session = a.app.state.session
+    image = session.get_dataset(d["id"])
+    table = np.arange(18, dtype=float).reshape(2, 9)
+    table[:, 8] = [0, 1]
+    cols = session.set_columns(image, table, {"blur": 0.5, "distance": 4, "threshold": 0.1, "window": 7})
+    sub = session.set_sublattices(cols, [None, 0], ["A"])[0]
+    f1, f2 = _two_peaks(np.asarray(image.signal.data, dtype=np.float64))
+    _wait(a, a.post(f"/api/datasets/{d['id']}/atomic/fourier",
+                    json={"peaks": {"1": list(f1)}, "per_peak": [1], "outputs": ["amplitude"], "sigma": 10}).json())
+    saved = a.post("/api/project/save", json={"path": str(tmp_path / "an"), "views": {}}).json()["path"]
+
+    b = TestClient(create_app())
+    r = b.post("/api/project/open", json={"path": saved})
+    assert r.status_code == 200, r.text
+    got = b.app.state.session.get_dataset(cols.id)
+    assert got.kind.value == "other" and got.atomic["output"] == "columns" and got.parent_id == d["id"]
+    assert np.allclose(np.asarray(got.signal.data), table)
+    rows = b.get(f"/api/datasets/{cols.id}/atomic/columns").json()["rows"]
+    assert rows[1][8] == 1 and [r[9] for r in rows] == [None, 0]
+    got_sub = b.app.state.session.get_dataset(sub.id)
+    assert got_sub.parent_id == cols.id and got_sub.atomic["output"] == "sublattice"
+    amp = [x for x in b.app.state.session.datasets.values() if x.atomic and x.atomic["output"] == "amplitude"]
+    assert len(amp) == 1 and amp[0].parent_id == d["id"]

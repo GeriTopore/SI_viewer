@@ -28,6 +28,11 @@ export interface Pt {
 export interface Transform {
   zoom: number;
   toScreen: (x: number, y: number) => [number, number];
+  /** The pointer over the image (data px), for hover readouts. */
+  pointer?: { x: number; y: number } | null;
+  /** The view's size (px). */
+  width?: number;
+  height?: number;
 }
 
 /** Pointer/keyboard tool on top of pan/zoom (e.g. a cursor or region tool).
@@ -124,6 +129,9 @@ const MAX_ZOOM = 64;
 interface Hover {
   x: number;
   y: number;
+  /** Where exactly (data px). */
+  px: number;
+  py: number;
   values: { label: string; value: number }[];
 }
 
@@ -312,6 +320,9 @@ export function ImageView({
   const transform: Transform | null = view && {
     zoom: view.zoom,
     toScreen: (x, y) => [(x - view.cx) * view.zoom + size.w / 2, (y - view.cy) * view.zoom + size.h / 2],
+    pointer: hover && { x: hover.px, y: hover.py },
+    width: size.w,
+    height: size.h,
   };
 
   // Space held: drags pan even when a tool is active.
@@ -370,7 +381,7 @@ export function ImageView({
       const v = l.visible && l.frame ? valueAt(l.frame, ix, iy) : null;
       return v === null ? [] : [{ label: l.label, value: v }];
     });
-    setHover({ x: ix, y: iy, values });
+    setHover({ x: ix, y: iy, px: p.x, py: p.y, values });
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
@@ -476,7 +487,7 @@ export function ImageView({
       >
         <canvas ref={canvasRef} />
         {loupeOn && loupeAt && view && (
-          <ViewerLoupe layers={layers} x={loupeAt.x} y={loupeAt.y} zoom={view.zoom} cx={loupeAt.cx} cy={loupeAt.cy} />
+          <ViewerLoupe layers={layers} x={loupeAt.x} y={loupeAt.y} zoom={view.zoom} cx={loupeAt.cx} cy={loupeAt.cy} overlay={renderOverlay} />
         )}
         {!loupeAt && linked && linked.owner !== owner && view && wrapRef.current && (() => {
           // The same data point in this view, if it is in sight.
@@ -484,7 +495,7 @@ export function ImageView({
           const cx = rect.left + (linked.x - view.cx) * view.zoom + size.w / 2;
           const cy = rect.top + (linked.y - view.cy) * view.zoom + size.h / 2;
           if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return null;
-          return <ViewerLoupe layers={layers} x={linked.x} y={linked.y} zoom={view.zoom} cx={cx} cy={cy} />;
+          return <ViewerLoupe layers={layers} x={linked.x} y={linked.y} zoom={view.zoom} cx={cx} cy={cy} overlay={renderOverlay} />;
         })()}
         {renderOverlay && transform && (
           <svg className="image-overlay-svg" width={size.w} height={size.h}>

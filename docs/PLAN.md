@@ -154,6 +154,15 @@ SI_viewer/
 - **Spectrum plot:** log/linear y, zoom/pan, auto-range, an energy readout
   under the mouse, and overlay of several spectra with a colour per ROI.
 - **Composite maps:** RGB/CMY overlay of up to 3 to 6 element maps on the HAADF.
+- **Layers tab** (right column, after Quantify):
+  - The main viewer's layer list, as in the panel floating over the image:
+    visibility, colour, opacity (merged view) and remove. Clicking a layer
+    edits its contrast.
+  - It is there even with a single image, when the floating panel isn't
+    shown.
+  - Both edit the same layer state (`LayersPanelProps`, published by the
+    first viewer mounted through `state/layersTab.ts`).
+  - The column results' shape layers (§4.26) go in it too.
 - **Contrast histogram** (toolbar above the image):
   - Dragging a limit line sets that limit. The lines are grabbed within
     5 px, or a quarter of the window's width if narrower, so a narrow
@@ -1948,12 +1957,18 @@ viewer draws the same things itself.
    - `measure_displacements` gives the displacements, drawn as triangles
      coloured by direction.
 
-**Where it lives.** An **Atomic** section in the right column for an image
-(not a map of a spectrum image). It is a guided workflow like drift
-correction: steps in order, each with its parameters, a preview in the
-viewer and a Next button. Results go into the dataset tree under the image,
-each with its own badge, so they show in the processing tree and are saved
-with projects.
+**Where it lives.** Processes of their own in the Process tab of an image
+(not a map of a spectrum image), each with its own tile and icon, in the
+tab's **kemstem** section (the tab is split into sections when it has
+processes from more than one; the rest are under "General" for now; a
+section header folds it):
+**Fourier filtering** (FFT peaks, then filtering, phase and strain; M22a–c),
+**Atomic columns** (finding and fitting columns; M22d) and **Sublattices**
+(splitting the fitted columns, in several ways), with the measurements
+built on them to follow. Each has its parameters and a preview
+in the viewer. Results go into the dataset tree under the image, each with
+its own badge, so they show in the processing tree and are saved with
+projects.
 
 **Data model.**
 - *FFT peaks* are stored as spatial frequencies (cycles/px, y and x). The
@@ -2028,8 +2043,8 @@ with projects.
     clone is installed). They are calibrated as in the notebooks: 0.0184
     nm/px, the double perovskite uncalibrated. They are the test data for
     M22.
-  - "Atomic resolution" in the Process tab of an image (`AtomicSection`,
-    `state/atomic.ts`). While it is open, the FFT panel transforms the
+  - "Fourier filtering" in the Process tab of an image (`AtomicSection`,
+    `state/atomic.ts`; first called "Atomic resolution"). While it is open, the FFT panel transforms the
     whole image (its centred square, up to 2048 px) instead of the view.
   - Picking: a click on the FFT adds a peak (with its conjugate, −k, when
     ticked) and a right-click deletes the nearest. Each peak is a numbered
@@ -2152,13 +2167,84 @@ with projects.
   - Strain against the mean, a typed value, or a region's mean (an existing
     image region, e.g. the substrate). A spacing histogram (histogram tab)
     helps choose the reference.
-- **M22d: Columns.**
-  - `find_columns` (distance, threshold, pre-blur) with a live preview of
-    the markers, then editing by hand.
-  - The single-column test fit, then the `refine_columns` job, which gives
-    the Columns dataset.
-  - Sublattices from a histogram of a column value with draggable
-    thresholds (or k-means on it), and relabelling by hand.
+- **M22d: Columns (finding and fitting done; editing by hand to come).**
+  - "Atomic columns" in the Process tab of an image (`ColumnsSection`,
+    `state/columns.ts`).
+  - **Find:** blur σ, distance and threshold (notebook 2's 0.5, 4, 0.1).
+    `POST …/atomic/columns/find` runs kemstem's `find_columns` on the image
+    normalised and blurred.
+    - The found columns are the "Column guesses" layer (dots). They are
+      kept in this browser only, since they are found again in a moment
+      (4405 columns in 0.07 s on the double perovskite).
+  - **Fit:**
+    - Window (odd, default 7). "Test one" fits the found column nearest the
+      view's centre (`…/columns/test`) and shows the data, the fit and the
+      residual with its σs and intensity.
+    - "Fit N columns" runs kemstem's `refine_columns` on the same prepared
+      image as a job (`…/columns/refine`), in steps of 256 columns for
+      progress and Cancel. All 4405 take about 8 s.
+  - **The Columns dataset** (kind "other", origin "atomic", badge "Columns")
+    sits under the image.
+    - Its table has one row per column: y, x (kemstem's pixels), amplitude,
+      σ₁, σ₂, angle, offset, intensity = amplitude + offset, failed.
+    - A failed fit keeps its column's place and has no parameters.
+    - Fitting again replaces it in place. It is saved in analyses, and
+      `GET …/atomic/columns` returns it.
+  - Clicking it shows its image (the selection becomes the image, the
+    focus the Columns). The fitted columns are the "Fitted columns" layer
+    (§4.26): dots, failed fits as rings, shown whenever the image is. They
+    are drawn as SVG paths in image coordinates, sized from the distance,
+    the zoom and the layer's size.
+  - Checks: equal to kemstem's calls on a crop with notebook 2's settings;
+    the endpoints; saved and reopened in an analysis.
+  - To come: adding and deleting columns by hand on the image, and a table
+    of the columns in the Info tab.
+  - Later: fitting in parallel on a process pool kept warm in the server.
+    The fits are independent and already sent in batches, which would go
+    to the workers.
+    - Measured on the double perovskite (4405 columns, 14 cores):
+      - serial: 9.2 s;
+      - threads: 12.5–13.6 s (slower: `curve_fit`'s overhead is Python);
+      - 4 fresh processes: 4.7 s;
+      - 8–12 warm processes: 1.85 s (about 1.8 s to start them).
+    - Results are identical.
+    - The same pool would serve `fit_grating` (M22c) and could later split
+      per-pixel curve fitting.
+  - **Sublattices (split by a value done; relabelling by hand, masks and
+    unit vectors to come).**
+    - The **Sublattices** process (after Atomic columns; "Fit the atomic
+      columns first" until there are some). "By value": a value (any of
+      the colour-by values), how
+      many (2–6), and its histogram with draggable thresholds, the bars in
+      each sublattice's colour, with the counts.
+    - Thresholds start at even quantiles. "k-means" puts them half-way
+      between scikit-learn's k-means centres (`POST /api/atomic/kmeans`).
+    - "Split" (`PUT …/atomic/columns/sublattices`) makes one dataset per
+      sublattice under the Columns in the tree: "Sublattice A", "Sublattice
+      B" … from the largest value, kind "other", holding its columns' rows.
+      - They replace earlier ones. "Clear" removes them, and so does
+        fitting the columns again.
+      - Each column's label is not stored: `GET …/atomic/columns` works it
+        out from the sublattices under the Columns, as a "sublattice" field
+        (null for none). So deleting a sublattice (or undoing that), or
+        renaming it, just works: its columns go to "No sublattice".
+      - Clicking one in the tree shows its image and selects its layer.
+    - Once split, the layer list keeps "Fitted columns" (all of them,
+      every step stays reachable; it starts hidden then) and adds one
+      layer per sublattice above it ("No sublattice" too if any columns
+      have none). Clicking Columns in the tree selects "Fitted columns". Each has
+      its own show/hide, colour, size and colour-by with its own limits, as
+      the notebook plots A and B with their own ranges. The hover readout
+      names the sublattice.
+    - On the double perovskite, k-means puts the intensity threshold at
+      0.51, in the gap between the B (≈ 0.27) and A (≈ 0.72) peaks. The
+      notebook uses 0.45.
+    - To come, with one label field for all of them:
+      - relabelling by hand (the linked selection, §4.26);
+      - splitting by a mask from Fourier filtering (the region each column
+        falls in);
+      - sublattices from unit vectors: index each column on the lattice
+        and label it by its position in the basis.
 - **M22e: Neighbourhoods and measurements.**
   - The neighbourhood plot and clusters, then lattice vectors.
   - Per-site lengths and angles for a sublattice pair (A→A, B→B, A→B).
@@ -2188,6 +2274,123 @@ with projects.
   and the NSMO one). The tests are skipped when the clone is missing.
 - Crops are small (256²) so the tests stay fast. No long jobs in browser
   tests.
+
+### 4.26 Showing and analysing column results (design, M22e onwards)
+
+The column analysis grows quickly: found and fitted columns, then
+sublattices, bonds (lengths, angles), polygons (unit cells, octahedra) and
+displacements. Each comes with values to read on the image, compare and
+classify. The approach: **the results are data, with shapes drawn from the
+data, not pictures**, and every view of them is linked.
+
+**Data: one site table, everything else refers to its rows.**
+- *Sites*, the Columns table (§4.25, M22d), hold the position, the fit
+  parameters, intensity, and a **sublattice label** column.
+  - Classifying sublattices makes a dataset per sublattice under the
+    Columns, holding its rows (the label of each site is worked out from
+    them).
+  - Labels are edited by hand by relabelling selected sites.
+- *Bonds*: site pairs (i → j) and the lattice vector they were found with
+  (v₁, v₂ or a nearest-neighbour vector, from `get_vector_to_neighbors`).
+  Each bond has a length (Å) and an angle (°).
+- *Polygons*: ordered lists of sites, such as unit cells or BO₆ octahedra
+  (the A sites round a B site). Each has values such as area, the value of
+  its centre site (as `plot_scalar_polygons`) or a distortion.
+- *Displacements* (PLD, M22f): a vector per site.
+- Each set is a dataset in the tree under the Columns, e.g. "Bonds A–A
+  (v₁)" or "Octahedra B". They are saved with analyses and shown in the
+  processing tree.
+- Values are columns of these tables, so a new measurement adds a column,
+  not a new kind of object.
+
+**Display: shape layers in the Layers panel, beside the image layers.**
+- Each set is drawn as a shape layer: sites as dots, bonds as lines,
+  polygons as filled outlines, displacements as triangles.
+- The order runs bottom to top: image layers → polygons → bonds → sites →
+  arrows.
+- Per layer:
+  - visible and opacity;
+  - **colour by**: one colour, sublattice, or any value through a colormap.
+    The value range uses the same contrast histogram as images (drag,
+    right-click to type, the symmetric lock), so bond lengths and site
+    strains behave like strain maps.
+  - **subset**: e.g. only sublattice A, or only v₂ bonds;
+  - **size** (dot radius, line width), scaled with zoom so a whole image
+    stays readable.
+- Hovering a site, bond or polygon shows its row of values in the readout,
+  as hovering a pixel shows its value.
+- The eye hides them with the other annotations. The magnifier and grid
+  views show them like any overlay.
+
+**Values as maps.**
+- Any value of sites or bonds can be turned into an ordinary image dataset
+  with kemstem's `aggregate_points` (Gaussian-weighted, σ) or
+  `interpolate_points`.
+- That image then has the histogram, profiles, grid view, magnifier,
+  contrast lock and export. It can be compared beside strain maps from
+  Fourier filtering.
+- Shape layers are for exact, site-by-site reading; maps are for overviews
+  and comparisons.
+
+**Analysis: linked views in the pane under the image.**
+- **Histogram** of any value, coloured by sublattice, with draggable
+  thresholds that assign sublattices (notebook 2's intensity split).
+  k-means on a value is the automatic option.
+- **Scatter** of a value against another (e.g. intensity against σ, to
+  separate sublattices).
+  - The neighbourhood plot (`get_neighborhood`, clustered with
+    `cluster_neighbors`) is a scatter too. Clicking a cluster sets a lattice
+    vector (v₁, v₂, a nearest neighbour) for the bonds.
+- **Table**: sortable, one row per site, bond or polygon.
+- **Linked selection** is what makes this manageable:
+  - a range dragged in a histogram, a box or lasso in a scatter, rows in
+    the table, or a lasso on the image all select the same items;
+  - every view then highlights them;
+  - the selection can be relabelled (a sublattice), deleted (wrong
+    columns), or its statistics shown.
+- **Profiles** along a chain of connected columns (`get_connected_columns`)
+  go in the line-profile pane.
+
+**Performance.**
+- Sites, bonds and polygons are drawn as SVG paths in image coordinates (as
+  the columns are now), which is fine to a few tens of thousands.
+- Larger sets and filled polygons move to a canvas or WebGL layer.
+- A spatial index (grid buckets) serves hover, lasso and nearest-site
+  lookups.
+
+**Order of work.**
+1. The generic shape layer, starting with sites: in the Layers panel,
+   colour by sublattice or value with the contrast histogram, subset and
+   size, and the hover readout of a site's row.
+   *Started:* the column guesses and the fitted columns are two layers
+   in the list, as dots. Each has show/hide, opacity and colour, and the
+   guesses can be removed. Failed fits show as rings.
+   *Done:* colour the fitted columns by a value (intensity, amplitude,
+   offset, σ₁, σ₂, σ max/min, angle), chosen in their layer row.
+   Selecting the layer gives the contrast toolbar and the Histogram tab
+   its values: limits, colormap, gamma. The column under the pointer is
+   ringed and its values shown beside it, found through a grid index.
+   The magnifier draws the overlays too.
+   Each column layer has a dot size slider (×0.5–4) in its row. Size
+   and colour-by are in the Layers tab only; the panel over the image
+   keeps show/hide, colour and opacity.
+   *Still to do:* subsets.
+2. Linked views: the site table and histogram with linked selection, and
+   relabelling the selection. Splitting by thresholds is done (M22d).
+3. Bonds (M22e): the neighbourhood scatter, lattice vectors, and bond
+   lengths and angles as a bond layer, reusing the histogram, scatter and
+   table.
+4. Polygons, values turned into maps, and profiles along column chains.
+5. Displacement triangles (M22f) as a layer of the same kind.
+
+**Open decisions.**
+- Shape layers in the image's Layers panel (preferred: one list of
+  everything drawn) or in a separate overlay list. The panel now also has
+  its own **Layers** tab in the right column, so shape layers would be
+  reachable there as well as over the image.
+- Bonds and polygons as datasets in the tree (preferred: visible, saved as
+  everything else) or as layers that belong to the Columns dataset (a
+  shorter tree).
 
 ## 5. Responsiveness rules
 - The backend holds signals as NumPy arrays in RAM after selection and uses

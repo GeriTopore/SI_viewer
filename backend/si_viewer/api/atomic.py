@@ -108,3 +108,133 @@ def fourier(dataset_id: str, body: FourierBody, request: Request) -> dict:
         return {"file": session.file_of(ds).summary(session), "ids": [d.id for d in out]}
 
     return request.app.state.jobs.submit("atomic-fourier", f"Fourier filtering of {ds.title}", run).summary()
+
+
+# ---------- M22d: atomic columns ----------
+
+class ColumnsBody(BaseModel):
+    blur: float = 0.5
+    distance: int = 4
+    threshold: float = 0.1
+    window: int = 7
+
+    def options(self) -> atomic.ColumnOptions:
+        try:
+            return atomic.ColumnOptions(self.blur, self.distance, self.threshold, self.window).check()
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/columns/find")
+def find_columns(dataset_id: str, body: ColumnsBody, request: Request) -> dict:
+    """The image's atomic columns found by kemstem (``find_columns``), as
+    ``columns``: [y, x] pixels (centres at integers)."""
+    image = image_of(request, dataset_id)
+    found = atomic.find_columns(image, body.options())
+    return {"columns": found.tolist()}
+
+
+class TestBody(ColumnsBody):
+    at: tuple[float, float]
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/columns/test")
+def test_column(dataset_id: str, body: TestBody, request: Request) -> dict:
+    """One column fitted (at [y, x]): ``data`` and ``fit`` patches and its
+    ``row`` of the table (``fields``)."""
+    image = image_of(request, dataset_id)
+    return {**atomic.test_column(image, body.at, body.options()), "fields": list(atomic.COLUMN_FIELDS)}
+
+
+class RefineBody(ColumnsBody):
+    columns: list[tuple[float, float]] = Field(max_length=500_000)
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/columns/refine")
+def refine_columns(dataset_id: str, body: RefineBody, request: Request) -> dict:
+    """Fit every column with a 2D Gaussian (kemstem's ``refine_columns``), as
+    a job; the table goes into the image's Columns dataset (made again in
+    place). The job's result: ``file`` and ``id`` (the Columns dataset)."""
+    session = request.app.state.session
+    image = image_of(request, dataset_id)
+    ds = session.get_dataset(dataset_id)
+    opts = body.options()
+    if not body.columns:
+        raise HTTPException(422, "Find the columns first")
+    columns = np.array(body.columns, dtype=np.float64)
+    settings = {"blur": opts.blur, "distance": opts.distance, "threshold": opts.threshold, "window": opts.window}
+
+    def run(job) -> dict:
+        table = atomic.refine_columns(image, columns, opts,
+                                      report=lambda f: job.report(0.97 * f, f"Fitting {len(columns)} columns"))
+        job.report(0.98, "Saving the columns")
+        made = session.set_columns(ds, table, settings)
+        return {"file": session.file_of(ds).summary(session), "id": made.id}
+
+    return request.app.state.jobs.submit("atomic-columns", f"Fit the columns of {ds.title}", run).summary()
+
+
+@router.get("/api/datasets/{dataset_id}/atomic/columns")
+def get_columns(dataset_id: str, request: Request) -> dict:
+    """A Columns dataset's table: ``fields`` and ``rows`` (NaN as null)."""
+    session = request.app.state.session
+    try:
+        ds = session.get_dataset(dataset_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    if not (ds.atomic and ds.atomic.get("output") == "columns"):
+        raise HTTPException(400, f"{ds.title} is not a table of columns")
+    table = np.asarray(ds.signal.data, dtype=np.float64)
+    fields = list(atomic.COLUMN_FIELDS)
+    # The sublattice of each column, from the sublattices under it.
+    labels = session.column_labels(ds)
+    if labels is not None:
+        table = np.column_stack([table, labels])
+        fields.append("sublattice")
+    rows = np.where(np.isfinite(table), np.round(table, 4), None).tolist()
+    return {"fields": fields, "rows": rows}
+
+
+def _columns_of(request: Request, dataset_id: str):
+    session = request.app.state.session
+    try:
+        ds = session.get_dataset(dataset_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    if not (ds.atomic and ds.atomic.get("output") == "columns"):
+        raise HTTPException(400, f"{ds.title} is not a table of columns")
+    return ds
+
+
+class SublatticesBody(BaseModel):
+    labels: list[int | None] = Field(max_length=500_000)
+    names: list[str] = Field(max_length=len(atomic.SUBLATTICE_NAMES))
+
+
+@router.put("/api/datasets/{dataset_id}/atomic/columns/sublattices")
+def set_sublattices(dataset_id: str, body: SublatticesBody, request: Request) -> dict:
+    """Split the columns of a Columns dataset into sublattices (each column's
+    index into ``names``; null: none), datasets under it; no names removes
+    them. Returns its ``file`` and the sublattices' ``ids``."""
+    session = request.app.state.session
+    ds = _columns_of(request, dataset_id)
+    try:
+        made = session.set_sublattices(ds, body.labels, body.names)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(ds).summary(session), "ids": [d.id for d in made]}
+
+
+class KMeansBody(BaseModel):
+    values: list[float | None] = Field(max_length=500_000)
+    k: int = 2
+
+
+@router.post("/api/atomic/kmeans")
+def kmeans(body: KMeansBody) -> dict:
+    """``centres`` of ``k`` clusters of a column value, largest first."""
+    values = np.array([np.nan if v is None else v for v in body.values], dtype=np.float64)
+    try:
+        return {"centres": atomic.kmeans_centres(values, body.k)}
+    except ValueError as e:
+        raise HTTPException(422, str(e))

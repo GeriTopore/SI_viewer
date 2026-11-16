@@ -5,7 +5,7 @@ import { COLORMAPS, isColour } from "../viewer/colormaps";
 export type FftScale = "linear" | "log";
 export type ListMode = "list" | "grid";
 export type Theme = "light" | "dark";
-export type RightTab = "info" | "quantify" | "process";
+export type RightTab = "info" | "quantify" | "process" | "layers";
 /** How several images are shown: one composite, or a panel each. */
 export type GridMode = "merged" | "grid";
 /** Kinds of view with their own mode: a spectrum image (with maps), plain images. */

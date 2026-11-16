@@ -133,6 +133,38 @@ const ICONS: Record<string, () => ReactNode> = {
       <path d="M33 42V36M40 42V38" strokeWidth="4" strokeLinecap="butt" />
     </>
   ),
+  // An FFT: its centre and a pair of spots, one ringed by the filter.
+  fourier: () => (
+    <>
+      <rect x="5" y="5" width="38" height="38" rx="2" />
+      <circle cx="24" cy="24" r="2.5" fill="currentColor" />
+      <circle cx="14" cy="17" r="2" fill="currentColor" />
+      <circle cx="34" cy="31" r="2" fill="currentColor" />
+      <circle cx="34" cy="31" r="7" stroke={ACCENT} fill={ACCENT} fillOpacity="0.25" />
+    </>
+  ),
+  // A lattice of columns, one fitted (a Gaussian's contours).
+  columns: () => (
+    <>
+      {[10, 24, 38].flatMap((y) => [10, 24, 38].map((x) => <circle key={`${x}-${y}`} cx={x} cy={y} r="3" fill="currentColor" />))}
+      <circle cx="24" cy="24" r="7" stroke={ACCENT} />
+      <circle cx="24" cy="24" r="11" stroke={ACCENT} strokeWidth="1.2" strokeDasharray="2.5 2" />
+    </>
+  ),
+  // A lattice of two kinds of columns (two sublattices).
+  sublattices: () => (
+    <>
+      {[10, 24, 38].flatMap((y, j) =>
+        [10, 24, 38].map((x, i) =>
+          (i + j) % 2 ? (
+            <circle key={`${x}-${y}`} cx={x} cy={y} r="3.5" stroke={ACCENT} fill={ACCENT} fillOpacity="0.35" />
+          ) : (
+            <circle key={`${x}-${y}`} cx={x} cy={y} r="4.5" fill="currentColor" />
+          ),
+        ),
+      )}
+    </>
+  ),
   // A peak with plural-scattering bumps made single.
   deconvolution: () => (
     <>

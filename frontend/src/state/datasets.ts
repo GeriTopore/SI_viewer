@@ -692,6 +692,16 @@ export const useDatasets = create<DatasetsState>((set, get) => {
     select: (id) => {
       useSi.getState().setRegionView(null); // the Info tab shows the dataset again
       follow(id);
+      // A table of atomic columns is shown over its image.
+      const d = allDatasets(get().files).find((x) => x.id === id);
+      // So is a sublattice of them (under the Columns).
+      const columns = d?.atomic?.output === "sublattice" ? allDatasets(get().files).find((x) => x.id === d.parent_id) : d;
+      const image = columns?.atomic?.output === "columns" ? columns.parent_id : null;
+      if (image) {
+        const keep = get().selection.includes(image);
+        set({ selection: keep ? get().selection : [image], focusId: id });
+        return;
+      }
       set({ selection: [id], focusId: id });
     },
 

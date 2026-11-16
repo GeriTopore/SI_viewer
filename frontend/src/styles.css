@@ -2131,6 +2131,29 @@ button.primary:disabled {
   white-space: nowrap;
 }
 
+.layer-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.layer-main .layer-label {
+  flex: 1 1 auto;
+  min-width: 48px;
+}
+.layer-size {
+  flex: 0 1 36px;
+  width: 36px;
+  min-width: 24px;
+  accent-color: var(--accent);
+}
+.layer-choice {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 76px;
+  padding: 0 2px;
+  font-size: 11px;
+}
 .layer-opacity {
   width: 56px;
   accent-color: var(--accent);
@@ -3516,6 +3539,24 @@ button.primary.danger {
 
 .process-back {
   font-size: 12px;
+}
+
+/* Sections of the Process tab (when there are several) */
+.process-section + .process-section {
+  margin-top: 14px;
+}
+.process-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.process-section-title.collapsed .process-chevron {
+  margin: 0 3px 0 0;
+  transform: rotate(-45deg);
 }
 
 /* Icon view: a tile per process */
@@ -6104,6 +6145,29 @@ kbd {
   position: absolute;
   inset: 0;
 }
+.columns-hovered {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+.columns-tip {
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  width: max-content;
+}
+.columns-tip .muted {
+  color: #aab1bd;
+}
+.loupe-overlay,
+.loupe-overlay * {
+  pointer-events: none !important;
+}
 .loupe-cross {
   stroke: #ffd60a;
   stroke-width: 1;
@@ -6153,4 +6217,90 @@ kbd {
 }
 .histogram-symmetric {
   color: var(--accent);
+}
+
+/* Atomic columns over their image: found (yellow rings), fitted (red dots),
+   failed fits (red rings). */
+.columns-overlay path {
+  vector-effect: non-scaling-stroke;
+}
+.columns-found,
+.columns-fitted {
+  stroke: none;
+}
+.columns-failed {
+  fill: none;
+  stroke-width: 1.2;
+}
+
+/* One column's test fit: data, fit and residual side by side. */
+.threshold-hist svg {
+  display: block;
+  width: 100%;
+  height: 64px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+  touch-action: none;
+}
+.threshold-line {
+  cursor: ew-resize;
+}
+.threshold-line line {
+  stroke: var(--text);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.threshold-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+.threshold-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+}
+.threshold-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.columns-test {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+.columns-test figure {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+.columns-test figcaption {
+  font-size: 11px;
+  color: var(--muted);
+}
+.columns-test p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* The layer list in the Layers tab: part of the column, not floating. */
+.layers-panel.docked {
+  width: auto;
+  opacity: 1;
+  background: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 13px;
+}
+.layers-panel.docked .muted,
+.layers-panel.docked .icon-button {
+  color: var(--muted);
+}
+.layers-panel.docked .layer-row:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.1));
 }

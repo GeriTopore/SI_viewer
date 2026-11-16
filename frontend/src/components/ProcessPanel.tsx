@@ -19,6 +19,8 @@ import { DpcSection, canMakeDpc } from "./DpcSection";
 import { PcaSection, hasPcaSection } from "./PcaSection";
 import { NormaliseSection } from "./NormaliseSection";
 import { AtomicSection, canAnalyseAtomic } from "./AtomicSection";
+import { ColumnsSection } from "./ColumnsSection";
+import { SublatticesSection } from "./SublatticesSection";
 import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
@@ -75,19 +77,72 @@ interface Process {
   id: string;
   title: string;
   tip: string;
+  /** Its section of the tab (default "General"). */
+  section?: string;
   summary?: string | null;
   body: ReactNode;
+}
+
+/** The processes by section, in order of their first process; numbered
+ * through. */
+function sectionsOf(processes: Process[]): { name: string; items: { p: Process; n: number }[] }[] {
+  const out: { name: string; items: { p: Process; n: number }[] }[] = [];
+  processes.forEach((p, i) => {
+    const name = p.section ?? "General";
+    let s = out.find((x) => x.name === name);
+    if (!s) out.push((s = { name, items: [] }));
+    s.items.push({ p, n: i + 1 });
+  });
+  return out;
+}
+
+/** A section's header (when the tab has more than one); it folds the
+ * section, remembered per browser. */
+function SectionHeader({ name, count }: { name: string; count: number }) {
+  const collapsed = useUi((s) => s.processCollapsed.includes(`section:${name}`));
+  const toggle = useUi((s) => s.toggleProcess);
+  return (
+    <h3 className={`process-section-title${collapsed ? " collapsed" : ""}`}>
+      <button className="process-group-toggle" aria-expanded={!collapsed} onClick={() => toggle(`section:${name}`)}>
+        <span className="process-chevron" aria-hidden="true" />
+        {name}
+      </button>
+      {collapsed && <span className="muted small">{count}</span>}
+    </h3>
+  );
+}
+
+/** The processes in sections (headed when there are several). */
+function Sections({ processes, render }: { processes: Process[]; render: (items: { p: Process; n: number }[]) => ReactNode }) {
+  const sections = sectionsOf(processes);
+  const collapsed = useUi((s) => s.processCollapsed);
+  if (sections.length < 2) return <>{render(sections[0]?.items ?? [])}</>;
+  return (
+    <>
+      {sections.map((s) => (
+        <div key={s.name} className="process-section">
+          <SectionHeader name={s.name} count={s.items.length} />
+          {!collapsed.includes(`section:${s.name}`) && render(s.items)}
+        </div>
+      ))}
+    </>
+  );
 }
 
 /** List view: every process as a card whose title folds it away,
  * remembered per browser. */
 function ProcessList({ processes }: { processes: Process[] }) {
   return (
-    <div className="process-list">
-      {processes.map((p, i) => (
-        <ProcessGroup key={p.id} p={p} n={i + 1} />
-      ))}
-    </div>
+    <Sections
+      processes={processes}
+      render={(items) => (
+        <div className="process-list">
+          {items.map(({ p, n }) => (
+            <ProcessGroup key={p.id} p={p} n={n} />
+          ))}
+        </div>
+      )}
+    />
   );
 }
 
@@ -131,16 +186,21 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
       </div>
     );
   return (
-    <div className="process-grid">
-      {processes.map((p, n) => (
-        <button key={p.id} className="process-tile" onClick={() => setOpen(p.id)} title={p.tip}>
-          <span className="process-tile-n">{n + 1}</span>
-          <ProcessIcon id={p.id} />
-          <span className="process-tile-name">{p.title}</span>
-          {p.summary && <span className="process-tile-summary">{p.summary}</span>}
-        </button>
-      ))}
-    </div>
+    <Sections
+      processes={processes}
+      render={(items) => (
+        <div className="process-grid">
+          {items.map(({ p, n }) => (
+            <button key={p.id} className="process-tile" onClick={() => setOpen(p.id)} title={p.tip}>
+              <span className="process-tile-n">{n}</span>
+              <ProcessIcon id={p.id} />
+              <span className="process-tile-name">{p.title}</span>
+              {p.summary && <span className="process-tile-summary">{p.summary}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    />
   );
 }
 
@@ -463,9 +523,19 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       body: <CurveFitPanel key={d.id} ds={d} />,
     },
     canAnalyseAtomic(d) && {
-      id: "atomic", title: "Atomic resolution",
-      tip: "Pick FFT peaks and refine them (kemstem)",
+      id: "fourier", title: "Fourier filtering", section: "kemstem",
+      tip: "Pick FFT peaks, then filter round them: amplitude, phase and strain maps (kemstem)",
       body: <AtomicSection key={d.id} d={d} />,
+    },
+    canAnalyseAtomic(d) && {
+      id: "columns", title: "Atomic columns", section: "kemstem",
+      tip: "Find the atomic columns and fit each with a 2D Gaussian (kemstem)",
+      body: <ColumnsSection key={d.id} d={d} />,
+    },
+    canAnalyseAtomic(d) && {
+      id: "sublattices", title: "Sublattices", section: "kemstem",
+      tip: "Split the fitted atomic columns into sublattices",
+      body: <SublatticesSection key={d.id} d={d} />,
     },
     hasPcaSection(d) && {
       id: "pca", title: "Decomposition and denoising",

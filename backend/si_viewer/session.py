@@ -1784,7 +1784,7 @@ class Session:
         with self._lock:
             earlier = {
                 (d.atomic["output"], tuple(d.atomic["peaks"])): d for d in self.datasets.values()
-                if d.origin == "atomic" and d.parent_id == image.id and d.atomic
+                if d.origin == "atomic" and d.parent_id == image.id and d.atomic and "peaks" in d.atomic
             }
         out: list[Dataset] = []
         for m in made:
@@ -1808,6 +1808,93 @@ class Session:
                     ids.insert(at + 1, ds.id)
             out.append(ds)
         return out
+
+    def set_columns(self, image: Dataset, table: np.ndarray, settings: dict) -> Dataset:
+        """The image's atomic columns (``processing.atomic.refine_columns``'s
+        table) as a "Columns" dataset under it (kind "other": a table, shown
+        over its image). Made again in place. Returns it."""
+        import hyperspy.api as hs
+
+        from .processing.atomic import COLUMN_FIELDS
+
+        signal = hs.signals.BaseSignal(np.ascontiguousarray(table, dtype=np.float32))
+        signal.metadata.General.title = "Columns"
+        signal.metadata.set_item("Atomic.fields", list(COLUMN_FIELDS))
+        info = {**settings, "output": "columns", "count": int(len(table)),
+                "failed": int(np.count_nonzero(table[:, -1])) if len(table) else 0}
+        with self._lock:
+            earlier = next((d for d in self.datasets.values() if d.origin == "atomic" and d.parent_id == image.id
+                            and d.atomic and d.atomic.get("output") == "columns"), None)
+        if earlier is not None:
+            for sub in self.sublattices_of(earlier):  # of the old columns
+                self._remove_tree(sub)
+            earlier.replace_signal(signal)
+            earlier.atomic = info
+            return earlier
+        ds = Dataset(id=_new_id(), file_id=image.file_id, signal=signal, kind=DatasetKind.OTHER,
+                     origin="atomic", parent_id=image.id, atomic=info)
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[image.file_id].dataset_ids
+            ids.insert(ids.index(image.id) + 1, ds.id)
+        return ds
+
+    def sublattices_of(self, columns: Dataset) -> list[Dataset]:
+        """The sublattices of a Columns dataset (datasets under it), in order."""
+        with self._lock:
+            subs = [d for d in self.datasets.values() if d.parent_id == columns.id
+                    and d.atomic and d.atomic.get("output") == "sublattice"]
+        return sorted(subs, key=lambda d: d.atomic.get("index", 0))
+
+    def column_labels(self, columns: Dataset) -> np.ndarray | None:
+        """Each column's sublattice (its place among ``sublattices_of``; NaN:
+        none), or None when there are none."""
+        subs = self.sublattices_of(columns)
+        if not subs:
+            return None
+        n = len(columns.signal.data)
+        labels = np.full(n, np.nan)
+        for k, sub in enumerate(subs):
+            rows = np.asarray(sub.signal.data, dtype=np.int64).ravel()
+            labels[rows[(rows >= 0) & (rows < n)]] = k
+        return labels
+
+    def set_sublattices(self, columns: Dataset, labels: list[int | None], names: list[str]) -> list[Dataset]:
+        """Split a Columns dataset's columns into sublattices: ``labels`` gives
+        each column's (an index into ``names``; None: none). Each sublattice
+        is a dataset under the Columns (kind "other", origin "atomic"),
+        holding its columns' rows; earlier ones are replaced. No names (and
+        no labels) removes them. Returns the new sublattices."""
+        import hyperspy.api as hs
+
+        if not (columns.atomic and columns.atomic.get("output") == "columns"):
+            raise ValueError(f"{columns.title} is not a table of columns")
+        n = len(columns.signal.data)
+        if len(labels) != n:
+            raise ValueError(f"{len(labels)} labels for {n} columns")
+        if any(x is not None and not 0 <= x < len(names) for x in labels):
+            raise ValueError("A label names no sublattice")
+        names = [x.strip() for x in names]
+        if len(set(names)) != len(names) or not all(names):
+            raise ValueError("The sublattices need distinct names")
+        for old in self.sublattices_of(columns):
+            self._remove_tree(old)
+        lab = np.array([-1 if x is None else x for x in labels], dtype=np.int64)
+        made = []
+        with self._lock:
+            ids = self.files[columns.file_id].dataset_ids
+            at = ids.index(columns.id) + 1
+            for k, name in enumerate(names):
+                rows = np.flatnonzero(lab == k).astype(np.int32)
+                signal = hs.signals.BaseSignal(rows)
+                signal.metadata.General.title = f"Sublattice {name}"
+                ds = Dataset(id=_new_id(), file_id=columns.file_id, signal=signal, kind=DatasetKind.OTHER,
+                             origin="atomic", parent_id=columns.id,
+                             atomic={"output": "sublattice", "index": k, "count": int(len(rows))})
+                self.datasets[ds.id] = ds
+                ids.insert(at + k, ds.id)
+                made.append(ds)
+        return made
 
     def make_dpc(
         self, inputs: dict[str, str], normalise: bool = True, theta: float = 0.0, mirror: bool = False,

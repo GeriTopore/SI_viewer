@@ -222,3 +222,120 @@ def fourier_maps(image: np.ndarray, peaks: dict[int, tuple[float, float]], outpu
         for output, title, data in (("exx", "εxx", exx), ("eyy", "εyy", eyy), ("exy", "εxy", exy), ("oxy", "ωxy", oxy)):
             add(output, [a, b], f"{title} ({label})", data)
     return out
+
+
+# ---------- M22d: atomic columns ----------
+
+# The columns' table, one row per column (kemstem's (y, x) pixels, centres at
+# integers; the 2D Gaussian's parameters; intensity = amplitude + offset).
+COLUMN_FIELDS = ("y", "x", "amplitude", "sigma_1", "sigma_2", "angle", "offset", "intensity", "failed")
+# Columns refined per step (progress and Cancel come between steps).
+REFINE_CHUNK = 256
+
+
+@dataclass(frozen=True)
+class ColumnOptions:
+    # Gaussian blur (σ, px) of the normalised image before finding and fitting.
+    blur: float = 0.5
+    # Least distance between columns (px; peak_local_max's min_distance).
+    distance: int = 4
+    # Intensity threshold (0–1 of the normalised image).
+    threshold: float = 0.1
+    # Fit window round each column (odd, px).
+    window: int = 7
+
+    def check(self) -> "ColumnOptions":
+        if self.blur < 0:
+            raise ValueError("The blur must be 0 or more")
+        if self.distance < 1:
+            raise ValueError("The distance must be 1 px or more")
+        if not 0 <= self.threshold < 1:
+            raise ValueError("The threshold must be from 0 to 1")
+        if self.window < 3 or self.window % 2 == 0:
+            raise ValueError("The fit window must be an odd number of pixels, 3 or more")
+        return self
+
+
+def prepared(image: np.ndarray, blur: float) -> np.ndarray:
+    """The image as the notebooks fit it: normalised to 0–1, blurred by σ."""
+    from scipy.ndimage import gaussian_filter
+
+    im = _kemstem().normalize(np.asarray(image, dtype=np.float64))
+    return gaussian_filter(im, blur) if blur > 0 else im
+
+
+def find_columns(image: np.ndarray, opts: ColumnOptions) -> np.ndarray:
+    """kemstem's ``find_columns`` on the prepared image: (n, 2) (y, x) pixels."""
+    opts.check()
+    return _kemstem().find_columns(prepared(image, opts.blur), distance=opts.distance,
+                                   threshold=opts.threshold).astype(np.float64)
+
+
+def _rows(positions, errors, params) -> np.ndarray:
+    n = len(positions)
+    out = np.zeros((n, len(COLUMN_FIELDS)), dtype=np.float64)
+    out[:, 0:2] = positions
+    # kemstem's parameters: amplitude, x0, y0, σ1, σ2, angle, offset.
+    out[:, 2] = params[:, 0]
+    out[:, 3:6] = params[:, 3:6]
+    out[:, 6] = params[:, 6]
+    out[:, 7] = params[:, 0] + params[:, 6]
+    out[:, 8] = errors
+    out[errors.astype(bool), 2:8] = np.nan
+    return out
+
+
+def refine_columns(image: np.ndarray, columns: np.ndarray, opts: ColumnOptions, report=None) -> np.ndarray:
+    """kemstem's ``refine_columns`` (a 2D Gaussian fit to each) on the
+    prepared image, in steps of REFINE_CHUNK columns. Returns the table
+    (COLUMN_FIELDS) in the columns' order; a failed fit keeps its column's
+    position and has NaN parameters."""
+    opts.check()
+    k = _kemstem()
+    im = prepared(image, opts.blur)
+    columns = np.asarray(columns, dtype=np.float64).reshape(-1, 2)
+    parts = []
+    for i in range(0, len(columns), REFINE_CHUNK):
+        if report:
+            report(i / max(1, len(columns)))
+        chunk = columns[i:i + REFINE_CHUNK]
+        pos, errs, params, _ = k.refine_columns(im, chunk, window_dimension=opts.window, remove_unfit=False,
+                                                verbose=False)
+        parts.append(_rows(pos, errs, params))
+    return np.concatenate(parts) if parts else np.zeros((0, len(COLUMN_FIELDS)))
+
+
+def test_column(image: np.ndarray, at: tuple[float, float], opts: ColumnOptions) -> dict:
+    """One column's fit, to choose the window: the data patch, the fit and
+    their row of the table (``row``, by COLUMN_FIELDS)."""
+    opts.check()
+    k = _kemstem()
+    im = prepared(image, opts.blur)
+    pos, errs, params, fits = k.refine_columns(im, np.array([at], dtype=np.float64), window_dimension=opts.window,
+                                               remove_unfit=False, verbose=False)
+    row = _rows(pos, errs, params)[0]
+    return {
+        "data": fits[:, :, 0, 0].tolist(), "fit": fits[:, :, 0, 1].tolist(),
+        "row": [None if not np.isfinite(v) else float(v) for v in row],
+    }
+
+
+# ---------- Sublattices ----------
+
+#: Default names of sublattices, the brightest (largest value) first.
+SUBLATTICE_NAMES = ("A", "B", "C", "D", "E", "F")
+
+
+def kmeans_centres(values: np.ndarray, k: int) -> list[float]:
+    """Centres of ``k`` clusters of a column value (scikit-learn's k-means on
+    the finite values), largest first: thresholds go half-way between them."""
+    from sklearn.cluster import KMeans
+
+    v = np.asarray(values, dtype=np.float64)
+    v = v[np.isfinite(v)].reshape(-1, 1)
+    if not 2 <= k <= len(SUBLATTICE_NAMES):
+        raise ValueError(f"Between 2 and {len(SUBLATTICE_NAMES)} sublattices")
+    if len(v) < k:
+        raise ValueError("Fewer columns than sublattices")
+    km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(v)
+    return sorted((float(c) for c in km.cluster_centers_.ravel()), reverse=True)

@@ -4,6 +4,12 @@ import { create } from "zustand";
 export interface LayerProps {
   visible: boolean;
   opacity: number;
+  /** Drawing colour of a shape layer (e.g. atomic columns). */
+  colour?: string;
+  /** A shape layer coloured by this value (its display: contrast, colormap). */
+  colourBy?: string;
+  /** A shape layer's mark size (× its default). */
+  size?: number;
 }
 
 export const DEFAULT_LAYER: LayerProps = { visible: true, opacity: 1 };

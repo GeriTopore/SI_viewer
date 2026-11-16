@@ -2,8 +2,8 @@ import { useEffect, useMemo } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import {
-  COLUMN_VALUES, SUBLATTICE_COLOURS, columnValues, ensureTable, inGroup, nearestColumn, sublatticesOf, useColumns, valuesFrame,
-  type ColumnPoints,
+  BOND_VALUES, COLUMN_VALUES, SUBLATTICE_COLOURS, bondFrame, columnValues, ensureBonds, ensureTable, inGroup, nearestColumn,
+  sublatticesOf, useBondTables, useColumns, valuesFrame, type ColumnPoints,
 } from "../state/columns";
 import { DEFAULT_LAYER, useLayers, type LayerProps } from "../state/layers";
 import { useDisplay } from "../state/display";
@@ -16,113 +16,144 @@ import type { PanelLayer } from "./LayersPanel";
 import type { Transform } from "./ImageView";
 import type { Frame } from "../api/arrays";
 
-/** The shape layers of an image's atomic columns: the guesses (found) and
- * the fitted positions, one layer for all or, once split, one per
- * sublattice (``group`` "0", "1" …; "u" for columns in none). Their
- * visibility, opacity, colour, size and colouring are layer props under
- * these keys. */
-export type ColumnsKind = "found" | "fitted";
-export const columnsLayerKey = (image: string, kind: ColumnsKind, group = "") =>
-  `columns:${kind}${group ? `.${group}` : ""}:${image}`;
-export const COLUMNS_COLOUR: Record<ColumnsKind, string> = { found: "#ffd60a", fitted: "#ff4d6d" };
-const UNASSIGNED_COLOUR = "#9aa0a6";
+/** Results of the column analysis (kemstem) are datasets ("items"): the
+ * Columns, its sublattices, neighbourhoods and bonds. Selected in the
+ * dataset pane, each is drawn over the image it came from: a panel of its
+ * own in the grid (the image under it), or a layer over the image when
+ * merged. Their visibility, opacity, colour, size and colouring are layer
+ * props under the item's id (its display, when coloured by a value, too).
+ * The guesses of the Atomic columns process are not a dataset: they are a
+ * layer of their image (``foundLayerKey``). */
+const ITEM_OUTPUTS = ["columns", "sublattice", "neighbourhood", "bonds"];
+export const isColumnItem = (d: DatasetSummary | undefined) => !!d?.atomic && ITEM_OUTPUTS.includes(d.atomic.output);
+export const foundLayerKey = (image: string) => `columns:found:${image}`;
+export const isFoundKey = (key: string) => key.startsWith("columns:found:");
+const COLOUR = { found: "#ffd60a", fitted: "#ff4d6d", bonds: "#f2f2f2", neighbourhood: "#c77dff" };
 
-/** A key from ``columnsLayerKey``, parsed. */
-export function parseColumnsKey(key: string): { kind: ColumnsKind; group: string; image: string } | null {
-  const m = /^columns:(found|fitted)(?:\.(\w+))?:(.+)$/.exec(key);
-  return m ? { kind: m[1] as ColumnsKind, group: m[2] ?? "", image: m[3] } : null;
+type Files = Parameters<typeof allDatasets>[0];
+
+/** The Columns dataset an item belongs to, and the image under it. */
+export function columnsOfItem(files: Files, item: DatasetSummary | undefined): DatasetSummary | undefined {
+  const all = allDatasets(files);
+  let up = item;
+  while (up && up.atomic?.output !== "columns" && isColumnItem(up)) {
+    const parent = up.parent_id;
+    up = all.find((x) => x.id === parent);
+  }
+  return up?.atomic?.output === "columns" ? up : undefined;
 }
+export const imageOfItem = (files: Files, item: DatasetSummary | undefined) => columnsOfItem(files, item)?.parent_id ?? null;
 
-const columnsOf = (files: Parameters<typeof allDatasets>[0], image: string) =>
-  allDatasets(files).find((d) => d.parent_id === image && d.atomic?.output === "columns");
-
-/** The fitted columns' groups: all of them ("Fitted columns"), then one
- * per sublattice once split (the datasets under the Columns; and "No
- * sublattice" when some columns are in none). ``group`` picks its columns
- * (see ``inGroup``); ``id`` names its layer (a sublattice's dataset id);
- * ``dataset`` is the dataset it shows. Once split, all of them start
- * hidden (the sublattices show them). */
-export interface FittedGroupInfo {
+/** What an item draws: columns as dots (``group``: which, see ``inGroup``)
+ * or bonds as lines; its colour, label and the values it can be coloured
+ * by; props it starts with. */
+export interface ItemInfo {
+  kind: "dots" | "bonds";
+  columns: DatasetSummary;
   group: string;
-  id: string;
-  label: string;
   colour: string;
-  dataset?: string;
-  hidden?: boolean;
-}
-export function fittedGroups(files: Parameters<typeof allDatasets>[0], c: DatasetSummary): FittedGroupInfo[] {
-  const subs = sublatticesOf(files, c);
-  const all: FittedGroupInfo = { group: "", id: "", label: "Fitted columns", colour: COLUMNS_COLOUR.fitted, dataset: c.id, hidden: subs.length > 0 };
-  const groups: FittedGroupInfo[] = subs.map((d, k) => ({
-    group: String(k), id: d.id, label: d.title, colour: SUBLATTICE_COLOURS[d.atomic?.index ?? k] ?? UNASSIGNED_COLOUR, dataset: d.id,
-  }));
-  const assigned = subs.reduce((a, d) => a + (d.atomic?.count ?? 0), 0);
-  if (subs.length && (c.atomic?.count ?? 0) > assigned) groups.push({ group: "u", id: "u", label: "No sublattice", colour: UNASSIGNED_COLOUR });
-  return [all, ...groups];
+  label: string;
+  values: { id: string; label: string }[];
+  defaults?: Partial<LayerProps>;
 }
 
-/** A group's layer props: as set, else the defaults (hidden if it starts so). */
-export const groupProps = (p: LayerProps | undefined, g: FittedGroupInfo | undefined): LayerProps =>
-  p ?? (g?.hidden ? { ...DEFAULT_LAYER, visible: false } : DEFAULT_LAYER);
+/** Bonds start coloured by their length (in inferno). */
+const BONDS_DEFAULTS: Partial<LayerProps> = { colourBy: "length" };
 
-type ColumnLayer = PanelLayer & { kind: ColumnsKind; image: string; group: string; dataset?: string };
-
-/** The column layers of images ``images`` (ids) for the layer list: guesses
- * once found; the fitted columns (or each sublattice) once fitted. */
-export function useColumnLayers(images: string[]): ColumnLayer[] {
-  const byId = useColumns((s) => s.byId);
-  const files = useDatasets((s) => s.files);
-  const props = useLayers((s) => s.props);
-  const displays = useDisplay((s) => s.display);
-  const ids = images.join(",");
-  return useMemo(() => {
-    const out: ColumnLayer[] = [];
-    const setProps = useLayers.getState().setProps;
-    for (const image of ids ? ids.split(",") : []) {
-      const add = (kind: ColumnsKind, g: FittedGroupInfo) => {
-        const key = columnsLayerKey(image, kind, g.id);
-        const p = groupProps(props[key], g);
-        const by = kind === "fitted" ? p.colourBy : undefined;
-        out.push({
-          id: key, kind, image, group: g.id, dataset: g.dataset, label: g.label, visible: p.visible, opacity: p.opacity,
-          colour: (by && displays[key]?.colormap) || (p.colour ?? g.colour),
-          display: undefined, removable: kind === "found",
-          size: { value: p.size ?? 1, onChange: (v: number) => setProps(key, { visible: p.visible, size: v }) },
-          ...(kind === "fitted" && {
-            choice: {
-              value: by ?? "",
-              title: "Colour the columns by a value (its limits: select this layer)",
-              options: [{ value: "", label: "Plain" }, ...COLUMN_VALUES.map((c) => ({ value: c.id, label: c.label }))],
-              onChange: (v: string) => setProps(key, { visible: p.visible, colourBy: v || undefined }),
-            },
-          }),
-        });
+export function itemInfo(files: Files, item: DatasetSummary): ItemInfo | null {
+  const columns = columnsOfItem(files, item);
+  if (!columns) return null;
+  const all = allDatasets(files);
+  const subs = sublatticesOf(files, columns);
+  const groupOf = (d: DatasetSummary | undefined) => {
+    const k = d ? subs.findIndex((x) => x.id === d.id) : -1;
+    return k >= 0 ? String(k) : "";
+  };
+  const short = (d: DatasetSummary | undefined) =>
+    !d || d.atomic?.output === "columns" ? "all" : d.title.replace(/^Sublattice /, "");
+  switch (item.atomic?.output) {
+    case "columns":
+      return { kind: "dots", columns, group: "", colour: COLOUR.fitted, label: item.title, values: COLUMN_VALUES };
+    case "sublattice":
+      return {
+        kind: "dots", columns, group: groupOf(item), colour: SUBLATTICE_COLOURS[item.atomic.index ?? 0] ?? COLOUR.fitted,
+        label: item.title, values: COLUMN_VALUES,
       };
-      if (byId[image]?.found?.length) add("found", { group: "", id: "", label: "Column guesses", colour: COLUMNS_COLOUR.found });
-      const c = columnsOf(files, image);
-      if (c) for (const g of fittedGroups(files, c)) add("fitted", g);
+    case "neighbourhood": {
+      // Its origins.
+      const origins = all.find((d) => d.id === (item.atomic?.origins ?? item.parent_id));
+      return {
+        kind: "dots", columns, group: groupOf(origins), colour: COLOUR.neighbourhood,
+        label: item.title, values: COLUMN_VALUES,
+      };
     }
-    return out;
-  }, [byId, files, props, displays, ids]);
+    case "bonds": {
+      const nb = all.find((d) => d.id === item.parent_id);
+      const origins = all.find((d) => d.id === (nb?.atomic?.origins ?? nb?.parent_id));
+      const to = all.find((d) => d.id === nb?.atomic?.neighbours);
+      return {
+        kind: "bonds", columns, group: "", colour: COLOUR.bonds, label: `${item.title} (${short(origins)} → ${short(to)})`,
+        values: BOND_VALUES, defaults: BONDS_DEFAULTS,
+      };
+    }
+  }
+  return null;
 }
 
-/** The values a shape layer (``key``) is coloured by, for the contrast
- * toolbar and the Histogram tab: as a frame (of its group's columns), with
- * a label. */
-export function useColumnsContrast(key: string | null): { frame: Frame; label: string } | null {
-  const shape = key ? parseColumnsKey(key) : null;
-  const columnsDs = useDatasets((s) => (shape?.kind === "fitted" ? columnsOf(s.files, shape.image) : undefined));
-  const table = useColumns((s) => (columnsDs ? s.tables[columnsDs.id]?.points : undefined));
-  const by = useLayers((s) => (key ? s.props[key]?.colourBy : undefined));
+/** An item's layer props: as set, over its defaults (a setting set to
+ * nothing, e.g. "Plain", stays so). */
+export const itemProps = (p: LayerProps | undefined, info: ItemInfo | null): LayerProps => ({
+  ...DEFAULT_LAYER, ...info?.defaults, ...p,
+});
+
+/** An item's row in the layer list: show/hide, colour (or its colormap when
+ * coloured by a value), opacity, size and colour-by. */
+export function itemPanelLayer(
+  item: DatasetSummary, info: ItemInfo, p: LayerProps | undefined, display: DisplayParams | undefined, removable: boolean,
+): PanelLayer {
+  const setProps = useLayers.getState().setProps;
+  const q = itemProps(p, info);
+  return {
+    id: item.id, label: info.label, visible: q.visible, opacity: q.opacity,
+    colour: (q.colourBy && display?.colormap) || (q.colour ?? info.colour),
+    display: undefined, removable,
+    size: { value: q.size ?? 1, onChange: (v: number) => setProps(item.id, { size: v }) },
+    choice: {
+      value: q.colourBy ?? "",
+      title: `Colour the ${info.kind === "bonds" ? "bonds" : "columns"} by a value (its limits: select this layer)`,
+      options: [{ value: "", label: "Plain" }, ...info.values.map((c) => ({ value: c.id, label: c.label }))],
+      onChange: (v: string) => setProps(item.id, { colourBy: v || undefined }),
+    },
+  };
+}
+
+/** The guesses' row in the layer list of their image (once found). */
+export function foundPanelLayer(image: string, p: LayerProps | undefined): PanelLayer {
+  const setProps = useLayers.getState().setProps;
+  const q = { ...DEFAULT_LAYER, ...p };
+  const key = foundLayerKey(image);
+  return {
+    id: key, label: "Column guesses", visible: q.visible, opacity: q.opacity, colour: q.colour ?? COLOUR.found,
+    display: undefined, removable: true,
+    size: { value: q.size ?? 1, onChange: (v: number) => setProps(key, { size: v }) },
+  };
+}
+
+/** The values an item is coloured by, for the contrast toolbar and the
+ * Histogram tab: as a frame (of its columns or bonds), with a label. */
+export function useItemContrast(item: DatasetSummary | null): { frame: Frame; label: string } | null {
   const files = useDatasets((s) => s.files);
-  const g = columnsDs ? fittedGroups(files, columnsDs).find((x) => x.id === (shape?.group ?? "")) : undefined;
-  const group = g?.group;
-  const name = g?.label;
+  const info = useMemo(() => (item ? itemInfo(files, item) : null), [files, item]);
+  const table = useColumns((s) => (info ? s.tables[info.columns.id]?.points : undefined));
+  const bonds = useBondTables((s) => (item && info?.kind === "bonds" ? s.tables[item.id]?.points : undefined));
+  const p = useLayers((s) => (item ? s.props[item.id] : undefined));
+  const by = itemProps(p, info).colourBy;
   return useMemo(() => {
-    if (!table || !by || group === undefined) return null;
-    const label = COLUMN_VALUES.find((c) => c.id === by)?.label ?? by;
-    return { frame: valuesFrame(table, by, group), label: `${name ?? "Fitted columns"} · ${label}` };
-  }, [table, by, group, name]);
+    if (!info || !by || !item) return null;
+    const label = `${info.label} · ${info.values.find((v) => v.id === by)?.label ?? by}`;
+    if (info.kind === "bonds") return bonds && (by === "length" || by === "angle") ? { frame: bondFrame(bonds, by), label } : null;
+    return table ? { frame: valuesFrame(table, by, info.group), label } : null;
+  }, [info, by, item, table, bonds]);
 }
 
 /** Dots (or rings) of radius ``r`` (data px) at points [y, x] (centres at
@@ -164,18 +195,18 @@ function colouredPaths(p: ColumnPoints, group: string, v: Float32Array, d: Displ
   });
 }
 
-/** One group of fitted columns (all, or a sublattice) as dots, coloured
- * plainly or by a value; failed fits as rings. */
-function FittedGroup({ table, tableKey, image, info, r }: {
-  table: ColumnPoints; tableKey: string; image: string; info: FittedGroupInfo; r: number;
+/** An item's columns as dots, coloured plainly or by a value; failed fits
+ * as rings. */
+function ItemDots({ table, tableKey, item, info, r }: {
+  table: ColumnPoints; tableKey: string; item: DatasetSummary; info: ItemInfo; r: number;
 }) {
-  const { group, colour } = info;
-  const key = columnsLayerKey(image, "fitted", info.id);
-  const props = groupProps(useLayers((s) => s.props[key]), info);
+  const key = item.id;
+  const { group } = info;
+  const props = itemProps(useLayers((s) => s.props[key]), info);
   const display = useDisplay((s) => s.display[key]);
   const by = props.colourBy;
   const values = useMemo(() => (by ? columnValues(table, by) : null), [table, by]);
-  // Limits from the group's values when first coloured by them (or the fit changed).
+  // Limits from its values when first coloured by them (or the fit changed).
   useEffect(() => {
     if (by && props.visible) autoContrast(key, valuesFrame(table, by, group), `${by}:${tableKey}`, () => "viridis");
   }, [by, table, key, group, tableKey, props.visible]);
@@ -191,7 +222,7 @@ function FittedGroup({ table, tableKey, image, info, r }: {
   );
   const failed = useMemo(() => (props.visible ? circles(fitted(table, group, true), rr * 1.3) : ""), [props.visible, table, group, rr]);
   if (!plain && !shaded.length && !failed) return null;
-  const c = props.colour ?? colour;
+  const c = props.colour ?? info.colour;
   return (
     <g opacity={props.opacity}>
       {plain && <path className="columns-fitted" d={plain} fill={c} />}
@@ -203,27 +234,82 @@ function FittedGroup({ table, tableKey, image, info, r }: {
   );
 }
 
-/** The atomic columns of image ``image``, drawn over it as layers (see
- * ``useColumnLayers``): the guesses, and the fitted columns (or each
- * sublattice) as dots, failed fits as rings. The fitted ones can be
- * coloured by a value (their layer's ``colourBy``, with the display under
- * the layer's key); the one under the pointer shows its values. */
-export function ColumnsOverlay({ t, image }: { t: Transform; image: string | undefined }) {
-  const st = useColumns((s) => (image ? s.byId[image] : undefined));
-  const columnsDs = useDatasets((s) => (image ? columnsOf(s.files, image) : undefined));
-  const imageDs = useDatasets((s) => (image ? allDatasets(s.files).find((d) => d.id === image) : undefined));
-  const props = useLayers((s) => s.props);
-  const foundProps = (image && props[columnsLayerKey(image, "found")]) || DEFAULT_LAYER;
-  const files = useDatasets((s) => s.files);
-  const groups = useMemo(() => (columnsDs ? fittedGroups(files, columnsDs) : []), [files, columnsDs]);
-  const shown = (g: FittedGroupInfo): LayerProps => groupProps(image ? props[columnsLayerKey(image, "fitted", g.id)] : undefined, g);
-  const anyFitted = groups.some((g) => shown(g).visible);
+/** Bonds as lines from their origin column along their vector, plain or
+ * coloured by length or angle. */
+function ItemBonds({ table, item, info }: { table: ColumnPoints; item: DatasetSummary; info: ItemInfo }) {
+  const key = item.id;
+  const props = itemProps(useLayers((s) => s.props[key]), info);
+  const display = useDisplay((s) => s.display[key]);
+  const entry = useBondTables((s) => s.tables[item.id]);
   useEffect(() => {
-    if (anyFitted && columnsDs) ensureTable(columnsDs);
-  }, [anyFitted, columnsDs]);
+    if (props.visible) ensureBonds(item);
+  }, [props.visible, item]);
+  const p = entry?.points;
+  const by = props.colourBy === "length" || props.colourBy === "angle" ? props.colourBy : undefined;
+  useEffect(() => {
+    if (p && by && props.visible) autoContrast(key, bondFrame(p, by), `${by}:${entry?.key}`, () => "inferno");
+  }, [p, by, key, entry?.key, props.visible]);
+  const paths = useMemo(() => {
+    if (!p || !props.visible) return [];
+    const lut = by && display ? colormapLut(display.colormap) : null;
+    const span = display ? display.hi - display.lo || 1 : 1;
+    const buckets: string[][] = Array.from({ length: lut ? STEPS : 1 }, () => []);
+    for (let i = 0; i < p.origin.length; i++) {
+      const o = p.origin[i];
+      if (o < 0 || !Number.isFinite(p.dx[i]) || !Number.isFinite(table.x[o])) continue;
+      const x0 = table.x[o] + 0.5;
+      const y0 = table.y[o] + 0.5;
+      let b = 0;
+      if (lut && display && by) {
+        let t = Math.min(1, Math.max(0, (p[by][i] - display.lo) / span));
+        if (display.gamma && display.gamma !== 1) t = t ** display.gamma;
+        b = Math.min(STEPS - 1, Math.floor(t * STEPS));
+      }
+      buckets[b].push(`M${x0.toFixed(2)} ${y0.toFixed(2)}l${p.dx[i].toFixed(2)} ${p.dy[i].toFixed(2)}`);
+    }
+    return buckets.flatMap((parts, k) => {
+      if (!parts.length) return [];
+      const j = Math.round(((k + 0.5) / STEPS) * 255) * 4;
+      return [{ colour: lut ? `rgb(${lut[j]},${lut[j + 1]},${lut[j + 2]})` : (props.colour ?? info.colour), d: parts.join("") }];
+    });
+  }, [p, table, props.visible, props.colour, by, display?.lo, display?.hi, display?.gamma, display?.colormap]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!paths.length) return null;
+  return (
+    <g opacity={props.opacity} style={{ strokeWidth: 1.5 * (props.size ?? 1) }}>
+      {paths.map((q) => (
+        <path key={q.colour} className="columns-bonds" d={q.d} stroke={q.colour} />
+      ))}
+    </g>
+  );
+}
+
+/** Column items of image ``image`` drawn over it (``items``, in order:
+ * later on top; bonds under dots), and its guesses with ``found``. The
+ * column under the pointer (of a dots item shown) is ringed and its values
+ * shown beside it. */
+export function ColumnsOverlay({ t, image, items, found: withFound = false }: {
+  t: Transform; image: string | undefined; items: DatasetSummary[]; found?: boolean;
+}) {
+  const files = useDatasets((s) => s.files);
+  const st = useColumns((s) => (image ? s.byId[image] : undefined));
+  const imageDs = useMemo(() => (image ? allDatasets(files).find((d) => d.id === image) : undefined), [files, image]);
+  const props = useLayers((s) => s.props);
+  const foundProps = (image && props[foundLayerKey(image)]) || DEFAULT_LAYER;
+  const drawn = useMemo(
+    () => items.flatMap((item) => {
+      const info = itemInfo(files, item);
+      return info && info.columns.parent_id === image ? [{ item, info }] : [];
+    }),
+    [items, files, image],
+  );
+  const shown = drawn.filter((x) => itemProps(props[x.item.id], x.info).visible);
+  const columnsDs = drawn[0]?.info.columns;
+  useEffect(() => {
+    if (shown.length && columnsDs) ensureTable(columnsDs);
+  }, [shown.length, columnsDs]);
   const tableEntry = useColumns((s) => (columnsDs ? s.tables[columnsDs.id] : undefined));
   const table = tableEntry?.points;
-  const found = foundProps.visible ? st?.found : null;
+  const found = withFound && foundProps.visible ? st?.found : null;
 
   // A few screen pixels, less when the columns are close on screen.
   const spacing = (st?.settings.distance ?? 4) * t.zoom;
@@ -231,30 +317,31 @@ export function ColumnsOverlay({ t, image }: { t: Transform; image: string | und
   const rFound = r * (foundProps.size ?? 1);
   const foundPath = useMemo(() => (found ? circles(found, rFound) : ""), [found, rFound]);
 
-  // The fitted column under the pointer, in a shown group (within the least
-  // distance between columns).
-  // A column is in all of them and (once split) in one more: the topmost
-  // shown one is the one hovered.
-  const groupOf = (i: number) => [...groups].reverse().find((g) => inGroup(table!, g.group, i) && shown(g).visible);
-  const hit = anyFitted && table && t.pointer
-    ? nearestColumn(table, t.pointer.x, t.pointer.y, Math.max(st?.settings.distance ?? 4, 3 / t.zoom), (i) => !!groupOf(i))
+  // The column under the pointer, in the topmost dots item shown that has it.
+  const dots = shown.filter((x) => x.info.kind === "dots");
+  const owner = (i: number) => [...dots].reverse().find((x) => inGroup(table!, x.info.group, i));
+  const hit = dots.length && table && t.pointer
+    ? nearestColumn(table, t.pointer.x, t.pointer.y, Math.max(st?.settings.distance ?? 4, 3 / t.zoom), (i) => !!owner(i))
     : -1;
-  const hitGroup = hit >= 0 ? groupOf(hit) : undefined;
-  // Its sublattice, shown or not.
-  const hitSub = hit >= 0 ? groups.find((g) => g.group && inGroup(table!, g.group, hit)) : undefined;
-  const hitSize = hitGroup ? (shown(hitGroup).size ?? 1) : 1;
+  const hitOwner = hit >= 0 ? owner(hit) : undefined;
+  const hitSize = hitOwner ? (itemProps(props[hitOwner.item.id], hitOwner.info).size ?? 1) : 1;
+  const sub = hit >= 0 && columnsDs ? sublatticesOf(files, columnsDs)[table!.sublattice[hit]] : undefined;
 
-  if (!foundPath && !(anyFitted && table && image)) return null;
+  if (!foundPath && !(shown.length && table)) return null;
   const [x0, y0] = t.toScreen(0, 0);
-  const foundColour = foundProps.colour ?? COLUMNS_COLOUR.found;
+  const ordered = [...shown.filter((x) => x.info.kind === "bonds"), ...dots];
   return (
     <>
       <g className="columns-overlay" transform={`translate(${x0} ${y0}) scale(${t.zoom})`}>
-        {foundPath && <path className="columns-found" d={foundPath} fill={foundColour} opacity={foundProps.opacity} />}
-        {table && image && tableEntry &&
-          groups.map((g) => (
-            <FittedGroup key={g.id} table={table} tableKey={tableEntry.key} image={image} info={g} r={r} />
-          ))}
+        {foundPath && <path className="columns-found" d={foundPath} fill={foundProps.colour ?? COLOUR.found} opacity={foundProps.opacity} />}
+        {table && tableEntry &&
+          ordered.map(({ item, info }) =>
+            info.kind === "bonds" ? (
+              <ItemBonds key={item.id} table={table} item={item} info={info} />
+            ) : (
+              <ItemDots key={item.id} table={table} tableKey={tableEntry.key} item={item} info={info} r={r} />
+            ),
+          )}
         {hit >= 0 && <path className="columns-hovered" d={circles([[table!.y[hit], table!.x[hit]]], Math.max(r * hitSize * 1.2, r * 1.9))} />}
       </g>
       {hit >= 0 && (
@@ -263,8 +350,8 @@ export function ColumnsOverlay({ t, image }: { t: Transform; image: string | und
           p={table!}
           i={hit}
           px={imageDs ? pixelSize(imageDs) : null}
-          by={hitGroup ? shown(hitGroup).colourBy : undefined}
-          sublattice={hitSub?.label}
+          by={hitOwner ? itemProps(props[hitOwner.item.id], hitOwner.info).colourBy : undefined}
+          sublattice={sub?.title}
         />
       )}
     </>

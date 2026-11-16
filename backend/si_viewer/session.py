@@ -1826,8 +1826,12 @@ class Session:
             earlier = next((d for d in self.datasets.values() if d.origin == "atomic" and d.parent_id == image.id
                             and d.atomic and d.atomic.get("output") == "columns"), None)
         if earlier is not None:
-            for sub in self.sublattices_of(earlier):  # of the old columns
-                self._remove_tree(sub)
+            # What was made from the old columns (sublattices, neighbourhoods) goes.
+            made = [d for d in self.siblings(earlier) if d.parent_id == earlier.id and d.origin == "atomic"]
+            gone = {d.id for d in made}
+            for d in made:
+                self._remove_tree(d)
+            self._drop_neighbourhoods_of(gone | {earlier.id})
             earlier.replace_signal(signal)
             earlier.atomic = info
             return earlier
@@ -1877,8 +1881,10 @@ class Session:
         names = [x.strip() for x in names]
         if len(set(names)) != len(names) or not all(names):
             raise ValueError("The sublattices need distinct names")
-        for old in self.sublattices_of(columns):
+        old_subs = self.sublattices_of(columns)
+        for old in old_subs:
             self._remove_tree(old)
+        self._drop_neighbourhoods_of({d.id for d in old_subs})
         lab = np.array([-1 if x is None else x for x in labels], dtype=np.int64)
         made = []
         with self._lock:
@@ -1895,6 +1901,150 @@ class Session:
                 ids.insert(at + k, ds.id)
                 made.append(ds)
         return made
+
+    # ---------- neighbourhoods and bonds (M22e) ----------
+
+    def column_positions(self, ds: Dataset) -> tuple[np.ndarray, np.ndarray]:
+        """The fitted positions ([y, x] px) of a Columns dataset's columns or a
+        sublattice's, with their rows in the Columns table; columns without a
+        position are left out."""
+        out = ds.atomic.get("output") if ds.atomic else None
+        if out == "columns":
+            table = np.asarray(ds.signal.data, dtype=np.float64)
+            rows = np.arange(len(table))
+        elif out == "sublattice":
+            table = np.asarray(self.get_dataset(ds.parent_id).signal.data, dtype=np.float64)
+            rows = np.asarray(ds.signal.data, dtype=np.int64).ravel()
+            rows = rows[(rows >= 0) & (rows < len(table))]
+        else:
+            raise ValueError(f"{ds.title} is not a set of columns")
+        yx = table[rows, :2]
+        ok = np.isfinite(yx).all(axis=1)
+        return rows[ok], yx[ok]
+
+    def _short_name(self, ds: Dataset) -> str:
+        if ds.atomic and ds.atomic.get("output") == "columns":
+            return "all"
+        return ds.title.removeprefix("Sublattice ").strip() or ds.title
+
+    def _drop_neighbourhoods_of(self, gone: set[str]) -> None:
+        """Neighbourhoods whose origins or neighbours were in ``gone`` go too."""
+        with self._lock:
+            stale = [d for d in self.datasets.values() if d.atomic and d.atomic.get("output") == "neighbourhood"
+                     and (d.atomic.get("neighbours") in gone or d.atomic.get("origins") in gone)]
+        for d in stale:
+            if d.id in self.datasets:
+                self._remove_tree(d)
+
+    def _columns_of(self, ds: Dataset) -> Dataset:
+        """The Columns dataset of Columns or a sublattice."""
+        return ds if ds.atomic and ds.atomic.get("output") == "columns" else self.get_dataset(ds.parent_id)
+
+    def make_neighbourhood(self, origins: Dataset, neighbours: Dataset, k: int, replace: Dataset | None = None) -> Dataset:
+        """The vectors from each column of ``origins`` (Columns or a sublattice)
+        to its ``k`` nearest in ``neighbours`` (kemstem's ``get_neighborhood``),
+        as a "Neighbourhood" dataset under the Columns (it may join two
+        sublattices; ``atomic["origins"]`` and ``["neighbours"]`` name them):
+        (k × m, 2) [y, x] px. A new one each time (several can be kept, with
+        any settings), or ``replace`` made again with these settings: in
+        place (its name kept; its clusters and bonds go)."""
+        import hyperspy.api as hs
+
+        from .processing.atomic import neighbourhood
+
+        if replace is not None and not (replace.atomic and replace.atomic.get("output") == "neighbourhood"):
+            raise ValueError(f"{replace.title} is not a neighbourhood")
+        columns = self._columns_of(origins)
+        if self._columns_of(neighbours).id != columns.id:
+            raise ValueError("The origins and neighbours must be columns of one image")
+        _, o = self.column_positions(origins)
+        _, n = self.column_positions(neighbours)
+        vectors = neighbourhood(n, o, k)
+        signal = hs.signals.BaseSignal(np.ascontiguousarray(vectors, dtype=np.float32))
+        info = {"output": "neighbourhood", "origins": origins.id, "neighbours": neighbours.id, "k": int(k),
+                "count": int(len(o))}
+        if replace is not None:
+            for child in [d for d in self.siblings(replace) if d.parent_id == replace.id]:
+                self._remove_tree(child)
+            signal.metadata.General.title = replace.title
+            replace.replace_signal(signal)
+            replace.atomic = info
+            return replace
+        # A name of its own: "Neighbourhood A → all", "… 2" …
+        base = f"Neighbourhood {self._short_name(origins)} → {self._short_name(neighbours)}"
+        with self._lock:
+            taken = {d.title for d in self.datasets.values() if d.parent_id == columns.id}
+        title = base if base not in taken else next(f"{base} {i}" for i in range(2, 1000) if f"{base} {i}" not in taken)
+        signal.metadata.General.title = title
+        ds = Dataset(id=_new_id(), file_id=columns.file_id, signal=signal, kind=DatasetKind.OTHER,
+                     origin="atomic", parent_id=columns.id, atomic=info)
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[columns.file_id].dataset_ids
+            # After the Columns' other results (their sublattices and earlier neighbourhoods).
+            tree, todo = {columns.id}, [columns.id]
+            while todo:
+                cur = todo.pop()
+                for x in ids:
+                    if x in self.datasets and self.datasets[x].parent_id == cur and x not in tree:
+                        tree.add(x)
+                        todo.append(x)
+            ids.insert(max(i for i, x in enumerate(ids) if x in tree) + 1, ds.id)
+        return ds
+
+    def cluster_neighbourhood(self, nb: Dataset, n: int) -> Dataset:
+        """Cluster a neighbourhood's vectors (kemstem's ``cluster_neighbors``):
+        the centres go into its ``atomic["clusters"]`` ([y, x] px)."""
+        from .processing.atomic import cluster_neighbourhood
+
+        centres = cluster_neighbourhood(np.asarray(nb.signal.data, dtype=np.float64), n)
+        nb.atomic = {**nb.atomic, "clusters": [[round(float(a), 4), round(float(b), 4)] for a, b in centres]}
+        return nb
+
+    def make_bonds(self, nb: Dataset, name: str, guess: tuple[float, float], threshold: float) -> Dataset:
+        """From each origin of neighbourhood ``nb``, the vector to the
+        neighbour nearest ``origin + guess`` (kemstem's
+        ``get_vector_to_neighbors``), with its length and angle, as a
+        "Bonds" dataset under it (a table of BOND_FIELDS). Made again in
+        place for the same name."""
+        import hyperspy.api as hs
+
+        from .processing.atomic import BOND_FIELDS, bonds
+
+        name = name.strip()
+        if not name:
+            raise ValueError("The bonds need a name")
+        try:
+            origins = self.get_dataset(nb.atomic.get("origins") or nb.parent_id)
+            neighbours = self.get_dataset(nb.atomic["neighbours"])
+        except KeyError:
+            raise ValueError("The neighbourhood's columns are gone")
+        rows, o = self.column_positions(origins)
+        _, n = self.column_positions(neighbours)
+        table = bonds(n, o, rows, guess, threshold)
+        signal = hs.signals.BaseSignal(np.ascontiguousarray(table, dtype=np.float32))
+        signal.metadata.General.title = f"Bonds {name}"
+        missing = int(np.count_nonzero(~np.isfinite(table[:, 3])))
+        length = table[:, 3]
+        info = {"output": "bonds", "name": name, "vector": [float(guess[0]), float(guess[1])],
+                "threshold": float(threshold), "count": int(len(table)), "missing": missing,
+                "mean_length": float(np.nanmean(length)) if missing < len(table) else None,
+                "fields": list(BOND_FIELDS)}
+        with self._lock:
+            earlier = next((d for d in self.datasets.values() if d.parent_id == nb.id and d.atomic
+                            and d.atomic.get("output") == "bonds" and d.atomic.get("name") == name), None)
+        if earlier is not None:
+            earlier.replace_signal(signal)
+            earlier.atomic = info
+            return earlier
+        ds = Dataset(id=_new_id(), file_id=nb.file_id, signal=signal, kind=DatasetKind.OTHER,
+                     origin="atomic", parent_id=nb.id, atomic=info)
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[nb.file_id].dataset_ids
+            later = [i for i, x in enumerate(ids) if x in self.datasets and self.datasets[x].parent_id == nb.id]
+            ids.insert((max(later) if later else ids.index(nb.id)) + 1, ds.id)
+        return ds
 
     def make_dpc(
         self, inputs: dict[str, str], normalise: bool = True, theta: float = 0.0, mirror: bool = False,
@@ -2453,8 +2603,19 @@ class Session:
         if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model", "atomic"):
             if dataset.origin == "curve-model" and dataset.parent_id in self.datasets:
                 self.datasets[dataset.parent_id].curve_fits = None  # its fit at the cursor goes with it
-            entry["restore"] = self._tree_places(dataset)
+            places = self._tree_places(dataset)
+            # Neighbourhoods of a deleted sublattice (as origins or neighbours) go with it.
+            gone = {d.id for d, _ in places}
+            with self._lock:
+                stale = [d for d in self.datasets.values() if d.atomic and d.atomic.get("output") == "neighbourhood"
+                         and d.id not in gone and (d.atomic.get("origins") in gone or d.atomic.get("neighbours") in gone)]
+            for nb in stale:
+                places += [p for p in self._tree_places(nb) if p[0].id not in gone]
+            entry["restore"] = sorted(places, key=lambda p: p[1])
             self._remove_tree(dataset)
+            for nb in stale:
+                if nb.id in self.datasets:
+                    self._remove_tree(nb)
             return self._keep_undoable(entry)
         if not dataset.is_element_map:
             raise ValueError(f"{dataset.title} is not an element map and can't be deleted")

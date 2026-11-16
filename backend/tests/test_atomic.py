@@ -340,3 +340,88 @@ def test_columns_and_maps_saved_in_analyses(tmp_path):
     assert got_sub.parent_id == cols.id and got_sub.atomic["output"] == "sublattice"
     amp = [x for x in b.app.state.session.datasets.values() if x.atomic and x.atomic["output"] == "amplitude"]
     assert len(amp) == 1 and amp[0].parent_id == d["id"]
+
+
+def test_neighbourhoods_and_bonds(client):
+    """Neighbourhoods, clusters and bonds of a square lattice (two
+    sublattices, checkerboard), against kemstem's own calls."""
+    import kemstem
+
+    d = client.post("/api/examples/kemstem-sites").json()["datasets"][0]
+    session = client.app.state.session
+    image = session.get_dataset(d["id"])
+    yy, xx = np.mgrid[20:120:10, 30:130:10]
+    n = yy.size
+    table = np.zeros((n, 9))
+    table[:, 0] = yy.ravel() + 0.2 * np.sin(xx.ravel())  # a little disorder
+    table[:, 1] = xx.ravel()
+    table[:, 7] = np.where((yy.ravel() + xx.ravel()) % 20 == 0, 0.8, 0.3)
+    cols = session.set_columns(image, table, {"blur": 0.5, "distance": 4, "threshold": 0.1, "window": 7})
+    labels = [0 if v > 0.5 else 1 for v in table[:, 7]]
+    a, b = session.set_sublattices(cols, labels, ["A", "B"])
+
+    r = client.post(f"/api/datasets/{a.id}/atomic/neighbourhood", json={"neighbours": cols.id, "k": 8})
+    assert r.status_code == 200, r.text
+    nb_id = r.json()["id"]
+    made = next(x for x in r.json()["file"]["datasets"] if x["id"] == nb_id)
+    assert made["parent_id"] == cols.id and made["atomic"]["origins"] == a.id and made["atomic"]["k"] == 8
+    assert made["title"] == "Neighbourhood A → all"
+    got = client.get(f"/api/datasets/{nb_id}/atomic/neighbourhood").json()
+    pos = np.asarray(cols.signal.data, dtype=np.float64)[:, :2]  # as stored (float32)
+    want = kemstem.get_neighborhood(pos, pos[np.array(labels) == 0], k=8)
+    assert np.allclose(np.column_stack([got["dy"], got["dx"]]), want, atol=1e-3)
+
+    r = client.post(f"/api/datasets/{nb_id}/atomic/neighbourhood/clusters", json={"n": 9})
+    clusters = np.array(next(x for x in r.json()["file"]["datasets"] if x["id"] == nb_id)["atomic"]["clusters"])
+    assert clusters.shape == (9, 2)
+    assert np.allclose(clusters, kemstem.cluster_neighbors(want, n_clusters=9), atol=1e-3)
+    v1 = np.array([0.0, 10.0])  # the in-plane lattice vector
+
+    r = client.post(f"/api/datasets/{nb_id}/atomic/bonds", json={"name": "v1", "vector": list(v1), "threshold": 3})
+    assert r.status_code == 200, r.text
+    bid = r.json()["id"]
+    bonds = next(x for x in r.json()["file"]["datasets"] if x["id"] == bid)
+    assert bonds["title"] == "Bonds v1" and bonds["parent_id"] == nb_id
+    rows = np.array(client.get(f"/api/datasets/{bid}/atomic/bonds").json()["rows"], dtype=float)
+    want = kemstem.get_vector_to_neighbors(pos, pos[np.array(labels) == 0], v1, threshold=3)
+    assert np.allclose(rows[:, 1:3], want, atol=1e-3, equal_nan=True)
+    assert np.allclose(rows[:, 0], np.flatnonzero(np.array(labels) == 0))
+    ok = np.isfinite(rows[:, 3])
+    assert bonds["atomic"]["missing"] == int((~ok).sum()) > 0  # the right edge has none
+    assert np.allclose(rows[ok, 3], 10, atol=0.5) and np.allclose(rows[ok, 4], 0, atol=3)
+    # Again: in place. Made again with other settings: in place, its name
+    # kept, its bonds and clusters gone.
+    again = client.post(f"/api/datasets/{nb_id}/atomic/bonds", json={"name": "v1", "vector": list(v1)}).json()
+    assert again["id"] == bid
+    client.put(f"/api/datasets/{nb_id}/title", json={"title": "AA tilt"})
+    r = client.post(f"/api/datasets/{a.id}/atomic/neighbourhood", json={"neighbours": cols.id, "k": 4, "replace": nb_id})
+    assert r.json()["id"] == nb_id
+    assert not [x for x in r.json()["file"]["datasets"] if x["parent_id"] == nb_id]
+    made = next(x for x in r.json()["file"]["datasets"] if x["id"] == nb_id)
+    assert "clusters" not in made["atomic"] and made["atomic"]["k"] == 4 and made["title"] == "AA tilt"
+    # Without ``replace``: a new one each time, named apart.
+    r2 = client.post(f"/api/datasets/{a.id}/atomic/neighbourhood", json={"neighbours": cols.id, "k": 8}).json()
+    r3 = client.post(f"/api/datasets/{a.id}/atomic/neighbourhood", json={"neighbours": cols.id, "k": 8}).json()
+    titles = {x["id"]: x["title"] for x in r3["file"]["datasets"]}
+    assert len({nb_id, r2["id"], r3["id"]}) == 3
+    assert titles[r2["id"]] == "Neighbourhood A → all" and titles[r3["id"]] == "Neighbourhood A → all 2"
+    # Replaced with other origins (B → A): in place under the Columns, name kept.
+    r4 = client.post(f"/api/datasets/{b.id}/atomic/neighbourhood", json={"neighbours": a.id, "replace": nb_id}).json()
+    moved = next(x for x in r4["file"]["datasets"] if x["id"] == r4["id"])
+    assert r4["id"] == nb_id and moved["parent_id"] == cols.id and moved["title"] == "AA tilt"
+    assert moved["atomic"]["origins"] == b.id and moved["atomic"]["neighbours"] == a.id
+    nb_id = r2["id"]
+    # Checks.
+    assert client.post(f"/api/datasets/{a.id}/atomic/neighbourhood", json={"neighbours": cols.id, "k": 0}).status_code == 422
+    assert client.post(f"/api/datasets/{d['id']}/atomic/neighbourhood", json={"neighbours": cols.id}).status_code == 400
+    assert client.post(f"/api/datasets/{nb_id}/atomic/bonds", json={"name": "x", "vector": [0, 10], "threshold": 0}).status_code == 422
+    # Deleting a sublattice: the neighbourhoods using it go too, and come back with an undo.
+    r5 = client.post(f"/api/datasets/{b.id}/atomic/neighbourhood", json={"neighbours": a.id}).json()
+    gone = client.delete(f"/api/datasets/{a.id}").json()
+    assert r5["id"] not in session.datasets and nb_id not in session.datasets
+    assert client.post(f"/api/undo/{gone['undo']}").status_code == 200
+    assert r5["id"] in session.datasets and nb_id in session.datasets and a.id in session.datasets
+    # Splitting again: neighbourhoods of the old sublattices go.
+    session.set_sublattices(cols, labels, ["A", "B"])
+    assert nb_id not in session.datasets
+    assert client.delete(f"/api/datasets/{cols.id}").status_code == 200

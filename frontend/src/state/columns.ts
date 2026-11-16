@@ -361,3 +361,62 @@ export function sublatticesOf(files: Parameters<typeof allDatasets>[0], c: Datas
     .filter((d) => d.parent_id === c.id && d.atomic?.output === "sublattice")
     .sort((a, b) => (a.atomic?.index ?? 0) - (b.atomic?.index ?? 0));
 }
+
+/** A bonds table for drawing: each origin's row in its Columns table, the
+ * vector to its neighbour (px) and its length (px) and angle (°); NaN where
+ * it has none. */
+export interface BondPoints {
+  origin: Int32Array;
+  dy: Float32Array;
+  dx: Float32Array;
+  length: Float32Array;
+  angle: Float32Array;
+}
+
+export const BOND_VALUES: { id: "length" | "angle"; label: string; unit: string }[] = [
+  { id: "length", label: "Length", unit: "px" },
+  { id: "angle", label: "Angle", unit: "°" },
+];
+
+export const useBondTables = create<{ tables: Record<string, { key: string; points: BondPoints }> }>(() => ({ tables: {} }));
+
+const bondFetches = new Set<string>();
+/** The bonds of dataset ``b`` (fetched once per version). */
+export function ensureBonds(b: DatasetSummary) {
+  const key = `${b.revision}:${b.atomic?.count}:${b.atomic?.missing}`;
+  if (useBondTables.getState().tables[b.id]?.key === key || bondFetches.has(b.id)) return;
+  bondFetches.add(b.id);
+  api
+    .bondsTable(b.id)
+    .then(({ rows }) => {
+      const n = rows.length;
+      const p: BondPoints = {
+        origin: new Int32Array(n), dy: new Float32Array(n), dx: new Float32Array(n),
+        length: new Float32Array(n), angle: new Float32Array(n),
+      };
+      rows.forEach((r, i) => {
+        p.origin[i] = r[0] ?? -1;
+        p.dy[i] = r[1] ?? NaN;
+        p.dx[i] = r[2] ?? NaN;
+        p.length[i] = r[3] ?? NaN;
+        p.angle[i] = r[4] ?? NaN;
+      });
+      useBondTables.setState((s) => ({ tables: { ...s.tables, [b.id]: { key, points: p } } }));
+    })
+    .catch(() => {})
+    .finally(() => bondFetches.delete(b.id));
+}
+
+const bondFrames = new WeakMap<BondPoints, Map<string, Frame>>();
+/** A bonds value's finite values as a 1 × n frame, for the contrast histogram. */
+export function bondFrame(p: BondPoints, by: "length" | "angle"): Frame {
+  let m = bondFrames.get(p);
+  if (!m) bondFrames.set(p, (m = new Map()));
+  let f = m.get(by);
+  if (!f) {
+    const data = p[by].filter((v) => Number.isFinite(v));
+    f = { data, width: data.length, height: 1, bin: 1 };
+    m.set(by, f);
+  }
+  return f;
+}

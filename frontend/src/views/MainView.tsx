@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { DatasetSummary } from "../api/client";
-import { allDatasets, planeSize, useDatasets } from "../state/datasets";
+import { allDatasets, isColumnItem, planeSize, useDatasets } from "../state/datasets";
 import { useAlignment } from "../state/alignment";
 import { isLineScan } from "../format";
 import { AlignmentWorkspace } from "./AlignmentWorkspace";
@@ -33,8 +33,18 @@ export function MainView() {
     );
   }
 
-  const primary = selected.find((d) => d.kind !== "image");
+  const primary = selected.find((d) => d.kind !== "image" && !isColumnItem(d));
   const images = selected.filter((d) => d.kind === "image");
+  // Column items (kemstem) are drawn over the image they came from: shown
+  // as the background when it isn't highlighted itself.
+  const items = primary ? [] : selected.filter(isColumnItem);
+  const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
+  const imageOfItem = (d: DatasetSummary) => {
+    let up: DatasetSummary | undefined = d;
+    while (up && up.atomic?.output !== "columns" && isColumnItem(up)) up = byId.get(up.parent_id ?? "");
+    return up?.atomic?.output === "columns" ? byId.get(up.parent_id ?? "") : undefined;
+  };
+  const implied = [...new Map(items.map(imageOfItem).filter((d): d is DatasetSummary => !!d && !images.some((x) => x.id === d.id)).map((d) => [d.id, d])).values()];
 
   // Keyed by the primary dataset and its revision: each gets fresh view
   // state, and so does rebinned data.
@@ -57,8 +67,10 @@ export function MainView() {
     case "spectrum":
       return <SpectrumView key={key} ds={primary} />;
     case undefined: {
-      const [w, h] = planeSize(images[0]);
-      return <ImagesView key={`images:${w}x${h}`} images={images} />;
+      const shown = [...images, ...implied];
+      if (!shown.length) return <div className="placeholder"><p className="muted">Its image is gone.</p></div>;
+      const [w, h] = planeSize(shown[0]);
+      return <ImagesView key={`images:${w}x${h}`} images={shown} items={items} implied={implied.map((d) => d.id)} />;
     }
     default:
       return (

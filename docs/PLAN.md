@@ -2245,10 +2245,67 @@ projects.
         falls in);
       - sublattices from unit vectors: index each column on the lattice
         and label it by its position in the basis.
-- **M22e: Neighbourhoods and measurements.**
-  - The neighbourhood plot and clusters, then lattice vectors.
-  - Per-site lengths and angles for a sublattice pair (A→A, B→B, A→B).
-  - Display as sites, bonds or polygons.
+- **M22e: Neighbourhoods and measurements (neighbourhoods, clusters,
+  lattice vectors and bonds done).**
+  - The **Neighbourhoods** process (kemstem section, after Sublattices):
+    - An image can have several neighbourhoods (for analyses of different
+      sublattices or combinations of them: tilts, displacements …). They
+      are listed in the process; clicking one selects it. The selected one
+      can be renamed in place or deleted (×), and the plot shows it.
+    - From (all columns or a sublattice), To (the same choices) and
+      Neighbours (k, default 20). "Add" runs kemstem's `get_neighborhood`
+      (`POST …/atomic/neighbourhood`, on the origins). The result is a new
+      dataset under the Columns, not a sublattice, since it may join two
+      (`atomic.origins`, `atomic.neighbours`). It holds the k × m vectors
+      [dy, dx] px. Its name defaults to "Neighbourhood A → all" (or
+      "B → A"; "… 2" when taken).
+    - "Update" makes the selected one again with the form's settings
+      (`replace`): in place, its name kept, its clusters and bonds gone.
+      Selecting one puts its settings in the form. It goes when its
+      origins or neighbours do (a sublattice deleted or split again).
+    - Clusters, lattice vectors and bond settings are kept per
+      neighbourhood.
+    - Clusters (default 30): kemstem's `cluster_neighbors` (k-means). The
+      centres are kept in the dataset's `atomic`.
+    - Lattice vectors v₁, v₂ … (named; add or remove). Each is typed, or
+      picked: ⌖ arms it, and a click on a cluster in the plot sets it and
+      moves on to the next unset one.
+    - Within (px, default 3) and "Measure bonds": kemstem's
+      `get_vector_to_neighbors` from each origin per vector (`POST
+      …/atomic/bonds`). Each vector gives a "Bonds v₁" dataset under the
+      neighbourhood: a table of origin row, dy, dx, length (px) and angle
+      (° from +x, y down). It is replaced in place by name. The summary
+      shows each one's mean length and how many origins have no
+      neighbour.
+  - The **Neighbourhood** tab in the pane under the image (whenever the
+    image has a neighbourhood):
+    - The vectors as faint dots (as kemstem's plot), x right and y down as
+      in the image, equal scales, px. The wheel zooms; a double-click
+      resets.
+    - The clusters as rings; hovering one reads its vector. The picked
+      vectors show as arrows from the origin.
+    - It shows the selected neighbourhood, else the last made. A menu in
+      its header switches between the image's neighbourhoods (selecting
+      in the process too), and so does clicking one, or its bonds, in the
+      dataset pane.
+  - Bonds are layers ("Bonds v₁ (A → all)"): lines from each origin along
+    its vector, coloured by length in inferno to start (or plain, or by
+    angle). They have the same
+    contrast toolbar and Histogram tab as the column layers, and size and
+    opacity.
+  - Removed with what they were made from: fitting again or splitting
+    again removes the neighbourhoods (and those whose neighbours were a
+    replaced sublattice).
+  - Checked on the double perovskite (Sublattice A → all, 20, 30
+    clusters):
+    - the clusters picked give v₁ (−1.85, 21.73) and v₂ (−21.13, −1.62),
+      the notebook's hard-coded guesses;
+    - the v₂ bond lengths are longer in the substrate than in the film,
+      as in the notebook.
+  - To come:
+    - polygons (from vectors to the other sublattice, e.g. B → A's four);
+    - a hover readout of bonds;
+    - linked views (§4.26).
   - Rasterised maps (`aggregate_points` with a σ, or `interpolate_points`).
   - Lattice indexing (`index_lattice`).
   - Line profiles along a chain of n columns, extrapolated by a fraction
@@ -2302,6 +2359,30 @@ data, not pictures**, and every view of them is linked.
   processing tree.
 - Values are columns of these tables, so a new measurement adds a column,
   not a new kind of object.
+
+**Selection: the items are shown like any other result (done).**
+- Clicking Columns, a sublattice, a neighbourhood or bonds in the dataset
+  pane adds it to the view (highlighted there). Clicking it again removes
+  it, as for images and maps. They go with images, not with a spectrum
+  image or stack.
+- Each is drawn over the image it came from. The image is added under it
+  when it isn't highlighted itself; it is then drawn, but has no panel of
+  its own.
+- **Grid**: a panel per item, with its image under it. Highlighted images
+  keep their own panels, which show the Atomic columns process's guesses.
+- **Merged**: the image is drawn once, with every item a layer over it
+  (bonds under dots).
+- **Layers tab**: what the highlighted part of the viewer draws.
+  - Merged: everything.
+  - Grid: the active panel's contents. An item's panel lists the image
+    under it (its own show/hide and opacity, `bg:<item>`) and the item; an
+    image's panel lists it and its guesses.
+- The toolbar and Histogram tab edit an item coloured by a value, or the
+  image under it once its row is clicked. The Process tab shows the
+  image's processes.
+- A neighbourhood draws its origin columns (the plot is in its tab).
+- Replaces the earlier automatic layers, which drew every result of an
+  image whenever it was shown.
 
 **Display: shape layers in the Layers panel, beside the image layers.**
 - Each set is drawn as a shape layer: sites as dots, bonds as lines,
@@ -2379,7 +2460,8 @@ data, not pictures**, and every view of them is linked.
    relabelling the selection. Splitting by thresholds is done (M22d).
 3. Bonds (M22e): the neighbourhood scatter, lattice vectors, and bond
    lengths and angles as a bond layer, reusing the histogram, scatter and
-   table.
+   table. *Done* (the scatter in its own Neighbourhood tab; no linked
+   selection yet).
 4. Polygons, values turned into maps, and profiles along column chains.
 5. Displacement triangles (M22f) as a layer of the same kind.
 

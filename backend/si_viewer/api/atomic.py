@@ -238,3 +238,92 @@ def kmeans(body: KMeansBody) -> dict:
         return {"centres": atomic.kmeans_centres(values, body.k)}
     except ValueError as e:
         raise HTTPException(422, str(e))
+
+
+# ---------- M22e: neighbourhoods and bonds ----------
+
+def _atomic_of(request: Request, dataset_id: str, *outputs: str):
+    session = request.app.state.session
+    try:
+        ds = session.get_dataset(dataset_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    if not (ds.atomic and ds.atomic.get("output") in outputs):
+        raise HTTPException(400, f"{ds.title} is not a {' or '.join(outputs)} dataset")
+    return ds
+
+
+class NeighbourhoodBody(BaseModel):
+    neighbours: str
+    k: int = 20
+    #: A neighbourhood to make again with these settings (else a new one).
+    replace: str | None = None
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/neighbourhood")
+def make_neighbourhood(dataset_id: str, body: NeighbourhoodBody, request: Request) -> dict:
+    """The neighbourhood of columns ``dataset_id`` (Columns or a sublattice):
+    the vectors to their ``k`` nearest columns of ``neighbours`` (Columns or
+    a sublattice), a new dataset under them, or ``replace`` made again.
+    Returns ``file`` and its ``id``."""
+    session = request.app.state.session
+    origins = _atomic_of(request, dataset_id, "columns", "sublattice")
+    neighbours = _atomic_of(request, body.neighbours, "columns", "sublattice")
+    replace = _atomic_of(request, body.replace, "neighbourhood") if body.replace else None
+    try:
+        made = session.make_neighbourhood(origins, neighbours, body.k, replace)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(made).summary(session), "id": made.id}
+
+
+class ClustersBody(BaseModel):
+    n: int = 30
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/neighbourhood/clusters")
+def cluster_neighbourhood(dataset_id: str, body: ClustersBody, request: Request) -> dict:
+    """k-means clusters of a neighbourhood's vectors, kept with it. Returns ``file``."""
+    session = request.app.state.session
+    nb = _atomic_of(request, dataset_id, "neighbourhood")
+    try:
+        session.cluster_neighbourhood(nb, body.n)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(nb).summary(session)}
+
+
+@router.get("/api/datasets/{dataset_id}/atomic/neighbourhood")
+def get_neighbourhood(dataset_id: str, request: Request) -> dict:
+    """A neighbourhood's vectors (``dy``, ``dx``, px, y down) and clusters."""
+    nb = _atomic_of(request, dataset_id, "neighbourhood")
+    v = np.round(np.asarray(nb.signal.data, dtype=np.float64), 3)
+    return {"dy": v[:, 0].tolist(), "dx": v[:, 1].tolist(), "clusters": nb.atomic.get("clusters") or []}
+
+
+class BondsBody(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    vector: tuple[float, float]
+    threshold: float = 3.0
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/bonds")
+def make_bonds(dataset_id: str, body: BondsBody, request: Request) -> dict:
+    """Bonds along ``vector`` ([dy, dx] px) from the origins of neighbourhood
+    ``dataset_id``, a dataset under it. Returns ``file`` and its ``id``."""
+    session = request.app.state.session
+    nb = _atomic_of(request, dataset_id, "neighbourhood")
+    try:
+        made = session.make_bonds(nb, body.name, body.vector, body.threshold)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(made).summary(session), "id": made.id}
+
+
+@router.get("/api/datasets/{dataset_id}/atomic/bonds")
+def get_bonds(dataset_id: str, request: Request) -> dict:
+    """A bonds dataset's table: ``fields`` and ``rows`` (NaN as null)."""
+    ds = _atomic_of(request, dataset_id, "bonds")
+    table = np.asarray(ds.signal.data, dtype=np.float64)
+    rows = np.where(np.isfinite(table), np.round(table, 4), None).tolist()
+    return {"fields": list(atomic.BOND_FIELDS), "rows": rows}

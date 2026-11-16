@@ -21,6 +21,7 @@ import { NormaliseSection } from "./NormaliseSection";
 import { AtomicSection, canAnalyseAtomic } from "./AtomicSection";
 import { ColumnsSection } from "./ColumnsSection";
 import { SublatticesSection } from "./SublatticesSection";
+import { NeighbourhoodSection } from "./NeighbourhoodSection";
 import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
@@ -61,6 +62,13 @@ function useProcessTarget(): DatasetSummary | undefined {
     const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
     const shownSi = selection.map((id) => byId.get(id)).find((d) => d?.kind === "spectrum_image");
     const focused = focusId ? byId.get(focusId) : undefined;
+    // A column item (kemstem): the image it came from.
+    if (focused && ["columns", "sublattice", "neighbourhood", "bonds"].includes(focused.atomic?.output ?? "")) {
+      let up: DatasetSummary | undefined = focused;
+      while (up && up.atomic?.output !== "columns") up = byId.get(up.parent_id ?? "");
+      const image = up?.parent_id ? byId.get(up.parent_id) : undefined;
+      if (image) return image;
+    }
     // A member of the linked group in the viewer is processed when focused.
     if (focused && shownSi?.eels?.linked.includes(focused.id)) return focused;
     if (shownSi) return shownSi;
@@ -536,6 +544,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       id: "sublattices", title: "Sublattices", section: "kemstem",
       tip: "Split the fitted atomic columns into sublattices",
       body: <SublatticesSection key={d.id} d={d} />,
+    },
+    canAnalyseAtomic(d) && {
+      id: "neighbourhoods", title: "Neighbourhoods", section: "kemstem",
+      tip: "Vectors to each column's nearest neighbours, their clusters, and bonds along lattice vectors picked from them",
+      body: <NeighbourhoodSection key={d.id} d={d} />,
     },
     hasPcaSection(d) && {
       id: "pca", title: "Decomposition and denoising",

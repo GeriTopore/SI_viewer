@@ -339,3 +339,49 @@ def kmeans_centres(values: np.ndarray, k: int) -> list[float]:
         raise ValueError("Fewer columns than sublattices")
     km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(v)
     return sorted((float(c) for c in km.cluster_centers_.ravel()), reverse=True)
+
+
+# ---------- Neighbourhoods and bonds (M22e) ----------
+
+#: Fields of a bonds table: the origin column's row in its Columns table, the
+#: vector to its neighbour (px, y down), its length (px) and angle (° from +x,
+#: y down as in the image, as kemstem's notebook).
+BOND_FIELDS = ("origin", "dy", "dx", "length", "angle")
+
+
+def neighbourhood(neighbours: np.ndarray, origins: np.ndarray, k: int) -> np.ndarray:
+    """The vectors from each origin to its ``k`` nearest neighbours (kemstem's
+    ``get_neighborhood``, [y, x] px): (k × m, 2), neighbour j of origin i at
+    row j·m + i."""
+    if not 1 <= k <= 200:
+        raise ValueError("Between 1 and 200 neighbours")
+    if len(neighbours) < k:
+        raise ValueError(f"Fewer than {k} neighbours")
+    if not len(origins):
+        raise ValueError("No origins")
+    return np.asarray(_kemstem().get_neighborhood(neighbours, origins, k=k), dtype=np.float64)
+
+
+def cluster_neighbourhood(vectors: np.ndarray, n: int) -> np.ndarray:
+    """``n`` cluster centres of a neighbourhood (kemstem's ``cluster_neighbors``,
+    k-means), [y, x] px."""
+    if not 2 <= n <= 200:
+        raise ValueError("Between 2 and 200 clusters")
+    if len(vectors) < n:
+        raise ValueError("Fewer vectors than clusters")
+    return np.asarray(_kemstem().cluster_neighbors(vectors, n_clusters=n), dtype=np.float64)
+
+
+def bonds(neighbours: np.ndarray, origins: np.ndarray, rows: np.ndarray, guess: tuple[float, float],
+          threshold: float) -> np.ndarray:
+    """From each origin, the vector to the neighbour nearest ``origin + guess``
+    (kemstem's ``get_vector_to_neighbors``; NaN when none is within
+    ``threshold`` px), as a table of BOND_FIELDS; ``rows`` are the origins'
+    rows in their Columns table."""
+    if threshold <= 0:
+        raise ValueError("The threshold must be more than 0")
+    v = np.asarray(_kemstem().get_vector_to_neighbors(neighbours, origins, np.asarray(guess, dtype=np.float64),
+                                                    threshold=threshold), dtype=np.float64)
+    length = np.hypot(v[:, 0], v[:, 1])
+    angle = np.degrees(np.arctan2(v[:, 0], v[:, 1]))
+    return np.column_stack([rows.astype(np.float64), v, length, angle])

@@ -229,13 +229,28 @@ export interface ColumnTest {
 }
 
 export interface AtomicMapInfo extends Omit<FourierSettings, "lock_sigma"> {
-  output: "amplitude" | "grating" | "phase" | "strain-par" | "strain-perp" | "exx" | "eyy" | "exy" | "oxy" | "columns" | "sublattice";
+  output: "amplitude" | "grating" | "phase" | "strain-par" | "strain-perp" | "exx" | "eyy" | "exy" | "oxy" | "columns" | "sublattice"
+    | "neighbourhood" | "bonds";
   /** Columns: how many, how many fits failed, and how they were found and fitted. */
   count?: number;
   failed?: number;
   window?: number;
   /** A sublattice (a dataset under its Columns, holding its columns' rows): its order. */
   index?: number;
+  /** A neighbourhood (under the Columns): its origins' and neighbours'
+   * datasets (Columns or sublattices; origins: else its parent), how many
+   * neighbours each, and its k-means clusters ([dy, dx] px). */
+  origins?: string;
+  neighbours?: string;
+  k?: number;
+  clusters?: [number, number][];
+  /** Bonds (under their neighbourhood): name, the guess vector ([dy, dx] px),
+   * how far from it a neighbour may be (px), how many origins have none, and
+   * their mean length (px). */
+  name?: string;
+  vector?: [number, number];
+  missing?: number;
+  mean_length?: number | null;
   blur?: number;
   distance?: number;
   threshold?: number;
@@ -1449,6 +1464,25 @@ export const api = {
     }),
   kmeans: (values: (number | null)[], k: number) =>
     request<{ centres: number[] }>("/api/atomic/kmeans", { method: "POST", body: JSON.stringify({ values, k }) }),
+  makeNeighbourhood: (origins: string, neighbours: string, k: number, replace?: string) =>
+    request<{ file: FileSummary; id: string }>(`/api/datasets/${origins}/atomic/neighbourhood`, {
+      method: "POST",
+      body: JSON.stringify({ neighbours, k, replace: replace ?? null }),
+    }),
+  clusterNeighbourhood: (id: string, n: number) =>
+    request<{ file: FileSummary }>(`/api/datasets/${id}/atomic/neighbourhood/clusters`, {
+      method: "POST",
+      body: JSON.stringify({ n }),
+    }),
+  neighbourhood: (id: string) =>
+    request<{ dy: number[]; dx: number[]; clusters: [number, number][] }>(`/api/datasets/${id}/atomic/neighbourhood`),
+  makeBonds: (id: string, name: string, vector: [number, number], threshold: number) =>
+    request<{ file: FileSummary; id: string }>(`/api/datasets/${id}/atomic/bonds`, {
+      method: "POST",
+      body: JSON.stringify({ name, vector, threshold }),
+    }),
+  bondsTable: (id: string) =>
+    request<{ fields: string[]; rows: (number | null)[][] }>(`/api/datasets/${id}/atomic/bonds`),
   makeDpc: (settings: DpcSettings) =>
     request<{ ids: Record<"colour" | "x" | "y" | "idpc", string>; files: FileSummary[] }>("/api/dpc", {
       method: "POST",

@@ -384,9 +384,20 @@ export function planeSize(d: DatasetSummary): [number, number] {
  * Images and maps go over a spectrum image (same scan size) or side by side
  * with other images (any size). Stacks go side by side with other stacks
  * (one frame slider). Anything else is shown alone. */
+/** A result of the column analysis (kemstem): Columns, a sublattice, a
+ * neighbourhood or bonds. It is drawn over the image it came from. */
+export const isColumnItem = (d: DatasetSummary | undefined) =>
+  ["columns", "sublattice", "neighbourhood", "bonds"].includes(d?.atomic?.output ?? "");
+
 function combineError(current: DatasetSummary[], d: DatasetSummary): string | null {
+  // Column items go with images (drawn over theirs), not with a spectrum image, stack or spectrum.
+  if (isColumnItem(d)) {
+    const primary = current.find((x) => x.kind !== "image" && !isColumnItem(x));
+    return primary ? `${d.title} is shown over its image, not with ${primary.title}.` : null;
+  }
   if (d.kind === "other") return `${d.title} can't be displayed.`;
-  const all = [...current, d];
+  const all = [...current.filter((x) => !isColumnItem(x)), d];
+  if (d.kind !== "image" && current.some(isColumnItem)) return `${d.title} can't be shown with the column analysis.`;
   const primaries = all.filter((x) => x.kind !== "image");
   if (primaries.length > 1 && !primaries.every((x) => x.kind === "stack")) {
     return "Only one spectrum image or spectrum can be shown at a time (stacks can be shown together). Click it without ⌘ to switch.";
@@ -692,16 +703,6 @@ export const useDatasets = create<DatasetsState>((set, get) => {
     select: (id) => {
       useSi.getState().setRegionView(null); // the Info tab shows the dataset again
       follow(id);
-      // A table of atomic columns is shown over its image.
-      const d = allDatasets(get().files).find((x) => x.id === id);
-      // So is a sublattice of them (under the Columns).
-      const columns = d?.atomic?.output === "sublattice" ? allDatasets(get().files).find((x) => x.id === d.parent_id) : d;
-      const image = columns?.atomic?.output === "columns" ? columns.parent_id : null;
-      if (image) {
-        const keep = get().selection.includes(image);
-        set({ selection: keep ? get().selection : [image], focusId: id });
-        return;
-      }
       set({ selection: [id], focusId: id });
     },
 
@@ -714,9 +715,10 @@ export const useDatasets = create<DatasetsState>((set, get) => {
         set({ focusId: d.id });
         return;
       }
-      // Images and stacks are added to the view by a click and removed by
-      // another (stacks next to stacks, sharing the frame slider).
-      if (d.kind !== "image" && d.kind !== "stack") {
+      // Images, stacks and column items (drawn over their image) are added to
+      // the view by a click and removed by another (stacks next to stacks,
+      // sharing the frame slider).
+      if (d.kind !== "image" && d.kind !== "stack" && !isColumnItem(d)) {
         if (selection.includes(d.id)) set({ focusId: d.id });
         else get().select(d.id);
         return;

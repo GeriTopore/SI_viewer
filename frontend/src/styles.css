@@ -6145,6 +6145,10 @@ kbd {
   position: absolute;
   inset: 0;
 }
+.columns-bonds {
+  fill: none;
+  stroke-linecap: round;
+}
 .columns-hovered {
   fill: none;
   stroke: #fff;
@@ -6234,6 +6238,110 @@ kbd {
 }
 
 /* One column's test fit: data, fit and residual side by side. */
+/* Neighbourhood plot (bottom pane) */
+.nb-plot-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.nb-plot-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 4px 4px;
+}
+.nb-plot {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+}
+.nb-plot canvas,
+.nb-plot svg {
+  position: absolute;
+  inset: 0;
+}
+.nb-frame {
+  fill: none;
+  stroke: var(--border);
+}
+.nb-axis {
+  stroke: var(--muted);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+.nb-tick,
+.nb-tick text {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.nb-cluster {
+  fill: rgba(255, 214, 10, 0.25);
+  stroke: #ffd60a;
+  stroke-width: 1.5;
+}
+.nb-cluster.pickable {
+  cursor: pointer;
+}
+.nb-cluster.hover {
+  fill: rgba(255, 214, 10, 0.6);
+}
+.nb-vector line {
+  stroke: var(--text);
+  stroke-width: 2;
+}
+.nb-vector text,
+.nb-readout {
+  fill: var(--text);
+  font-size: 11px;
+}
+.nb-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.nb-row {
+  display: grid;
+  grid-template-columns: 1fr auto 18px;
+  gap: 6px;
+  align-items: center;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.nb-row + .nb-row {
+  border-top: 1px solid var(--border);
+}
+.nb-row:hover {
+  background: var(--hover);
+}
+.nb-row.active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.nb-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nb-plot-choice {
+  max-width: 60%;
+  font-size: 12px;
+}
+.lattice-vector {
+  display: grid;
+  grid-template-columns: 44px 1fr 1fr auto auto;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.lattice-vector input {
+  min-width: 0;
+}
+.lattice-vector.picking .lattice-vector-name {
+  outline: 1px solid var(--accent);
+}
+
 .threshold-hist svg {
   display: block;
   width: 100%;

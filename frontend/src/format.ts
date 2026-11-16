@@ -54,6 +54,7 @@ export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
 const ATOMIC_LABEL: Record<NonNullable<DatasetSummary["atomic"]>["output"], string> = {
   amplitude: "Amp", grating: "Grating", phase: "Phase", "strain-par": "ε∥", "strain-perp": "ε⊥",
   exx: "εxx", eyy: "εyy", exy: "εxy", oxy: "ωxy", columns: "Columns", sublattice: "Sublattice",
+  neighbourhood: "Neighbours", bonds: "Bonds",
 };
 
 export function kindLabel(d: DatasetSummary): string {
@@ -145,6 +146,14 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
   if (d.atomic?.output === "columns") {
     const a = d.atomic;
     return `${d.title}\n${a.count} atomic columns fitted with 2D Gaussians (kemstem)${a.failed ? `, ${a.failed} failed` : ""}: window ${a.window} px, blur σ ${a.blur} px; shown over ${parentTitle ?? "its image"}`;
+  }
+  if (d.atomic?.output === "neighbourhood") {
+    const a = d.atomic;
+    return `${d.title}\nVectors from each of ${a.count} columns to their ${a.k} nearest${a.clusters ? `; ${a.clusters.length} clusters` : ""} (kemstem)`;
+  }
+  if (d.atomic?.output === "bonds") {
+    const a = d.atomic;
+    return `${d.title}\nFrom each origin, the vector to the neighbour nearest (${a.vector?.map((v) => formatValue(v)).join(", ")}) px, within ${a.threshold} px${a.missing ? `; ${a.missing} without one` : ""} (kemstem)`;
   }
   if (d.atomic?.output === "sublattice") {
     return `${d.title}\n${d.atomic.count} of ${parentTitle ?? "the columns"}; shown over their image`;

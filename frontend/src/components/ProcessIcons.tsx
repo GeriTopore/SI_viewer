@@ -151,6 +151,18 @@ const ICONS: Record<string, () => ReactNode> = {
       <circle cx="24" cy="24" r="11" stroke={ACCENT} strokeWidth="1.2" strokeDasharray="2.5 2" />
     </>
   ),
+  // A column's neighbours: vectors from the centre, one picked.
+  neighbourhoods: () => (
+    <>
+      {[[10, 10], [24, 8], [38, 10], [8, 24], [40, 24], [10, 38], [24, 40], [38, 38]].map(([x, y]) => (
+        <circle key={`${x}-${y}`} cx={x} cy={y} r="3" fill="currentColor" />
+      ))}
+      <circle cx="24" cy="24" r="3.5" fill="currentColor" />
+      <path d="M24 24L37 24" stroke={ACCENT} strokeWidth="2" />
+      <path d="M33 20.5L37.5 24L33 27.5" stroke={ACCENT} strokeWidth="2" />
+      <path d="M24 24L24 11" stroke={ACCENT} strokeWidth="1.2" strokeDasharray="2 2" />
+    </>
+  ),
   // A lattice of two kinds of columns (two sublattices).
   sublattices: () => (
     <>

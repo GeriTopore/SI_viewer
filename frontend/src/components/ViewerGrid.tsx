@@ -18,6 +18,9 @@ export interface GridPanel {
   viewKey: string;
   loading?: string | null;
   error?: string | null;
+  /** The image's opacity, when it is the background of something drawn
+   * over it (default 1). */
+  background?: number;
 }
 
 interface Props {
@@ -339,8 +342,8 @@ function GridCell({
 }) {
   const { layer } = p;
   const layers = useMemo(
-    () => [{ ...layer, opacity: 1, visible: true }],
-    [layer.key, layer.label, layer.frame, layer.display], // eslint-disable-line react-hooks/exhaustive-deps
+    () => [{ ...layer, opacity: p.background ?? 1, visible: true }],
+    [layer.key, layer.label, layer.frame, layer.display, p.background], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const colormap = layer.display?.colormap;
   return (

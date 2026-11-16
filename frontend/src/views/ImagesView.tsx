@@ -4,8 +4,9 @@ import { planeSize } from "../state/datasets";
 import { imageGeometry } from "./geometry";
 
 /** Plain images (or maps), merged into one composite when they are the same
- * size, or side by side in a grid. */
-export function ImagesView({ images }: { images: DatasetSummary[] }) {
+ * size, or side by side in a grid; with column items (kemstem) drawn over
+ * their image (``implied``: images shown only under items). */
+export function ImagesView({ images, items = [], implied = [] }: { images: DatasetSummary[]; items?: DatasetSummary[]; implied?: string[] }) {
   const [w, h] = planeSize(images[0]);
   return (
     <div className="view">
@@ -14,6 +15,8 @@ export function ImagesView({ images }: { images: DatasetSummary[] }) {
         viewKey={`images:${w}x${h}`}
         base={null}
         images={images}
+        items={items}
+        implied={implied}
         geometry={imageGeometry(images[0], "signal")}
         gridContext="images"
       />

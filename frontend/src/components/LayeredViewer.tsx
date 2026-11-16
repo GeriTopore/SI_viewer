@@ -28,8 +28,13 @@ import { lineAt, useLineTool } from "../views/useLineTool";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { LoupeToggle } from "./Loupe";
 import { CoarseningMarker, PhaseContours } from "./PhaseContours";
-import { ColumnsOverlay, parseColumnsKey, useColumnLayers, useColumnsContrast } from "./ColumnsOverlay";
+import {
+  ColumnsOverlay, foundLayerKey, foundPanelLayer, imageOfItem, isFoundKey, itemInfo, itemPanelLayer, itemProps,
+  useItemContrast,
+} from "./ColumnsOverlay";
 import { useColumns } from "../state/columns";
+import { neighbourhoodsOf } from "../state/neighbourhoods";
+import { NeighbourhoodPlot } from "./NeighbourhoodPlot";
 import { AnnotationsToggle } from "./AnnotationsToggle";
 import { lineMenuItems } from "./ProfilePanel";
 import { useFftBoxTool } from "../views/useFftBoxTool";
@@ -71,6 +76,12 @@ interface Props {
   base: BaseImage | null;
   /** Highlighted image datasets, drawn on top of the base in colour. */
   images: DatasetSummary[];
+  /** Column items (kemstem: Columns, sublattices, neighbourhoods, bonds),
+   * drawn over the image they came from (one of ``images``): a panel each
+   * in the grid with the image under it, layers over it when merged. */
+  items?: DatasetSummary[];
+  /** Images shown only under items: drawn when merged, no panel of their own. */
+  implied?: string[];
   /** Other stacks shown with the base, at the same frame (their frames come
    * from the view): a layer each, before the images, with the contrast kept
    * under ``displayKey``. */
@@ -172,7 +183,7 @@ const TOOL_TITLES = {
 export const FLAP_MIN_W = 220;
 
 export function LayeredViewer({
-  viewKey, base, images: maps, stacks = [], geometry, loading, error, children, empty, interaction, renderOverlay,
+  viewKey, base, images: maps, items = [], implied = [], stacks = [], geometry, loading, error, children, empty, interaction, renderOverlay,
   lineTool, fftTool, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], focusCorner, overlays = true, gridContext, requestActive, onActiveChange,
   histogramRegions,
   scanFactor = 1,
@@ -200,8 +211,8 @@ export function LayeredViewer({
   const entryOf = (key: string) => entries.find((e) => e.key === key);
   // The datasets shown (once each).
   const images = [...new Map(entries.map((e) => [e.dataset.id, e.dataset])).values()];
-  const displayKeyOf = (key: string) => entryOf(key)?.displayKey ?? key;
-  const isStack = (key: string) => !!entryOf(key)?.stack;
+  const displayKeyOf = (key: string) => resolve(key)?.displayKey ?? key;
+  const isStack = (key: string) => !!resolve(key)?.stack;
   // Phase maps (kemstem) get its contours drawn over them.
   const isPhase = (key: string) => entryOf(key)?.dataset.atomic?.output === "phase";
   // Fourier-filtered maps (kemstem): the coarsening radius, drawn as its marker.
@@ -245,6 +256,31 @@ export function LayeredViewer({
     })),
   ];
 
+  // Column items: over their image (when it is in the view). Their own
+  // props say whether they show; in the grid, ``bg:<item>`` props the
+  // image under them.
+  const itemImage = (key: string) => {
+    const item = items.find((d) => d.id === key);
+    return item ? imageOfItem(files, item) : null;
+  };
+  const imageLayers = layers;
+  const itemLayers: ViewLayer[] = items.flatMap((item) => {
+    const info = itemInfo(files, item);
+    const under = imageLayers.find((l) => l.key === info?.columns.parent_id);
+    if (!info || !under) return [];
+    const q = itemProps(layerProps[item.id], info);
+    return [{ ...under, key: item.id, label: info.label, visible: q.visible, opacity: q.opacity }];
+  });
+  const isItem = (key: string) => itemLayers.some((l) => l.key === key);
+  const allLayers = [...imageLayers, ...itemLayers];
+  // The grid's panels: images (not those only under items) and items.
+  const panelLayers = allLayers.filter((l) => !implied.includes(l.key));
+  // An item's entry is its image's.
+  const resolve = (key: string) => entryOf(key) ?? entryOf(itemImage(key) ?? "");
+  // The images that have column guesses (Atomic columns process): a layer each.
+  const foundById = useColumns((s) => s.byId);
+  const foundImages = imageLayers.filter((l) => l.datasetId && foundById[l.datasetId]?.found?.length).map((l) => l.datasetId!);
+
   // Merged or grid: the user's choice for this kind of view, else the
   // default (maps over a spectrum image merge; plain images get a grid).
   // Merged needs images of one pixel size.
@@ -254,8 +290,8 @@ export function LayeredViewer({
   const focusNav = useUi((s) => s.focus === "bottom" && s.focusNav);
   const flapOpen = focusNav && bottomTabs.length > 0;
   const setGridMode = useUi((s) => s.setGridMode);
-  const sizes = layers.map((l) => {
-    const d = l.key === BASE ? undefined : entryOf(l.key)?.dataset;
+  const sizes = panelLayers.map((l) => {
+    const d = l.key === BASE ? undefined : resolve(l.key)?.dataset;
     if (!d) return { geometry, w: geometry.width, h: geometry.height };
     const [w0, h0] = planeSize(d);
     const [w, h] = [w0 * scanFactor, h0 * scanFactor]; // stretched over the base
@@ -263,7 +299,7 @@ export function LayeredViewer({
     return { geometry: own, w: own.width, h: own.height };
   });
   const sameSize = sizes.every((z) => z.w === sizes[0].w && z.h === sizes[0].h);
-  const canSwitch = !!gridContext && layers.length > 1 && !(flapOpen && sameSize);
+  const canSwitch = !!gridContext && panelLayers.length > 1 && !(flapOpen && sameSize);
   const mode: GridMode = canSwitch
     ? !sameSize
       ? "grid"
@@ -273,7 +309,7 @@ export function LayeredViewer({
   // Every layer gets a panel: switching to the grid shows any hidden ones again.
   const switchMode = (m: GridMode) => {
     if (m === "grid") {
-      for (const l of layers) if (!l.visible) setProps(l.key === BASE ? baseLayerKey(viewKey) : l.key, { visible: true });
+      for (const l of panelLayers) if (!l.visible) setProps(l.key === BASE ? baseLayerKey(viewKey) : l.key, { visible: true });
     }
     setGridMode(gridContext!, m);
   };
@@ -281,14 +317,17 @@ export function LayeredViewer({
 
   // The toolbar edits the focused image if it's in the view, else the base.
   const [active, setActive] = useState<string>(BASE);
-  const imageIds = entries.map((e) => e.key).join(",");
+  // With an item, the toolbar edits its colours (when coloured by a value)
+  // or, with ``editBg``, the image under it.
+  const [editBg, setEditBg] = useState(false);
+  const imageIds = allLayers.map((e) => e.key).join(",");
   useEffect(() => {
-    if (focusId && entries.some((e) => e.key === focusId)) {
+    if (focusId && allLayers.some((e) => e.key === focusId)) {
       setActive(focusId);
-      setActiveShape(null);
+      setEditBg(false);
     }
   }, [focusId, imageIds]); // eslint-disable-line react-hooks/exhaustive-deps
-  const activeLayer = layers.find((l) => l.key === active) ?? layers[0];
+  const activeLayer = allLayers.find((l) => l.key === active) ?? panelLayers[0] ?? allLayers[0];
   // Tell the view which layer is edited (not on mount), and honour its requests.
   const onActive = useRef(onActiveChange);
   onActive.current = onActiveChange;
@@ -298,35 +337,27 @@ export function LayeredViewer({
     reported.current = activeLayer?.key;
     if (activeLayer) onActive.current?.(activeLayer.key);
   }, [activeLayer?.key]); // eslint-disable-line react-hooks/exhaustive-deps
-  const layerKeys = layers.map((l) => l.key).join(",");
+  const layerKeys = allLayers.map((l) => l.key).join(",");
   useEffect(() => {
     if (!requestActive || !layerKeys.split(",").includes(requestActive.key)) return;
     setActive(requestActive.key);
     if (requestActive.key !== BASE) setFocus(entryOf(requestActive.key)?.dataset.id ?? requestActive.key);
   }, [requestActive]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Shape layers (atomic columns) of the images in view, drawn over them.
-  const shapeLayers = useColumnLayers(
-    [...new Set([baseDataset?.id, ...images.map((d) => d.id)].filter((x): x is string => !!x))],
-  );
-  // A shape layer selected in the list: when coloured by a value, the
-  // contrast toolbar and the Histogram tab edit its limits.
-  const [activeShape, setActiveShape] = useState<string | null>(null);
-  const shapeKey = activeShape && shapeLayers.some((l) => l.id === activeShape) ? activeShape : null;
-  const shapeContrast = useColumnsContrast(shapeKey);
-  // A sublattice focused in the tree: its layer is the one edited.
-  useEffect(() => {
-    const layer = focusId ? shapeLayers.find((l) => l.kind === "fitted" && l.dataset === focusId) : undefined;
-    if (layer) setActiveShape(layer.id);
-  }, [focusId, shapeLayers.length]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shapeDisplay = shapeKey && shapeContrast ? displays[shapeKey] : undefined;
+  // The active item coloured by a value: the contrast toolbar and the
+  // Histogram tab edit its limits.
+  const activeItem = activeLayer && !editBg ? items.find((d) => d.id === activeLayer.key) ?? null : null;
+  const itemContrast = useItemContrast(activeItem);
+  const shapeKey = itemContrast && activeItem ? activeItem.id : null;
+  const shapeContrast = itemContrast;
+  const shapeDisplay = shapeKey ? displays[shapeKey] : undefined;
   const activate = (key: string) => {
-    setActiveShape(null);
+    setEditBg(false);
     setActive(key);
     if (key !== BASE) setFocus(entryOf(key)?.dataset.id ?? key);
     onActive.current?.(key);
   };
   const isBase = activeLayer?.key === BASE;
-  const activeDataset = isBase ? baseDataset : activeLayer && entryOf(activeLayer.key)?.dataset;
+  const activeDataset = isBase ? baseDataset : activeLayer && resolve(activeLayer.key)?.dataset;
 
   const onDisplayChange = (patch: Partial<DisplayParams>) => {
     if (!activeLayer) return;
@@ -454,10 +485,13 @@ export function LayeredViewer({
         ]
       : []),
   ];
+  // Neighbourhoods of an image's columns (kemstem): their plot.
+  const nbImage = [baseDataset?.id, ...images.map((d) => d.id)].find((id) => id && neighbourhoodsOf(files, id).length);
+  if (nbImage) tabs.push({ id: "neighbourhood" as const, label: "Neighbourhood", content: <NeighbourhoodPlot image={nbImage} /> });
   // The histogram tab is always offered (with regions drawn, also theirs).
   {
     // The layer's own pixels (not stretched over the scan).
-    const own = isBase ? (base?.frame ?? null) : activeLayer ? (entryOf(activeLayer.key)?.frame ?? null) : null;
+    const own = isBase ? (base?.frame ?? null) : activeLayer ? (resolve(activeLayer.key)?.frame ?? null) : null;
     tabs.push({
       id: "histogram" as const,
       label: "Histogram",
@@ -487,54 +521,84 @@ export function LayeredViewer({
     }
   };
 
-  // The layer list (over the image as soon as any map is shown; always in the Layers tab).
-  const showPanel = entries.length > 0 || shapeLayers.length > 0;
+  // The layer list (over the image as soon as any map or item is shown;
+  // always in the Layers tab).
+  const showPanel = entries.length > 0 || items.length > 0 || foundImages.length > 0;
+  const imageRow = (l: ViewLayer) => ({
+    id: l.key, label: l.label, visible: l.visible, opacity: l.opacity, display: l.display,
+    removable: l.key !== BASE && !implied.includes(l.key) && (entryOf(l.key)?.removable ?? true),
+  });
+  const itemRow = (item: DatasetSummary) => {
+    const info = itemInfo(files, item);
+    return info ? [itemPanelLayer(item, info, layerProps[item.id], displays[item.id], true)] : [];
+  };
+  const foundRows = (ids: string[]) => ids.map((id) => foundPanelLayer(id, layerProps[foundLayerKey(id)]));
+  const shownItems = items.filter((d) => isItem(d.id));
+  const rowsAll = [
+    ...(grid ? panelLayers.filter((l) => !isItem(l.key)) : imageLayers).map(imageRow),
+    ...foundRows(foundImages),
+    ...shownItems.flatMap(itemRow),
+  ];
+  const onPanelChange = (id: string, patch: { visible?: boolean; opacity?: number }) =>
+    setProps(id === BASE ? baseLayerKey(viewKey) : id, patch);
   const panelProps: LayersPanelProps = {
-      layers: [...layers.map((l) => ({
-        id: l.key,
-        label: l.label,
-        visible: l.visible,
-        opacity: l.opacity,
-        display: l.display,
-        removable: l.key !== BASE && (entryOf(l.key)?.removable ?? true),
-      })), ...shapeLayers],
+      layers: rowsAll,
       active: shapeKey ?? activeLayer?.key ?? BASE,
       onActivate: (id) => {
-        const shape = parseColumnsKey(id);
-        if (!shape) return activate(id);
-        setActiveShape(id);
-        // The fitted columns: their dataset (or the sublattice's) gets the focus (its info).
-        const all = allDatasets(files);
-        const ds = shape.kind === "fitted" &&
-          (all.find((d) => d.id === shape.group) ?? all.find((d) => d.parent_id === shape.image && d.atomic?.output === "columns"));
-        if (ds) setFocus(ds.id);
+        if (id.startsWith("bg:")) {
+          activate(id.slice(3));
+          setEditBg(true);
+          return;
+        }
+        if (isFoundKey(id)) return;
+        activate(id);
       },
-      onChange: (id, patch) => {
-        // Shape layers may start hidden: keep that unless the eye changes it.
-        const shape = shapeLayers.find((l) => l.id === id);
-        setProps(id === BASE ? baseLayerKey(viewKey) : id, shape ? { visible: shape.visible, ...patch } : patch);
-      },
+      onChange: onPanelChange,
       onColour: (id, colour) => {
-        if (parseColumnsKey(id)) return setProps(id, { visible: shapeLayers.find((l) => l.id === id)?.visible ?? true, colour, colourBy: undefined });
-        const d = id === BASE ? baseDataset : entryOf(id)?.dataset;
-        if (d && isStack(id)) setDisplay(displayKeyOf(id), { colormap: colour });
+        if (isFoundKey(id) || isItem(id)) return setProps(id, { colour, colourBy: undefined });
+        const key = id.startsWith("bg:") ? (itemImage(id.slice(3)) ?? id) : id;
+        const d = key === BASE ? baseDataset : entryOf(key)?.dataset;
+        if (d && isStack(key)) setDisplay(displayKeyOf(key), { colormap: colour });
         else if (d) setMapColour(d, colour);
         else baseDisplay.setDisplay({ colormap: colour });
       },
       onRemove: (id) => {
-        const shape = parseColumnsKey(id);
-        if (shape?.kind === "found") return useColumns.getState().patch(shape.image, { found: null, test: null });
-        if (shape) return;
+        if (isFoundKey(id)) return useColumns.getState().patch(id.slice("columns:found:".length), { found: null, test: null });
+        if (isItem(id)) return deselect(id);
         if (id !== BASE && (entryOf(id)?.removable ?? true)) deselect(entryOf(id)?.dataset.id ?? id);
       },
       opacity: !grid,
+  };
+  // The Layers tab: what the highlighted part of the viewer draws. Merged:
+  // everything; grid: the active panel (an item's: the image under it and
+  // the item; an image's: it and its guesses).
+  const tabRows = (() => {
+    if (!grid || !activeLayer) return rowsAll;
+    if (isItem(activeLayer.key)) {
+      const imageId = itemImage(activeLayer.key) ?? "";
+      const under = imageLayers.find((l) => l.key === imageId);
+      const bg = { ...DEFAULT_LAYER, ...layerProps[`bg:${activeLayer.key}`] };
+      const item = items.find((d) => d.id === activeLayer.key)!;
+      return [
+        ...(under ? [{ id: `bg:${activeLayer.key}`, label: under.label, visible: bg.visible, opacity: bg.opacity, display: under.display, removable: false }] : []),
+        ...itemRow(item),
+      ];
+    }
+    const l = imageLayers.find((x) => x.key === activeLayer.key);
+    return l ? [imageRow(l), ...foundRows(l.datasetId && foundImages.includes(l.datasetId) ? [l.datasetId] : [])] : rowsAll;
+  })();
+  const tabProps: LayersPanelProps = {
+    ...panelProps,
+    layers: tabRows,
+    active: editBg && activeLayer ? `bg:${activeLayer.key}` : panelProps.active,
+    opacity: true,
   };
   const panel = showPanel ? <LayersPanel {...panelProps} /> : null;
   // The Layers tab shows this list: the first viewer mounted owns it until it goes.
   const tabOwner = useId();
   useEffect(() => {
     const { owner, publish } = useLayersTab.getState();
-    if (owner === null || owner === tabOwner) publish(tabOwner, panelProps);
+    if (owner === null || owner === tabOwner) publish(tabOwner, tabProps);
   });
   useEffect(() => () => useLayersTab.getState().clear(tabOwner), [tabOwner]);
 
@@ -660,7 +724,7 @@ export function LayeredViewer({
           {lifted && focusCorner && <div className="focus-corner">{focusCorner}</div>}
           {grid ? (
             <ViewerGrid
-              panels={layers
+              panels={panelLayers
                 .map((layer, i): GridPanel => {
                   const z = sizes[i];
                   const first = sizes[0];
@@ -673,6 +737,11 @@ export function LayeredViewer({
                     // Panels of the first image's size share the view's key.
                     viewKey: z.w === first.w && z.h === first.h ? viewKey : `${viewKey}:${z.w}x${z.h}`,
                     ...(layer.key === BASE && { loading, error }),
+                    // An item's panel: the image under it, as its props say.
+                    ...(isItem(layer.key) && (() => {
+                      const bg = { ...DEFAULT_LAYER, ...layerProps[`bg:${layer.key}`] };
+                      return { background: bg.visible ? bg.opacity : 0 };
+                    })()),
                   };
                 })}
               active={activeLayer?.key}
@@ -693,7 +762,15 @@ export function LayeredViewer({
                         <SurveyRegions key={d.id} t={t} regions={d.survey!.regions} />
                       ))}
                       {isPhase(p.layer.key) && p.layer.frame && <PhaseContours t={t} frame={p.layer.frame} />}
-                      <ColumnsOverlay t={t} image={p.layer.datasetId} />
+                      {isItem(p.layer.key) ? (
+                        <ColumnsOverlay
+                          t={t}
+                          image={p.layer.datasetId}
+                          items={items.filter((d) => d.id === p.layer.key)}
+                        />
+                      ) : (
+                        <ColumnsOverlay t={t} image={p.layer.datasetId} items={[]} found />
+                      )}
                       {coarseningOf(p.layer.key) && (
                         <CoarseningMarker t={t} width={p.width} height={p.height} radius={coarseningOf(p.layer.key)!} />
                       )}
@@ -703,7 +780,9 @@ export function LayeredViewer({
                 </>
               )}
               onRemove={(key) =>
-                key === BASE || !(entryOf(key)?.removable ?? true) ? null : () => deselect(entryOf(key)?.dataset.id ?? key)
+                isItem(key)
+                  ? () => deselect(key)
+                  : key === BASE || !(entryOf(key)?.removable ?? true) ? null : () => deselect(entryOf(key)?.dataset.id ?? key)
               }
               empty="No images to show"
               scanFactor={scanFactor}
@@ -711,14 +790,14 @@ export function LayeredViewer({
           ) : (
             <ImageView
               viewKey={viewKey}
-              layers={layers}
+              layers={imageLayers}
               fullWidth={geometry.width}
               fullHeight={geometry.height}
               calX={geometry.calX}
               calY={geometry.calY}
               loading={loading}
               error={error}
-              empty={layers.length ? null : (empty ?? null)}
+              empty={imageLayers.length ? null : (empty ?? null)}
               panel={panel}
               interaction={toolInteraction}
               fftView={viewKey}
@@ -737,8 +816,14 @@ export function LayeredViewer({
                       {layers.filter((l) => l.visible && l.frame && isPhase(l.key)).map((l) => (
                         <PhaseContours key={l.key} t={t} frame={l.frame!} />
                       ))}
-                      {layers.filter((l) => l.visible && l.datasetId).map((l) => (
-                        <ColumnsOverlay key={`columns-${l.key}`} t={t} image={l.datasetId} />
+                      {imageLayers.filter((l) => l.datasetId).map((l) => (
+                        <ColumnsOverlay
+                          key={`columns-${l.key}`}
+                          t={t}
+                          image={l.datasetId}
+                          items={shownItems.filter((d) => itemImage(d.id) === l.datasetId)}
+                          found={l.visible}
+                        />
                       ))}
                       {(() => {
                         // One marker: the largest coarsening of the maps shown.
@@ -750,7 +835,7 @@ export function LayeredViewer({
                   )}
                 </>
               )}
-              analysisKey={activeLayer?.key}
+              analysisKey={activeLayer && isItem(activeLayer.key) ? (itemImage(activeLayer.key) ?? undefined) : activeLayer?.key}
               scanFactor={scanFactor}
               hint={showPanel || !overlays ? undefined : "click or drag maps to overlay them"}
             >

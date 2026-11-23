@@ -13,6 +13,7 @@ import type { DisplayParams } from "../viewer/renderer";
 import { ContrastControls } from "./ContrastControls";
 import { useFftBoxes, useViewFftBoxes, type FftBox } from "../state/fftBoxes";
 import { addPeak, deletePeak, peakAt, useAtomic, usedPeaks, type FftPeak } from "../state/atomic";
+import { addPldPeak, deletePldPeak, togglePeak, usePld } from "../state/pld";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { LoupeFrame, LoupeToggle, lastPointer, overFft } from "./Loupe";
 import { useShortcuts } from "../keyboard";
@@ -116,9 +117,30 @@ export function FftPanel() {
   const atomicShown = useAtomic((s) => s.shown);
   const atomicId = atomicShown && image?.datasetId === atomicShown ? atomicShown : null;
   const atomic = useAtomic((s) => (atomicId ? s.byId[atomicId] : undefined));
+  // The PLD process's image: its labelled peaks instead (damped ones ringed
+  // with the damping radius; a click toggles one).
+  const pldShown = usePld((s) => s.shown);
+  const pldId = pldShown && image?.datasetId === pldShown ? pldShown : null;
+  const pld = usePld((s) => (pldId ? s.byId[pldId] : undefined));
+  const pldDs = useDatasets((s) => (pldId ? allDatasets(s.files).find((d) => d.id === pldId) : undefined));
   const peaks = useMemo(
     () =>
-      atomicId
+      pldId
+        ? {
+            list: (pld?.peaks ?? []).map((p): FftPeak => ({ fy: p.fy, fx: p.fx, refined: null })),
+            picking: pld?.picking ?? true,
+            onAdd: (fy: number, fx: number) => addPldPeak(pldId, fy, fx),
+            onDelete: (i: number) => deletePldPeak(pldId, i),
+            onToggle: (i: number) => togglePeak(pldId, i),
+            classOf: (i: number) => {
+              const pk = pld?.peaks[i];
+              if (!pk) return "";
+              return pk.damp ? `pld-damp family-${pk.family ? (pk.family - 1) % 6 : "x"}` : pk.family === 0 ? "pld-bragg" : "pld-other";
+            },
+            ring: pld?.settings.radius && pldDs?.axes[0]?.size ? pld.settings.radius / pldDs.axes[0].size : undefined,
+            numbered: false,
+          }
+        : atomicId
         ? {
             list: atomic?.peaks ?? [],
             picking: atomic?.picking ?? true,
@@ -126,7 +148,7 @@ export function FftPanel() {
             onDelete: (i: number) => deletePeak(atomicId, i),
           }
         : null,
-    [atomicId, atomic?.peaks, atomic?.picking],
+    [atomicId, atomic?.peaks, atomic?.picking, pldId, pld?.peaks, pld?.picking, pld?.settings.radius, pldDs],
   );
   const setSource = (id: string | null) => fftView && useFftBoxes.getState().patch(fftView, { source: id, selected: id });
   // The focused dataset's bandpass filter, drawn like the alignment's mask
@@ -348,6 +370,14 @@ export interface FftPeaks {
   picking: boolean;
   onAdd: (fy: number, fx: number) => void;
   onDelete: (index: number) => void;
+  /** A click on a peak (not beside it) toggles it instead of adding one. */
+  onToggle?: (index: number) => void;
+  /** Extra class of each peak's mark (its label). */
+  classOf?: (index: number) => string;
+  /** Radius (cycles/px) ringed round peaks marked "pld-damp". */
+  ring?: number;
+  /** Numbered marks (default true). */
+  numbered?: boolean;
 }
 
 // A peak is hit within this many screen pixels (right-click to delete).
@@ -589,6 +619,17 @@ export function FftView({
     const u = ((e.clientX - rect.left) / rect.width - 0.5) * span;
     const v = ((e.clientY - rect.top) / rect.height - 0.5) * span;
     // A peak: cycles per full-resolution image pixel.
+    if (peaks?.picking && peaks.onToggle) {
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      let best = -1;
+      let bestD = PEAK_HIT_PX;
+      peakDots.forEach((d, i) => {
+        const dist = Math.hypot(d.x - x, d.y - y);
+        if (dist <= bestD) [best, bestD] = [i, dist];
+      });
+      if (best >= 0) return peaks.onToggle(best);
+    }
     if (peaks?.picking) peaks.onAdd(v / (p.n * p.bin), u / (p.n * p.bin));
     else if (measure) setMark({ kx: u / (p.n * p.px), ky: v / (p.n * p.py) });
   };
@@ -909,13 +950,18 @@ export function FftView({
         ) : null}
         {peakDots.length > 0 && (
           <svg className="fft-overlay" width={side} height={side}>
-            {peakDots.map((d, i) => (
-              <g key={i} className={`fft-peak${d.refined ? " refined" : ""}`}>
-                <circle cx={d.x} cy={d.y} r={5} />
-                {d.refined && <circle className="fft-peak-dot" cx={d.rx} cy={d.ry} r={2} />}
-                <text x={d.x + 7} y={d.y - 6}>{i + 1}</text>
-              </g>
-            ))}
+            {peakDots.map((d, i) => {
+              const cls = peaks?.classOf?.(i) ?? "";
+              const ringR = peaks?.ring && p ? toScreen(peaks.ring * p.n * p.bin) - toScreen(0) : 0;
+              return (
+                <g key={i} className={`fft-peak${d.refined ? " refined" : ""}${cls ? ` ${cls}` : ""}`}>
+                  {ringR > 0 && cls.includes("pld-damp") && <circle className="pld-ring" cx={d.x} cy={d.y} r={ringR} />}
+                  <circle cx={d.x} cy={d.y} r={cls && !cls.includes("pld-damp") ? 3.5 : 5} />
+                  {d.refined && <circle className="fft-peak-dot" cx={d.rx} cy={d.ry} r={2} />}
+                  {peaks?.numbered !== false && <text x={d.x + 7} y={d.y - 6}>{i + 1}</text>}
+                </g>
+              );
+            })}
           </svg>
         )}
         {loupe && pointerAt && (

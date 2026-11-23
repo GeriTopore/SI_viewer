@@ -117,10 +117,14 @@ class ColumnsBody(BaseModel):
     distance: int = 4
     threshold: float = 0.1
     window: int = 7
+    background: float = 0.0
+    method: Literal["maxima", "template"] = "maxima"
+    template: float = 1.5
 
     def options(self) -> atomic.ColumnOptions:
         try:
-            return atomic.ColumnOptions(self.blur, self.distance, self.threshold, self.window).check()
+            return atomic.ColumnOptions(self.blur, self.distance, self.threshold, self.window, self.background,
+                                        self.method, self.template).check()
         except ValueError as e:
             raise HTTPException(422, str(e))
 
@@ -174,6 +178,30 @@ def refine_columns(dataset_id: str, body: RefineBody, request: Request) -> dict:
     return request.app.state.jobs.submit("atomic-columns", f"Fit the columns of {ds.title}", run).summary()
 
 
+@router.post("/api/datasets/{dataset_id}/atomic/columns/append")
+def append_columns(dataset_id: str, body: RefineBody, request: Request) -> dict:
+    """Fit new columns (e.g. sites at cage centres) and add them after the
+    Columns dataset ``dataset_id``'s own, which stay fitted as they are: a
+    job. The new ones are a sublattice of their own. The job's result:
+    ``file``, ``id`` (the Columns) and ``sublattice``."""
+    session = request.app.state.session
+    cols = _columns_of(request, dataset_id)
+    image = image_of(request, cols.parent_id)
+    opts = body.options()
+    if not body.columns:
+        raise HTTPException(422, "No columns to add")
+    columns = np.array(body.columns, dtype=np.float64)
+
+    def run(job) -> dict:
+        table = atomic.refine_columns(image, columns, opts,
+                                      report=lambda f: job.report(0.97 * f, f"Fitting {len(columns)} new columns"))
+        job.report(0.98, "Adding the columns")
+        sub = session.append_columns(cols, table, {"window": opts.window, "blur": opts.blur})
+        return {"file": session.file_of(cols).summary(session), "id": cols.id, "sublattice": sub.id}
+
+    return request.app.state.jobs.submit("atomic-columns", f"Fit {len(columns)} new columns of {cols.title}", run).summary()
+
+
 @router.get("/api/datasets/{dataset_id}/atomic/columns")
 def get_columns(dataset_id: str, request: Request) -> dict:
     """A Columns dataset's table: ``fields`` and ``rows`` (NaN as null)."""
@@ -223,6 +251,170 @@ def set_sublattices(dataset_id: str, body: SublatticesBody, request: Request) ->
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"file": session.file_of(ds).summary(session), "ids": [d.id for d in made]}
+
+
+class MaskBody(BaseModel):
+    mask: str
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/columns/sublattices/mask")
+def sublattice_from_mask(dataset_id: str, body: MaskBody, request: Request) -> dict:
+    """A sublattice of the columns in a mask (an image of the same size: a
+    pixel above 0.5), added next to the sublattices there are; columns
+    without a fitted position are left out. Returns its ``file`` and ``id``."""
+    from ..processing.masks import inside
+
+    session = request.app.state.session
+    ds = _columns_of(request, dataset_id)
+    try:
+        mask = session.get_dataset(body.mask)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {body.mask}")
+    image = session.get_dataset(ds.parent_id)
+    if mask.kind is not DatasetKind.IMAGE or tuple(mask.signal.data.shape) != tuple(image.signal.data.shape):
+        raise HTTPException(422, f"{mask.title} is not an image the size of {image.title}")
+    mask.materialise()
+    table = np.asarray(ds.signal.data, dtype=np.float64)
+    fields = list(atomic.COLUMN_FIELDS)
+    pos = table[:, [fields.index("y"), fields.index("x")]]
+    rows = np.flatnonzero(inside(np.asarray(mask.signal.data, dtype=np.float64), pos))
+    try:
+        made = session.add_sublattice(ds, rows, {"mask": mask.id})
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(ds).summary(session), "id": made.id}
+
+
+class CellBody(BaseModel):
+    # The columns whose lattice makes the cell (a sublattice or the Columns).
+    reference: str
+    # Its two lattice vectors, [dy, dx] px.
+    vectors: tuple[tuple[float, float], tuple[float, float]]
+
+
+def _cell_of(request: Request, cols, body: CellBody) -> np.ndarray:
+    session = request.app.state.session
+    try:
+        ref = session.get_dataset(body.reference)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {body.reference}")
+    try:
+        if session._columns_of(ref).id != cols.id:
+            raise ValueError(f"{ref.title} is not of {cols.title}")
+        _, r = session.column_positions(ref)
+        table = np.asarray(cols.signal.data, dtype=np.float64)
+        return atomic.cell_coordinates(table[:, :2], r, body.vectors)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/columns/cell")
+def cell_positions(dataset_id: str, body: CellBody, request: Request) -> dict:
+    """Each column's place in the cell of the reference columns' lattice:
+    ``u`` and ``v``, fractions of the two vectors from the nearest reference
+    column, in [−½, ½) (null without a position)."""
+    cols = _columns_of(request, dataset_id)
+    f = np.round(_cell_of(request, cols, body), 4)
+    clean = lambda a: [None if not np.isfinite(x) else float(x) for x in a]
+    return {"u": clean(f[:, 0]), "v": clean(f[:, 1])}
+
+
+class CellSitesBody(CellBody):
+    # The sites, (u, v) in the cell.
+    sites: list[tuple[float, float]] = Field(min_length=1, max_length=24)
+    # Each site's sublattice (sites with the same name make one, e.g. both
+    # spots of a site the cell doesn't repeat onto each other); default A,
+    # B, … in order.
+    names: list[str] | None = None
+    # How far (px) a column may be from its site.
+    radius: float = 5.0
+    # "radius": each column to the nearest site within ``radius``;
+    # "clusters": each site the dense, connected groups of columns that come
+    # within ``radius`` of it (columns within ``link`` px of each other,
+    # groups of ``least`` or more), however far they reach.
+    mode: Literal["radius", "clusters"] = "radius"
+    link: float = 4.0
+    least: int = 5
+
+    def site_names(self) -> list[str]:
+        per_site = [x.strip() for x in self.names] if self.names else list(atomic.SUBLATTICE_NAMES[:len(self.sites)])
+        if len(per_site) != len(self.sites) or not all(per_site):
+            raise ValueError("Each site needs its sublattice's name")
+        if len(dict.fromkeys(per_site)) > len(atomic.SUBLATTICE_NAMES):
+            raise ValueError(f"At most {len(atomic.SUBLATTICE_NAMES)} sublattices")
+        return per_site
+
+    def assign(self, cell: np.ndarray) -> tuple[list[int | None], list[dict] | None]:
+        """Each column's site (index into ``sites``), and the fitted clusters (clusters mode)."""
+        if self.mode == "clusters":
+            labels, fits, _ = atomic.cluster_sites(cell, self.sites, self.vectors, self.link, self.least, self.radius)
+            return labels, fits
+        return atomic.assign_sites(cell, self.sites, self.vectors, self.radius), None
+
+
+@router.put("/api/datasets/{dataset_id}/atomic/columns/sublattices/cell")
+def sublattices_by_cell(dataset_id: str, body: CellSitesBody, request: Request) -> dict:
+    """Split the columns by their place in the reference columns' cell: each
+    to the nearest site within ``radius`` px (the cell repeating), each site
+    into its sublattice (``names``; replacing those there were). Returns its
+    ``file`` and the sublattices' ``ids``."""
+    session = request.app.state.session
+    cols = _columns_of(request, dataset_id)
+    cell = _cell_of(request, cols, body)
+    try:
+        per_site = body.site_names()
+        names = list(dict.fromkeys(per_site))
+        site_label = [names.index(x) for x in per_site]
+        sites, _ = body.assign(cell)
+        labels = [None if k is None else site_label[k] for k in sites]
+        made = session.set_sublattices(cols, labels, names)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(cols).summary(session), "ids": [d.id for d in made]}
+
+
+class PicksBody(BaseModel):
+    # What was picked or set by hand for this dataset (the page's own
+    # record: e.g. a neighbourhood's lattice vectors and cage, the Columns'
+    # cell sites), kept with it and saved with the analysis.
+    picks: dict
+
+
+@router.put("/api/datasets/{dataset_id}/atomic/picks", status_code=204)
+def set_picks(dataset_id: str, body: PicksBody, request: Request) -> None:
+    """Keep the picks made for a dataset of the column analysis (Columns,
+    sublattices, neighbourhoods …) with it; its summary's ``atomic.picks``."""
+    import json
+
+    session = request.app.state.session
+    try:
+        ds = session.get_dataset(dataset_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    if not ds.atomic:
+        raise HTTPException(400, f"{ds.title} is not part of a column analysis")
+    if len(json.dumps(body.picks)) > 200_000:
+        raise HTTPException(413, "Too much to keep")
+    ds.atomic = {**ds.atomic, "picks": body.picks}
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/columns/cell/fit")
+def fit_cell_sites(dataset_id: str, body: CellSitesBody, request: Request) -> dict:
+    """The sites' clusters in the cell, as a split in clusters mode makes
+    them but without splitting: each column's ``labels`` (an index into the
+    sites, or null), per site ``u``, ``v``, ``count`` and ``empty``, the
+    groups no site took (``unpicked``: ``u``, ``v``, ``count``) and how many
+    columns are ``left_out``."""
+    cols = _columns_of(request, dataset_id)
+    cell = _cell_of(request, cols, body)
+    try:
+        body.site_names()
+        labels, fits, unpicked = atomic.cluster_sites(cell, body.sites, body.vectors, body.link, body.least, body.radius)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    ok = np.isfinite(cell).all(axis=1)
+    return {"labels": labels, "sites": fits, "unpicked": unpicked,
+            "left_out": int(sum(1 for x, o in zip(labels, ok) if o and x is None))}
 
 
 class KMeansBody(BaseModel):
@@ -320,6 +512,47 @@ def make_bonds(dataset_id: str, body: BondsBody, request: Request) -> dict:
     return {"file": session.file_of(made).summary(session), "id": made.id}
 
 
+class CageBody(BaseModel):
+    # The picked clusters ([dy, dx] px) whose nearest neighbours make the cage.
+    vectors: list[tuple[float, float]] = Field(default=[], max_length=24)
+    threshold: float = 3.0
+    # The cage is all the k nearest neighbours instead (no clusters picked).
+    nearest: bool = False
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/neighbourhood/centres")
+def cage_centres(dataset_id: str, body: CageBody, request: Request) -> dict:
+    """Column guesses at the centre of each origin's cage (the neighbours
+    nearest the picked ``vectors``), after the Columns' fitted positions, to
+    fit them all again: ``columns``, ``labels``, ``names`` (the new ones a
+    sublattice of their own) and ``added``."""
+    session = request.app.state.session
+    nb = _atomic_of(request, dataset_id, "neighbourhood")
+    try:
+        if not body.nearest and not body.vectors:
+            raise ValueError("Pick the cage's clusters first")
+        return session.cage_centres(nb, body.vectors, body.threshold, body.nearest)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/neighbourhood/displacement")
+def cage_displacement(dataset_id: str, body: CageBody, request: Request) -> dict:
+    """Each origin's displacement from the centre of its cage (the
+    neighbours nearest the picked ``vectors``): "Displacement" under the
+    neighbourhood (vectors, as ``…/atomic/displacements``). Returns ``file``
+    and its ``id``."""
+    session = request.app.state.session
+    nb = _atomic_of(request, dataset_id, "neighbourhood")
+    try:
+        if not body.nearest and not body.vectors:
+            raise ValueError("Pick the cage's clusters first")
+        made = session.set_cage_displacement(nb, body.vectors, body.threshold, body.nearest)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(made).summary(session), "id": made.id}
+
+
 @router.get("/api/datasets/{dataset_id}/atomic/bonds")
 def get_bonds(dataset_id: str, request: Request) -> dict:
     """A bonds dataset's table: ``fields`` and ``rows`` (NaN as null)."""
@@ -327,3 +560,112 @@ def get_bonds(dataset_id: str, request: Request) -> dict:
     table = np.asarray(ds.signal.data, dtype=np.float64)
     rows = np.where(np.isfinite(table), np.round(table, 4), None).tolist()
     return {"fields": list(atomic.BOND_FIELDS), "rows": rows}
+
+
+
+# ---------- M22f: periodic lattice displacements ----------
+
+class DetectBody(BaseModel):
+    count: int = 120
+    within: float = 0.25
+    noise: float = 4.0
+    edge: Literal["none", "hann", "pplus"] = "none"
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/pld/detect")
+def detect_peaks(dataset_id: str, body: DetectBody, request: Request) -> dict:
+    """The image's FFT peaks found and labelled: ``peaks`` (``fy``, ``fx``,
+    ``height``, ``hk`` in ``basis``, ``label``: bragg or superlattice,
+    ``family``: 0 Bragg, n for family n, null), the lattice ``basis`` (two
+    (fy, fx)) and the ``families`` of off-lattice peaks (``id``, ``q``,
+    ``count``, ``strength``)."""
+    image = image_of(request, dataset_id)
+    try:
+        peaks = atomic.detect_fft_peaks(image, body.count, body.within, edge=body.edge, noise=body.noise)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    basis = atomic.lattice_basis(peaks)
+    peaks, families = atomic.peak_families(atomic.label_peaks(peaks, basis))
+    return {"peaks": peaks, "basis": basis, "families": families}
+
+
+class ReferenceBody(BaseModel):
+    peaks: list[tuple[float, float]] = Field(min_length=1, max_length=500)
+    radius: float = 8.0
+    window: int = 9
+    blur: float = 1.0
+    edge: Literal["none", "hann", "pplus"] = "none"
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/pld/reference")
+def pld_reference(dataset_id: str, body: ReferenceBody, request: Request) -> dict:
+    """The image with the superlattice ``peaks`` (fy, fx) damped (kemstem's
+    PLD method): "PLD reference" and "PLD difference" under it. Returns
+    ``file``, their ``ids`` and the refined ``peaks``."""
+    session = request.app.state.session
+    image = image_of(request, dataset_id)
+    ds = session.get_dataset(dataset_id)
+    try:
+        made = atomic.damp_peaks(image, np.array(body.peaks), body.radius, body.window, body.blur, body.edge)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    settings = {"radius": body.radius, "window": body.window, "blur": body.blur, "edge": body.edge,
+                "damped": [[round(p["fy"], 6), round(p["fx"], 6)] for p in made["peaks"] if not p["failed"]]}
+    out = session.set_pld_images(ds, made, settings)
+    return {"file": session.file_of(ds).summary(session), "ids": [d.id for d in out], "peaks": made["peaks"]}
+
+
+class DisplacementsBody(BaseModel):
+    threshold: float = 0.4
+
+
+@router.post("/api/datasets/{dataset_id}/atomic/pld/displacements")
+def pld_displacements(dataset_id: str, body: DisplacementsBody, request: Request) -> dict:
+    """Periodic lattice displacements of Columns ``dataset_id`` (a job): its
+    columns fitted again in the image's PLD reference (same window and
+    blur, from the fitted positions), and kemstem's
+    ``measure_displacements`` from those to the fitted ones (within
+    ``threshold`` px). The result, "Displacements" under the Columns: the
+    job's ``file`` and ``id``."""
+    session = request.app.state.session
+    columns = _columns_of(request, dataset_id)
+    image_ds = session.get_dataset(columns.parent_id)
+    reference = session.pld_reference_of(image_ds)
+    if reference is None:
+        raise HTTPException(422, "Make the PLD reference first")
+    if not body.threshold > 0:
+        raise HTTPException(422, "The threshold must be more than 0")
+    a = columns.atomic
+    try:
+        opts = atomic.ColumnOptions(a.get("blur", 0.5), a.get("distance", 4), a.get("threshold", 0.1), a.get("window", 7)).check()
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    table = np.asarray(columns.signal.data, dtype=np.float64)
+    fitted = table[:, :2].copy()
+    fitted[table[:, 8] > 0] = np.nan  # failed fits: no position
+    ref_image = np.asarray(reference.signal.data, dtype=np.float64)
+
+    def run(job) -> dict:
+        ok = np.isfinite(fitted).all(axis=1)
+        ref = np.full_like(fitted, np.nan)
+        rows = atomic.refine_columns(ref_image, fitted[ok], opts,
+                                     report=lambda f: job.report(0.95 * f, f"Fitting {int(ok.sum())} columns in the reference"))
+        good = rows[:, 8] == 0
+        ref_ok = rows[:, :2].copy()
+        ref_ok[~good] = np.nan
+        ref[ok] = ref_ok
+        job.report(0.97, "Measuring the displacements")
+        out = atomic.measure_displacements(ref, fitted, body.threshold)
+        made = session.set_displacements(columns, out, {"threshold": body.threshold, "reference": reference.id})
+        return {"file": session.file_of(columns).summary(session), "id": made.id}
+
+    return request.app.state.jobs.submit("atomic-pld", f"PLD displacements of {image_ds.title}", run).summary()
+
+
+@router.get("/api/datasets/{dataset_id}/atomic/displacements")
+def get_displacements(dataset_id: str, request: Request) -> dict:
+    """A Displacements dataset's table: ``fields`` and ``rows`` (NaN as null), a row per column."""
+    ds = _atomic_of(request, dataset_id, "displacements")
+    table = np.asarray(ds.signal.data, dtype=np.float64)
+    rows = np.where(np.isfinite(table), np.round(table, 5), None).tolist()
+    return {"fields": list(atomic.DISPLACEMENT_FIELDS), "rows": rows}

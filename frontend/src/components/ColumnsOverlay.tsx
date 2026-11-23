@@ -2,8 +2,9 @@ import { useEffect, useMemo } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import {
-  BOND_VALUES, COLUMN_VALUES, SUBLATTICE_COLOURS, bondFrame, columnValues, ensureBonds, ensureTable, inGroup, nearestColumn,
-  sublatticesOf, useBondTables, useColumns, valuesFrame, type ColumnPoints,
+  BOND_VALUES, COLUMN_VALUES, SUBLATTICE_COLOURS, SUBLATTICE_NAMES, VECTOR_VALUES, bondFrame, columnValues, ensureBonds, ensureTable,
+  ensureVectors, inGroup, nearestColumn, sublatticesOf, typicalSpacing, useBondTables, useColumns, useVectorTables, valuesFrame,
+  vectorFrame, type ColumnPoints,
 } from "../state/columns";
 import { DEFAULT_LAYER, useLayers, type LayerProps } from "../state/layers";
 import { useDisplay } from "../state/display";
@@ -12,6 +13,7 @@ import { colormapLut } from "../viewer/colormaps";
 import type { DisplayParams } from "../viewer/renderer";
 import { autoContrast } from "../views/useImageDisplay";
 import { pixelSize } from "./AtomicSection";
+import { displacementText } from "./PldSection";
 import type { PanelLayer } from "./LayersPanel";
 import type { Transform } from "./ImageView";
 import type { Frame } from "../api/arrays";
@@ -24,7 +26,7 @@ import type { Frame } from "../api/arrays";
  * props under the item's id (its display, when coloured by a value, too).
  * The guesses of the Atomic columns process are not a dataset: they are a
  * layer of their image (``foundLayerKey``). */
-const ITEM_OUTPUTS = ["columns", "sublattice", "neighbourhood", "bonds"];
+const ITEM_OUTPUTS = ["columns", "sublattice", "neighbourhood", "bonds", "displacements"];
 export const isColumnItem = (d: DatasetSummary | undefined) => !!d?.atomic && ITEM_OUTPUTS.includes(d.atomic.output);
 export const foundLayerKey = (image: string) => `columns:found:${image}`;
 export const isFoundKey = (key: string) => key.startsWith("columns:found:");
@@ -48,7 +50,7 @@ export const imageOfItem = (files: Files, item: DatasetSummary | undefined) => c
  * or bonds as lines; its colour, label and the values it can be coloured
  * by; props it starts with. */
 export interface ItemInfo {
-  kind: "dots" | "bonds";
+  kind: "dots" | "bonds" | "vectors";
   columns: DatasetSummary;
   group: string;
   colour: string;
@@ -59,6 +61,11 @@ export interface ItemInfo {
 
 /** Bonds start coloured by their length (in inferno). */
 const BONDS_DEFAULTS: Partial<LayerProps> = { colourBy: "length" };
+/** Displacements start as kemstem plots them: triangles, area ∝ magnitude,
+ * coloured by direction. */
+const VECTOR_DEFAULTS: Partial<LayerProps> = { colourBy: "direction", shape: "triangle", length: "sqrt" };
+/** Circular colormaps, for directions. */
+const CYCLIC = ["hsv", "phase"];
 
 export function itemInfo(files: Files, item: DatasetSummary): ItemInfo | null {
   const columns = columnsOfItem(files, item);
@@ -87,6 +94,11 @@ export function itemInfo(files: Files, item: DatasetSummary): ItemInfo | null {
         label: item.title, values: COLUMN_VALUES,
       };
     }
+    case "displacements":
+      return {
+        kind: "vectors", columns, group: "", colour: "#ffffff", label: item.title, values: VECTOR_VALUES,
+        defaults: VECTOR_DEFAULTS,
+      };
     case "bonds": {
       const nb = all.find((d) => d.id === item.parent_id);
       const origins = all.find((d) => d.id === (nb?.atomic?.origins ?? nb?.parent_id));
@@ -113,17 +125,54 @@ export function itemPanelLayer(
 ): PanelLayer {
   const setProps = useLayers.getState().setProps;
   const q = itemProps(p, info);
+  const vectors = info.kind === "vectors";
   return {
     id: item.id, label: info.label, visible: q.visible, opacity: q.opacity,
     colour: (q.colourBy && display?.colormap) || (q.colour ?? info.colour),
     display: undefined, removable,
-    size: { value: q.size ?? 1, onChange: (v: number) => setProps(item.id, { size: v }) },
+    size: {
+      value: q.size ?? 1, label: info.kind === "bonds" ? "Width" : "Size",
+      onChange: (v: number) => setProps(item.id, { size: v }),
+    },
     choice: {
       value: q.colourBy ?? "",
-      title: `Colour the ${info.kind === "bonds" ? "bonds" : "columns"} by a value (its limits: select this layer)`,
+      title: `Colour the ${info.kind === "bonds" ? "bonds" : vectors ? "vectors" : "columns"} by a value (its limits: select this layer)`,
       options: [{ value: "", label: "Plain" }, ...info.values.map((c) => ({ value: c.id, label: c.label }))],
-      onChange: (v: string) => setProps(item.id, { colourBy: v || undefined }),
+      onChange: (v: string) => {
+        setProps(item.id, { colourBy: v || undefined });
+        // Directions go round (a circular colormap over 0–360°), magnitudes
+        // don't: their colours start afresh.
+        if (vectors) useDisplay.getState().resetDisplay([item.id]);
+      },
     },
+    ...(vectors && {
+      properties: [
+        {
+          label: "Shape",
+          control: (
+            <select value={q.shape ?? "triangle"} onChange={(e) => setProps(item.id, { shape: e.target.value as LayerProps["shape"] })}>
+              <option value="triangle">Triangle</option>
+              <option value="arrow">Arrow</option>
+              <option value="line">Line</option>
+            </select>
+          ),
+        },
+        {
+          label: "Length",
+          control: (
+            <select
+              value={q.length ?? "sqrt"}
+              title="How the marks' length follows the magnitude"
+              onChange={(e) => setProps(item.id, { length: e.target.value as LayerProps["length"] })}
+            >
+              <option value="sqrt">√magnitude (area)</option>
+              <option value="linear">Magnitude</option>
+              <option value="equal">Normalised (all alike)</option>
+            </select>
+          ),
+        },
+      ],
+    }),
   };
 }
 
@@ -146,14 +195,16 @@ export function useItemContrast(item: DatasetSummary | null): { frame: Frame; la
   const info = useMemo(() => (item ? itemInfo(files, item) : null), [files, item]);
   const table = useColumns((s) => (info ? s.tables[info.columns.id]?.points : undefined));
   const bonds = useBondTables((s) => (item && info?.kind === "bonds" ? s.tables[item.id]?.points : undefined));
+  const vecs = useVectorTables((s) => (item && info?.kind === "vectors" ? s.tables[item.id]?.points : undefined));
   const p = useLayers((s) => (item ? s.props[item.id] : undefined));
   const by = itemProps(p, info).colourBy;
   return useMemo(() => {
     if (!info || !by || !item) return null;
     const label = `${info.label} · ${info.values.find((v) => v.id === by)?.label ?? by}`;
     if (info.kind === "bonds") return bonds && (by === "length" || by === "angle") ? { frame: bondFrame(bonds, by), label } : null;
+    if (info.kind === "vectors") return vecs && (by === "direction" || by === "magnitude") ? { frame: vectorFrame(vecs, by), label } : null;
     return table ? { frame: valuesFrame(table, by, info.group), label } : null;
-  }, [info, by, item, table, bonds]);
+  }, [info, by, item, table, bonds, vecs]);
 }
 
 /** Dots (or rings) of radius ``r`` (data px) at points [y, x] (centres at
@@ -283,6 +334,93 @@ function ItemBonds({ table, item, info }: { table: ColumnPoints; item: DatasetSu
   );
 }
 
+/** A vector's mark at (x0, y0) [image px, centres at +0.5] along unit (uy,
+ * ux) of length L: a triangle (tip along it, base L/3 wide, as kemstem's
+ * plot_displaced_site), an arrow or a line. */
+function vectorMark(shape: string, x0: number, y0: number, uy: number, ux: number, L: number): string {
+  const tx = x0 + ux * L;
+  const ty = y0 + uy * L;
+  const f = (v: number) => v.toFixed(2);
+  if (shape === "triangle") {
+    const w = L / 3;
+    return `M${f(tx)} ${f(ty)}L${f(x0 - uy * w)} ${f(y0 + ux * w)}L${f(x0 + uy * w)} ${f(y0 - ux * w)}Z`;
+  }
+  if (shape === "arrow") {
+    const h = Math.min(L * 0.4, L);
+    const bx = tx - ux * h;
+    const by = ty - uy * h;
+    const w = h * 0.5;
+    return `M${f(x0)} ${f(y0)}L${f(tx)} ${f(ty)}M${f(bx - uy * w)} ${f(by + ux * w)}L${f(tx)} ${f(ty)}L${f(bx + uy * w)} ${f(by - ux * w)}`;
+  }
+  return `M${f(x0)} ${f(y0)}L${f(tx)} ${f(ty)}`;
+}
+
+/** Each column's vector (Displacements), drawn from its fitted position:
+ * triangles, arrows or lines, as long as √magnitude, magnitude or all
+ * alike (the median one 0.6 × the columns' spacing, × size), plain or
+ * coloured by direction (circular colormap) or magnitude. */
+function ItemVectors({ table, item, info }: { table: ColumnPoints; item: DatasetSummary; info: ItemInfo }) {
+  const key = item.id;
+  const props = itemProps(useLayers((s) => s.props[key]), info);
+  const display = useDisplay((s) => s.display[key]);
+  const entry = useVectorTables((s) => s.tables[item.id]);
+  useEffect(() => {
+    if (props.visible) ensureVectors(item);
+  }, [props.visible, item]);
+  const p = entry?.points;
+  const by = props.colourBy === "direction" || props.colourBy === "magnitude" ? props.colourBy : undefined;
+  useEffect(() => {
+    if (!p || !by || !props.visible) return;
+    const { display: all, initDisplay } = useDisplay.getState();
+    if (by === "direction") {
+      if (!all[key] || !CYCLIC.includes(all[key].colormap)) initDisplay(key, { lo: 0, hi: 360, gamma: 1, colormap: "hsv" });
+    } else autoContrast(key, vectorFrame(p, "magnitude"), `magnitude:${entry?.key}`, () => "inferno");
+  }, [p, by, key, entry?.key, props.visible, display === undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+  const spacing = useMemo(() => typicalSpacing(table), [table]);
+  const shape = props.shape ?? "triangle";
+  const mode = props.length ?? "sqrt";
+  const filled = shape === "triangle";
+  const paths = useMemo(() => {
+    if (!p || !props.visible) return [];
+    const scaleOf = (m: number) => (mode === "sqrt" ? Math.sqrt(m) : mode === "linear" ? m : 1);
+    const mags = Array.from(p.magnitude).filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
+    const median = mags[Math.floor(mags.length / 2)] ?? 1;
+    const L0 = (0.6 * spacing * (props.size ?? 1)) / (scaleOf(median) || 1);
+    const lut = by && display ? colormapLut(display.colormap) : null;
+    const span = display ? display.hi - display.lo || 1 : 1;
+    const buckets: string[][] = Array.from({ length: lut ? STEPS : 1 }, () => []);
+    const n = Math.min(p.dy.length, table.y.length);
+    for (let i = 0; i < n; i++) {
+      const m = p.magnitude[i];
+      if (!Number.isFinite(m) || m <= 0 || !Number.isFinite(table.x[i])) continue;
+      let b = 0;
+      if (lut && display && by) {
+        let t = Math.min(1, Math.max(0, (p[by][i] - display.lo) / span));
+        if (display.gamma && display.gamma !== 1) t = t ** display.gamma;
+        b = Math.min(STEPS - 1, Math.floor(t * STEPS));
+      }
+      buckets[b].push(vectorMark(shape, table.x[i] + 0.5, table.y[i] + 0.5, p.dy[i] / m, p.dx[i] / m, L0 * scaleOf(m)));
+    }
+    return buckets.flatMap((parts, k) => {
+      if (!parts.length) return [];
+      const j = Math.round(((k + 0.5) / STEPS) * 255) * 4;
+      return [{ colour: lut ? `rgb(${lut[j]},${lut[j + 1]},${lut[j + 2]})` : (props.colour ?? info.colour), d: parts.join("") }];
+    });
+  }, [p, table, props.visible, props.colour, props.size, by, shape, mode, spacing, display?.lo, display?.hi, display?.gamma, display?.colormap]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!paths.length) return null;
+  return (
+    <g opacity={props.opacity}>
+      {paths.map((q) =>
+        filled ? (
+          <path key={q.colour} className="columns-vectors" d={q.d} fill={q.colour} />
+        ) : (
+          <path key={q.colour} className="columns-bonds" d={q.d} stroke={q.colour} style={{ strokeWidth: 1.5 }} />
+        ),
+      )}
+    </g>
+  );
+}
+
 /** Column items of image ``image`` drawn over it (``items``, in order:
  * later on top; bonds under dots), and its guesses with ``found``. The
  * column under the pointer (of a dots item shown) is ringed and its values
@@ -315,10 +453,18 @@ export function ColumnsOverlay({ t, image, items, found: withFound = false }: {
   const spacing = (st?.settings.distance ?? 4) * t.zoom;
   const r = Math.min(3, Math.max(1, spacing * 0.22)) / t.zoom;
   const rFound = r * (foundProps.size ?? 1);
-  const foundPath = useMemo(() => (found ? circles(found, rFound) : ""), [found, rFound]);
+  // Guesses to add (at cage centres): in their new sublattice's colour.
+  const added = st?.append ? SUBLATTICE_NAMES.indexOf(st.append.name) : -1;
+  const [foundPath, addedPath] = useMemo(() => {
+    if (!found) return ["", ""];
+    return added >= 0 ? ["", circles(found, rFound)] : [circles(found, rFound), ""];
+  }, [found, rFound, added]);
 
-  // The column under the pointer, in the topmost dots item shown that has it.
-  const dots = shown.filter((x) => x.info.kind === "dots");
+  // The column under the pointer, in the topmost dots (or vectors) item
+  // shown that has it.
+  const dots = shown.filter((x) => x.info.kind === "dots" || x.info.kind === "vectors");
+  const vectorItem = shown.find((x) => x.info.kind === "vectors")?.item;
+  const vectors = useVectorTables((s) => (vectorItem ? s.tables[vectorItem.id]?.points : undefined));
   const owner = (i: number) => [...dots].reverse().find((x) => inGroup(table!, x.info.group, i));
   const hit = dots.length && table && t.pointer
     ? nearestColumn(table, t.pointer.x, t.pointer.y, Math.max(st?.settings.distance ?? 4, 3 / t.zoom), (i) => !!owner(i))
@@ -329,15 +475,18 @@ export function ColumnsOverlay({ t, image, items, found: withFound = false }: {
 
   if (!foundPath && !(shown.length && table)) return null;
   const [x0, y0] = t.toScreen(0, 0);
-  const ordered = [...shown.filter((x) => x.info.kind === "bonds"), ...dots];
+  const ordered = [...shown.filter((x) => x.info.kind === "bonds"), ...dots, ...shown.filter((x) => x.info.kind === "vectors")];
   return (
     <>
       <g className="columns-overlay" transform={`translate(${x0} ${y0}) scale(${t.zoom})`}>
         {foundPath && <path className="columns-found" d={foundPath} fill={foundProps.colour ?? COLOUR.found} opacity={foundProps.opacity} />}
+        {addedPath && <path className="columns-found" d={addedPath} fill={SUBLATTICE_COLOURS[added] ?? COLOUR.found} opacity={foundProps.opacity} />}
         {table && tableEntry &&
           ordered.map(({ item, info }) =>
             info.kind === "bonds" ? (
               <ItemBonds key={item.id} table={table} item={item} info={info} />
+            ) : info.kind === "vectors" ? (
+              <ItemVectors key={item.id} table={table} item={item} info={info} />
             ) : (
               <ItemDots key={item.id} table={table} tableKey={tableEntry.key} item={item} info={info} r={r} />
             ),
@@ -352,6 +501,7 @@ export function ColumnsOverlay({ t, image, items, found: withFound = false }: {
           px={imageDs ? pixelSize(imageDs) : null}
           by={hitOwner ? itemProps(props[hitOwner.item.id], hitOwner.info).colourBy : undefined}
           sublattice={sub?.title}
+          displacement={vectors && Number.isFinite(vectors.magnitude[hit]) ? [vectors.dy[hit], vectors.dx[hit]] : undefined}
         />
       )}
     </>
@@ -359,13 +509,15 @@ export function ColumnsOverlay({ t, image, items, found: withFound = false }: {
 }
 
 /** The values of fitted column ``i``, beside it. */
-function ColumnTip({ t, p, i, px, by, sublattice }: {
+function ColumnTip({ t, p, i, px, by, sublattice, displacement }: {
   t: Transform; p: ColumnPoints; i: number; px: { x: number; units: string } | null; by: string | undefined;
   sublattice?: string;
+  /** Its periodic lattice displacement (dy, dx px), if shown. */
+  displacement?: [number, number];
 }) {
   const [sx, sy] = t.toScreen(p.x[i] + 0.5, p.y[i] + 0.5);
   const W = 190;
-  const H = 96;
+  const H = 112;
   const left = t.width !== undefined && sx + 14 + W > t.width ? sx - 14 - W : sx + 14;
   const top = t.height !== undefined && sy + 14 + H > t.height ? sy - 14 - H : sy + 14;
   const v = (id: string) => p.values[id]?.[i] ?? NaN;
@@ -381,6 +533,12 @@ function ColumnTip({ t, p, i, px, by, sublattice }: {
           <span className="muted">Column {i}</span> x {formatValue(p.x[i])}, y {formatValue(p.y[i])}
         </div>
         {sublattice && <div className="muted">{sublattice}</div>}
+        {displacement && (
+          <div>
+            <span className="muted">Displacement</span> {displacementText(Math.hypot(...displacement), px ?? { x: 1, units: "px" })}{" "}
+            <span className="muted">·</span> {formatValue(((Math.atan2(displacement[0], displacement[1]) * 180) / Math.PI + 360) % 360)}°
+          </div>
+        )}
         {p.failed[i] ? (
           <div>Fit failed</div>
         ) : (

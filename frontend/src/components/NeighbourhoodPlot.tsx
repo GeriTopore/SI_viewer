@@ -3,10 +3,11 @@ import type { DatasetSummary } from "../api/client";
 import { formatValue } from "../format";
 import { allDatasets, useDatasets } from "../state/datasets";
 import {
-  ensureNeighbourhoodData, neighbourhoodsOf, originsOf, pickVector, selectNeighbourhood, shownNeighbourhood, useAnalysis,
-  useNeighbourhoods, useNeighbourhoodState,
+  ensureNeighbourhoodData, neighbourhoodsOf, originsOf, pickVector, selectNeighbourhood, shownNeighbourhood, toggleCage,
+  useAnalysis, useNeighbourhoods, useNeighbourhoodState,
 } from "../state/neighbourhoods";
 import { useUi } from "../state/ui";
+import { ProcessLink } from "./ProcessLink";
 
 const MARGIN = { left: 44, right: 12, top: 10, bottom: 30 };
 
@@ -40,7 +41,12 @@ export function NeighbourhoodPlot({ image }: { image: string }) {
   }, [nb]);
   const data = useNeighbourhoods((s) => (nb ? s.data[nb.id] : undefined));
   const a = useAnalysis(nb?.id);
-  if (!nb) return <p className="muted small pane-empty">Compute a neighbourhood in the Neighbourhoods process.</p>;
+  if (!nb)
+    return (
+      <p className="muted small pane-empty">
+        <ProcessLink to="neighbourhoods" image={image}>Compute a neighbourhood</ProcessLink>.
+      </p>
+    );
   const origins = allDatasets(files).find((x) => x.id === originsOf(nb));
   return (
     <div className="nb-plot-wrap">
@@ -66,7 +72,14 @@ export function NeighbourhoodPlot({ image }: { image: string }) {
         </span>
       </div>
       {data ? (
-        <Scatter nb={nb} dy={data.dy} dx={data.dx} picking={a.pick !== null ? a.vectors[a.pick]?.name : undefined} vectors={a.vectors} />
+        <Scatter
+          nb={nb}
+          dy={data.dy}
+          dx={data.dx}
+          picking={a.cagePick ? "cage" : a.pick !== null ? a.vectors[a.pick]?.name : undefined}
+          vectors={a.vectors}
+          cage={a.cage}
+        />
       ) : (
         <p className="muted small">Loading…</p>
       )}
@@ -74,12 +87,14 @@ export function NeighbourhoodPlot({ image }: { image: string }) {
   );
 }
 
-function Scatter({ nb, dy, dx, picking, vectors }: {
+function Scatter({ nb, dy, dx, picking, vectors, cage }: {
   nb: DatasetSummary;
   dy: Float32Array;
   dx: Float32Array;
+  /** What a click on a cluster sets: a vector's name, "cage", or nothing. */
   picking: string | undefined;
   vectors: { name: string; dy: number | null; dx: number | null }[];
+  cage: [number, number][];
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -167,24 +182,37 @@ function Scatter({ nb, dy, dx, picking, vectors }: {
               )
             );
           })}
+          {cage.length > 0 && (() => {
+            // The cage's centre: where new columns go, and what displacements are measured from.
+            const cy = cage.reduce((t, c) => t + c[0], 0) / cage.length;
+            const cx = cage.reduce((t, c) => t + c[1], 0) / cage.length;
+            return (
+              <g className="nb-cage-centre">
+                <line x1={sx(cx) - 6} x2={sx(cx) + 6} y1={sy(cy)} y2={sy(cy)} />
+                <line x1={sx(cx)} x2={sx(cx)} y1={sy(cy) - 6} y2={sy(cy) + 6} />
+              </g>
+            );
+          })()}
           {clusters.map(([cy, cx], i) =>
             Math.abs(cx) <= extent && Math.abs(cy) <= extent ? (
               <circle
                 key={i}
-                className={`nb-cluster${hover === i ? " hover" : ""}${picking ? " pickable" : ""}`}
+                className={`nb-cluster${hover === i ? " hover" : ""}${picking ? " pickable" : ""}${
+                  cage.some(([y, x]) => Math.hypot(y - cy, x - cx) < 1e-6) ? " in-cage" : ""
+                }`}
                 cx={sx(cx)}
                 cy={sy(cy)}
                 r={hover === i ? 7 : 5}
                 onPointerEnter={() => setHover(i)}
                 onPointerLeave={() => setHover((h) => (h === i ? null : h))}
-                onClick={() => picking && pickVector(nb.id, [cy, cx])}
+                onClick={() => (picking === "cage" ? toggleCage(nb.id, [cy, cx]) : picking && pickVector(nb.id, [cy, cx]))}
               />
             ) : null,
           )}
           {hover !== null && clusters[hover] && (
             <text className="nb-readout" x={ox + 6} y={oy + 14}>
               ({formatValue(clusters[hover][0])}, {formatValue(clusters[hover][1])}) px · |v| {formatValue(Math.hypot(...clusters[hover]))}
-              {picking ? ` · click: ${picking}` : ""}
+              {picking === "cage" ? " · click: cage" : picking ? ` · click: ${picking}` : ""}
             </text>
           )}
         </svg>

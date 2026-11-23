@@ -28,6 +28,7 @@
   --badge-pca: #0891b2;
   --badge-model: #059669;
   --badge-atomic: #b45309;
+  --badge-mask: #6d28d9;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -517,6 +518,7 @@ button.primary:disabled {
 .badge-pca { background: var(--badge-pca); }
 .badge-model { background: var(--badge-model); }
 .badge-atomic { background: var(--badge-atomic); }
+.badge-mask { background: var(--badge-mask); }
 
 .empty-list {
   margin: 0;
@@ -2141,6 +2143,38 @@ button.primary:disabled {
   flex: 1 1 auto;
   min-width: 48px;
 }
+.layer-expand {
+  flex: none;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+.layer-props {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: center;
+  margin: 0 6px 4px 46px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--border);
+  font-size: 12px;
+}
+.layer-props label {
+  display: contents;
+}
+.layer-props label > span {
+  color: var(--muted);
+}
+.layer-props select,
+.layer-props input[type="range"] {
+  justify-self: start;
+  max-width: 140px;
+  width: 100%;
+}
 .layer-size {
   flex: 0 1 36px;
   width: 36px;
@@ -2228,12 +2262,26 @@ button.primary:disabled {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* The highlighted one of several shown (what the processes work on): a
+   tinted fill, a heavier frame with a left bar, and a bold title. */
 .dataset.selected.focused {
-  box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--accent);
+  background: color-mix(in srgb, var(--accent) 26%, var(--selected));
+  box-shadow: inset 4px 0 0 var(--accent), inset 0 0 0 2px var(--accent);
+}
+
+.dataset.selected.focused .dataset-title {
+  font-weight: 700;
+  color: var(--text);
 }
 
 .dataset-card.selected.focused {
-  box-shadow: inset 0 0 0 1px var(--accent);
+  background: color-mix(in srgb, var(--accent) 26%, var(--selected));
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.dataset-card.selected.focused .dataset-title {
+  font-weight: 700;
+  color: var(--text);
 }
 
 .colour-dot {
@@ -3150,11 +3198,19 @@ button.primary.danger {
   display: flex;
   gap: 2px;
   margin: 0 -4px 10px;
+  min-width: 0;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
 }
 
 .panel-tabs button {
-  padding: 6px 10px;
+  /* Narrow pane: the tabs shrink rather than push it sideways. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 8px;
   border: none;
   border-bottom: 2px solid transparent;
   background: none;
@@ -3162,7 +3218,7 @@ button.primary.danger {
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
 }
 
 .panel-tabs button:hover {
@@ -6145,6 +6201,10 @@ kbd {
   position: absolute;
   inset: 0;
 }
+.columns-vectors {
+  stroke: rgba(0, 0, 0, 0.6);
+  stroke-width: 0.4;
+}
 .columns-bonds {
   fill: none;
   stroke-linecap: round;
@@ -6238,6 +6298,34 @@ kbd {
 }
 
 /* One column's test fit: data, fit and residual side by side. */
+/* PLD peaks on the FFT: damped (by family colour, with the damping
+   radius), Bragg, others. */
+.fft-peak.pld-damp circle { stroke: #ff9f1c; }
+.fft-peak.pld-damp.family-0 circle, .pld-swatch.family-0 { stroke: #ff9f1c; background: #ff9f1c; }
+.fft-peak.pld-damp.family-1 circle, .pld-swatch.family-1 { stroke: #ff4d6d; background: #ff4d6d; }
+.fft-peak.pld-damp.family-2 circle, .pld-swatch.family-2 { stroke: #c77dff; background: #c77dff; }
+.fft-peak.pld-damp.family-3 circle, .pld-swatch.family-3 { stroke: #5dd39e; background: #5dd39e; }
+.fft-peak.pld-damp.family-4 circle, .pld-swatch.family-4 { stroke: #ffd60a; background: #ffd60a; }
+.fft-peak.pld-damp.family-5 circle, .pld-swatch.family-5 { stroke: #2ec4b6; background: #2ec4b6; }
+.fft-peak.pld-bragg circle { stroke: #4da3ff; opacity: 0.7; }
+.fft-peak.pld-other circle { stroke: #9aa0a6; opacity: 0.6; }
+.fft-peak circle.pld-ring { fill: none; stroke-dasharray: 2 2; opacity: 0.8; }
+.pld-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.pld-families {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.pld-families .q-check-line {
+  margin-bottom: 0;
+  align-items: center;
+}
+
 /* Neighbourhood plot (bottom pane) */
 .nb-plot-wrap {
   display: flex;
@@ -6411,4 +6499,89 @@ kbd {
 }
 .layers-panel.docked .layer-row:hover {
   background: var(--hover, rgba(127, 127, 127, 0.1));
+}
+
+.nb-cluster.in-cage {
+  fill: var(--accent);
+  stroke: #fff;
+}
+.nb-cage-centre line {
+  stroke: #ffd60a;
+  stroke-width: 2;
+}
+
+.cell-outline {
+  fill: none;
+  stroke: var(--muted);
+  stroke-dasharray: 4 3;
+}
+.cell-site circle {
+  fill: none;
+  stroke-width: 2;
+}
+.cell-site text {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The Process tab, with a process split off beside (or above, below) the rest */
+.process-split {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.process-split.split.cols {
+  flex-direction: row;
+}
+.process-half {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.process-split.split > .process-half.split-off {
+  flex: 0 0 auto;
+}
+.process-split-title {
+  flex-wrap: wrap;
+}
+.process-split-on {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.process-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+}
+.process-drag-handle .process-icon {
+  color: var(--muted);
+}
+
+/* A link in a process's text to another process (opened beside it) */
+.link-button.process-link {
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.cell-site circle.reach {
+  stroke-dasharray: 4 3;
+  stroke-width: 1.5;
+}
+.cell-unpicked circle {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 3;
+}
+.cell-unpicked text {
+  fill: var(--muted);
+  font-size: 11px;
 }

@@ -32,10 +32,12 @@ function countUnder(id: string, tree: FileTree): number {
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
 export const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${d.origin === "curve-model" ? "model" : d.atomic ? "atomic" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
+  `badge badge-${d.origin === "curve-model" ? "model" : d.origin === "mask" ? "mask" : d.atomic ? "atomic" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
-  d.origin === "curve-model"
+  d.origin === "mask"
+    ? "Delete this mask"
+    : d.origin === "curve-model"
     ? "Delete this model (and its maps)"
     : isBackgroundRemoved(d) || isDeconvolved(d) || d.origin === "line-scan"
     ? `Delete this ${isLineScan(d) ? "LineScan" : "spectrum image"} (and what was made from it)`
@@ -45,7 +47,7 @@ const deleteTitle = (d: DatasetSummary) =>
         (d.origin === "file" ? ". The file on disk is not changed." : "");
 
 export function DatasetList() {
-  const { files, selection, focusId, clickDataset, toggleSelect, select, closeFile, deleteDataset, enterWorkspace } = useDatasets();
+  const { files, selection, focusId, clickDataset, toggleSelect, showOnly, closeFile, deleteDataset, enterWorkspace } = useDatasets();
   // The workspace being viewed (a top-level entry); the others are entered first.
   const active = useDatasets((s) => s.active);
   const activeKey = active ? (workspaceOf(files, active)?.key ?? null) : null;
@@ -122,20 +124,21 @@ export function DatasetList() {
   const highlighted = new Set(selection.flatMap((id) => [id, ...(byIdAll.get(id)?.eels?.linked ?? [])]));
 
   // Rows are div[role=button] (not <button>) so the colour picker can sit inside.
-  // Click: maps/images are added to or removed from the view; a spectrum
-  // image, stack or spectrum becomes the view. ⌘/Ctrl-click toggles anything
-  // (e.g. removes the spectrum image to leave just its maps). Images can also
-  // be dragged onto the viewer. Shift-click: the view shows just this one.
-  // A dataset of another workspace enters that workspace first (bringing back
-  // what it showed); the next click acts on the dataset.
-  const activate = (d: DatasetSummary, toggle: boolean, only = false) =>
+  // Click: the view shows just this one (what the processes then work on).
+  // Shift-click: maps/images are added to or removed from the view; a
+  // spectrum image, stack or spectrum becomes the view. ⌘/Ctrl-click toggles
+  // anything (e.g. removes the spectrum image to leave just its maps). Images
+  // can also be dragged onto the viewer. A dataset of another workspace
+  // enters that workspace first (bringing back what it showed); the next
+  // click acts on the dataset.
+  const activate = (d: DatasetSummary, toggle: boolean, add = false) =>
     elsewhere(d.file_id)
       ? enterWorkspace(d.file_id)
-      : only
-        ? select(d.id)
+      : add
+        ? clickDataset(d)
         : toggle
           ? toggleSelect(d)
-          : clickDataset(d);
+          : showOnly(d);
   const itemProps = (d: DatasetSummary, className: string) => ({
     role: "button",
     tabIndex: 0,

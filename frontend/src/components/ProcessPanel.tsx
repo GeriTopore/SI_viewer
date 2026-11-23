@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { create } from "zustand";
 import type { DatasetSummary, Filters, SpatialFilter, SpectralFilter } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { applyFilters } from "../state/filters";
 import { useAlignment } from "../state/alignment";
-import { useUi } from "../state/ui";
+import { PANE_SIZES, useUi, type SplitSide } from "../state/ui";
+import { Splitter } from "./Splitter";
+import { followProcess } from "./ProcessLink";
 import { filterLabel, isInsituView, isLineScan } from "../format";
 import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
@@ -19,9 +22,11 @@ import { DpcSection, canMakeDpc } from "./DpcSection";
 import { PcaSection, hasPcaSection } from "./PcaSection";
 import { NormaliseSection } from "./NormaliseSection";
 import { AtomicSection, canAnalyseAtomic } from "./AtomicSection";
+import { MaskSection, canMakeMask } from "./MaskSection";
 import { ColumnsSection } from "./ColumnsSection";
 import { SublatticesSection } from "./SublatticesSection";
 import { NeighbourhoodSection } from "./NeighbourhoodSection";
+import { PldSection } from "./PldSection";
 import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
@@ -50,6 +55,20 @@ const SAVGOL_WINDOWS = [5, 7, 9, 11, 15, 21, 31];
 // Filters are sent this long after the last change (e.g. while dragging σ).
 const DEBOUNCE_MS = 250;
 
+/** Drag-and-drop type for a process (its icon or title), to split it off. */
+const PROCESS_MIME = "application/x-si-viewer-process";
+/** The process being dragged, if any (the tab shows where it would go). */
+const useProcessDrag = create<{ id: string | null }>(() => ({ id: null }));
+const dragProps = (id: string) => ({
+  draggable: true,
+  onDragStart: (e: DragEvent) => {
+    e.dataTransfer.setData(PROCESS_MIME, id);
+    e.dataTransfer.effectAllowed = "move";
+    useProcessDrag.setState({ id });
+  },
+  onDragEnd: () => useProcessDrag.setState({ id: null }),
+});
+
 /** What the Process tab works on: the spectrum image in the viewer (or the
  * focused member of its linked group), whatever is overlaid on it (its
  * processing covers all its maps); else the focused
@@ -63,7 +82,7 @@ function useProcessTarget(): DatasetSummary | undefined {
     const shownSi = selection.map((id) => byId.get(id)).find((d) => d?.kind === "spectrum_image");
     const focused = focusId ? byId.get(focusId) : undefined;
     // A column item (kemstem): the image it came from.
-    if (focused && ["columns", "sublattice", "neighbourhood", "bonds"].includes(focused.atomic?.output ?? "")) {
+    if (focused && ["columns", "sublattice", "neighbourhood", "bonds", "displacements"].includes(focused.atomic?.output ?? "")) {
       let up: DatasetSummary | undefined = focused;
       while (up && up.atomic?.output !== "columns") up = byId.get(up.parent_id ?? "");
       const image = up?.parent_id ? byId.get(up.parent_id) : undefined;
@@ -72,9 +91,11 @@ function useProcessTarget(): DatasetSummary | undefined {
     // A member of the linked group in the viewer is processed when focused.
     if (focused && shownSi?.eels?.linked.includes(focused.id)) return focused;
     if (shownSi) return shownSi;
-    // A map under a spectrum image is processed with it; a stack (e.g. a PCA's
-    // components) has processes of its own.
-    if (focused && focused.kind !== "stack") return (focused.parent_id && byId.get(focused.parent_id)) || focused;
+    // A map made from a spectrum image is processed with it; anything else
+    // (a crop, an aligned average, a filtered or DPC image, a stack) is
+    // processed itself, as highlighted.
+    const parent = focused?.parent_id ? byId.get(focused.parent_id) : undefined;
+    if (focused && focused.kind !== "stack" && (parent?.kind === "spectrum_image" || parent?.kind === "spectrum")) return parent;
     return focused;
   }, [files, selection, focusId]);
 }
@@ -158,16 +179,26 @@ function ProcessGroup({ p, n }: { p: Process; n: number }) {
   const collapsed = useUi((s) => s.processCollapsed.includes(p.id));
   const toggle = useUi((s) => s.toggleProcess);
   return (
-    <div className={`process-group${collapsed ? " collapsed" : ""}`}>
+    <div className={`process-group${collapsed ? " collapsed" : ""}`} data-process={p.id}>
       <h3 className="process-group-title">
-        <button className="process-group-toggle" aria-expanded={!collapsed} onClick={() => toggle(p.id)} title={p.tip}>
+        <button
+          className="process-group-toggle"
+          aria-expanded={!collapsed}
+          onClick={() => toggle(p.id)}
+          title={`${p.tip}\nDrag onto the tab to show it beside the others`}
+          {...dragProps(p.id)}
+        >
           <span className="process-chevron" aria-hidden="true" />
           <ProcessIcon id={p.id} size={20} />
           {n}. {p.title}
         </button>
         {collapsed && p.summary && <span className="muted small">{p.summary}</span>}
       </h3>
-      {!collapsed && <div className="process-group-body">{p.body}</div>}
+      {!collapsed && (
+        <div className="process-group-body" onPointerDownCapture={() => followProcess(p.id)}>
+          {p.body}
+        </div>
+      )}
     </div>
   );
 }
@@ -185,12 +216,14 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
           <button className="link-button process-back" onClick={() => setOpen(null)} title="All processes">
             ‹ All
           </button>
-          <ProcessIcon id={open.id} size={20} />
-          <span title={open.tip}>
+          <span className="process-drag-handle" title={`${open.tip}\nDrag onto the tab to show it beside the others`} {...dragProps(open.id)}>
+            <ProcessIcon id={open.id} size={20} />
             {i + 1}. {open.title}
           </span>
         </h3>
-        <div className="process-group-body">{open.body}</div>
+        <div className="process-group-body" onPointerDownCapture={() => followProcess(open.id)}>
+          {open.body}
+        </div>
       </div>
     );
   return (
@@ -199,7 +232,16 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
       render={(items) => (
         <div className="process-grid">
           {items.map(({ p, n }) => (
-            <button key={p.id} className="process-tile" onClick={() => setOpen(p.id)} title={p.tip}>
+            <button
+              key={p.id}
+              className="process-tile"
+              onClick={() => {
+                setOpen(p.id);
+                followProcess(p.id);
+              }}
+              title={`${p.tip}\nDrag onto the tab to show it beside the others`}
+              {...dragProps(p.id)}
+            >
               <span className="process-tile-n">{n}</span>
               <ProcessIcon id={p.id} />
               <span className="process-tile-name">{p.title}</span>
@@ -231,12 +273,170 @@ function ProcessModeToggle() {
  * non-destructive filters. */
 export function ProcessPanel() {
   const d = useProcessTarget();
-  if (!d) return <p className="muted">Select a dataset to filter it.</p>;
-  if (d.kind === "other") return <p className="muted">{d.title} can't be filtered.</p>;
-  return <ProcessTarget key={d.id} d={d} />;
+  const split = useUi((s) => s.processSplit);
+  const files = useDatasets((s) => s.files);
+  const main = !d ? (
+    <p className="muted">Select a dataset to filter it.</p>
+  ) : d.kind === "other" ? (
+    <p className="muted">{d.title} can't be filtered.</p>
+  ) : (
+    <ProcessTarget key={d.id} d={d} />
+  );
+  // The split-off process: on its pinned dataset (while it is open), else on the tab's.
+  const pinned = split?.image ? allDatasets(files).find((x) => x.id === split.image) : undefined;
+  const target = pinned ?? d;
+  const second =
+    split && target && target.kind !== "other" ? (
+      <ProcessTarget key={`split:${target.id}`} d={target} only={split.id} pinned={!!pinned} />
+    ) : split ? (
+      <SplitHeaderOnly id={split.id} />
+    ) : null;
+  return <ProcessSplitView main={main} second={second} target={d} />;
 }
 
-function ProcessTarget({ d }: { d: DatasetSummary }) {
+/** The Process tab, split or not: dragging a process's icon or title onto it
+ * shows that process beside (or above, below) the rest, as the bottom
+ * pane's tabs split; the line between them resizes them. */
+function ProcessSplitView({ main, second, target }: { main: ReactNode; second: ReactNode; target: DatasetSummary | undefined }) {
+  const split = useUi((s) => s.processSplit);
+  const fraction = useUi((s) => s.processSplitFraction);
+  const setFraction = useUi((s) => s.setProcessSplitFraction);
+  const dragging = useProcessDrag((s) => s.id);
+  const [hover, setHover] = useState<SplitSide | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const isDrag = (e: DragEvent) => e.dataTransfer.types.includes(PROCESS_MIME);
+  // Left / right third: side by side; middle third: above or below.
+  const sideOf = (e: DragEvent): SplitSide => {
+    const r = bodyRef.current!.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width;
+    if (x < 1 / 3) return "left";
+    if (x > 2 / 3) return "right";
+    return e.clientY < r.top + r.height / 2 ? "top" : "bottom";
+  };
+  const drop = (e: DragEvent) => {
+    if (!isDrag(e)) return;
+    e.preventDefault();
+    const id = e.dataTransfer.getData(PROCESS_MIME) || dragging;
+    const side = sideOf(e);
+    if (id) {
+      const ui = useUi.getState();
+      // Kept on the dataset the tab is working on (or the one it was pinned to).
+      const image = split?.id === id ? split.image : (target?.id ?? null);
+      ui.setProcessSplit({ id, side, image });
+      if (ui.processOpen === id) ui.setProcessOpen(null);
+      followProcess(id);
+    }
+    setHover(null);
+    useProcessDrag.setState({ id: null });
+  };
+  const first = split && (split.side === "left" || split.side === "top");
+  const rows = split ? split.side === "top" || split.side === "bottom" : false;
+  const halves = split
+    ? [
+        <div key="split" className="process-half split-off" style={{ flexBasis: `${fraction * 100}%` }}>
+          {second}
+        </div>,
+        <div key="main" className="process-half">
+          {main}
+        </div>,
+      ]
+    : [];
+  if (split && !first) halves.reverse();
+  return (
+    <div ref={bodyRef} className={`process-split${split ? ` split ${rows ? "rows" : "cols"}` : ""}`}>
+      {split ? (
+        <>
+          {halves[0]}
+          <Splitter
+            direction={rows ? "row" : "col"}
+            className={rows ? "split-row-resizer" : "split-resizer"}
+            label="Resize the two processes"
+            onDrag={(pos) => {
+              const r = bodyRef.current!.getBoundingClientRect();
+              const f = rows ? (pos - r.top) / r.height : (pos - r.left) / r.width;
+              setFraction(first ? f : 1 - f);
+            }}
+            onReset={() => setFraction(PANE_SIZES.processSplit.initial)}
+          />
+          {halves[1]}
+        </>
+      ) : (
+        <div className="process-half">{main}</div>
+      )}
+      {dragging && (
+        <div
+          className="split-drop"
+          onDragOver={(e) => {
+            if (!isDrag(e)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            setHover(sideOf(e));
+          }}
+          onDragLeave={() => setHover(null)}
+          onDrop={drop}
+        >
+          {hover && <div className={`hot ${hover}`} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The split-off process's title: its icon (dragged to move it), the
+ * dataset it works on, a pin keeping it there, and a close button. */
+function SplitHeader({ id, title, tip, on, pinned }: {
+  id: string;
+  title: string;
+  tip?: string;
+  /** The dataset it works on. */
+  on?: DatasetSummary;
+  pinned?: boolean;
+}) {
+  const split = useUi((s) => s.processSplit);
+  return (
+    <h3 className="process-group-title process-split-title">
+      <span className="process-drag-handle" title={`${tip ? `${tip}\n` : ""}Drag to move it`} {...dragProps(id)}>
+        <ProcessIcon id={id} size={20} />
+        {title}
+      </span>
+      <span className="process-split-on" />
+      {split && on && (
+        <button
+          className={`icon-toggle${pinned ? " active" : ""}`}
+          aria-pressed={!!pinned}
+          title={pinned ? `Stays on ${on.title} (click to follow the dataset clicked)` : "Follows the dataset clicked (click to keep it on this one)"}
+          onClick={() => {
+            const ui = useUi.getState();
+            const cur = ui.processSplit;
+            if (cur) ui.setProcessSplit({ ...cur, image: pinned ? null : on.id });
+          }}
+        >
+          <PinIcon />
+        </button>
+      )}
+      <button className="icon-button" title="Close" onClick={() => useUi.getState().setProcessSplit(null)}>
+        ×
+      </button>
+    </h3>
+  );
+}
+/** The split-off process when there is nothing to work on. */
+function SplitHeaderOnly({ id }: { id: string }) {
+  return (
+    <div className="process-group process-open">
+      <SplitHeader id={id} title={id} />
+      <p className="muted small">Select a dataset to work on.</p>
+    </div>
+  );
+}
+
+const PinIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M9.5 1.5l5 5-2 .5-3 3 .5 3-1.5 1.5-3.5-3.5L2 15M5 7.5L8.5 11M6.5 5.5l3-3" />
+  </svg>
+);
+
+function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; pinned?: boolean }) {
   const files = useDatasets((s) => s.files);
   const [draft, setDraft] = useState<Filters>(d.filters);
   const [error, setError] = useState<string | null>(null);
@@ -530,6 +730,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       tip: "Fit a model of HyperSpy's components (peaks, backgrounds, steps) to a spectrum",
       body: <CurveFitPanel key={d.id} ds={d} />,
     },
+    canMakeMask(d) && {
+      id: "mask", title: "Masks",
+      tip: "Masks of the image's pixels between thresholds, for other processes (e.g. sublattices)",
+      body: <MaskSection key={d.id} d={d} />,
+    },
     canAnalyseAtomic(d) && {
       id: "fourier", title: "Fourier filtering", section: "kemstem",
       tip: "Pick FFT peaks, then filter round them: amplitude, phase and strain maps (kemstem)",
@@ -550,6 +755,11 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
       tip: "Vectors to each column's nearest neighbours, their clusters, and bonds along lattice vectors picked from them",
       body: <NeighbourhoodSection key={d.id} d={d} />,
     },
+    canAnalyseAtomic(d) && {
+      id: "pld", title: "Lattice displacements", section: "kemstem",
+      tip: "Periodic lattice displacements: damp the superlattice peaks into a reference, then measure how far each column moved",
+      body: <PldSection key={d.id} d={d} />,
+    },
     hasPcaSection(d) && {
       id: "pca", title: "Decomposition and denoising",
       tip: d.origin === "pca"
@@ -559,11 +769,30 @@ function ProcessTarget({ d }: { d: DatasetSummary }) {
     },
   ] as (Process | false)[]).filter((x): x is Process => !!x);
 
+  if (only) {
+    const k = processes.findIndex((p) => p.id === only);
+    const p = processes[k];
+    return (
+      <div className="quantify process">
+        <div className="process-group process-open">
+          <SplitHeader id={only} title={p ? `${k + 1}. ${p.title}` : only} tip={p?.tip} on={d} pinned={pinned} />
+          {p ? (
+            <div className="process-group-body" onPointerDownCapture={() => followProcess(only)}>
+              {p.body}
+            </div>
+          ) : (
+            <p className="muted small">Not a process of {d.title}.</p>
+          )}
+        </div>
+        {rebinOpen && <RebinDialog d={d} onClose={() => setRebinOpen(false)} />}
+      </div>
+    );
+  }
   return (
     <div className="quantify process">
       {!aligning && (
         <section className="process-header">
-          <h3 className="q-title">{d.title}</h3>
+          <span className="panel-tabs-spacer" />
           <ProcessModeToggle />
         </section>
       )}

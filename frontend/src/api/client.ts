@@ -218,6 +218,13 @@ export interface ColumnSettings {
   threshold: number;
   /** Fit window (odd, px). */
   window: number;
+  /** Finding only: a broad Gaussian (σ, px) subtracted first (0: none). */
+  background: number;
+  /** How columns are found: kemstem's local maxima ("maxima", threshold
+   * 0–1 of the image) or the maxima of the correlation with a Gaussian
+   * template of σ ``template`` px ("template", threshold a correlation). */
+  method?: "maxima" | "template";
+  template?: number;
 }
 
 /** One column fitted, to choose the window: patches and its row of the table. */
@@ -230,7 +237,7 @@ export interface ColumnTest {
 
 export interface AtomicMapInfo extends Omit<FourierSettings, "lock_sigma"> {
   output: "amplitude" | "grating" | "phase" | "strain-par" | "strain-perp" | "exx" | "eyy" | "exy" | "oxy" | "columns" | "sublattice"
-    | "neighbourhood" | "bonds";
+    | "neighbourhood" | "bonds" | "pld-reference" | "pld-difference" | "displacements";
   /** Columns: how many, how many fits failed, and how they were found and fitted. */
   count?: number;
   failed?: number;
@@ -251,6 +258,22 @@ export interface AtomicMapInfo extends Omit<FourierSettings, "lock_sigma"> {
   vector?: [number, number];
   missing?: number;
   mean_length?: number | null;
+  /** PLD reference: the damping radius (FFT px) and the peaks damped (fy, fx). */
+  radius?: number;
+  damped?: [number, number][];
+  /** Displacements: their median and largest magnitude (px). */
+  median?: number | null;
+  max?: number | null;
+  /** A sublattice made from a mask: the mask's id. */
+  mask?: string;
+  /** A displacement from a cage of neighbours: "cage", and the cage's picked clusters ([dy, dx] px). */
+  kind?: "cage";
+  cage?: [number, number][];
+  /** A cage of all the k nearest neighbours (none picked). */
+  nearest?: boolean;
+  /** What was picked or set by hand for it in the page (lattice vectors,
+   * cage, cell sites …), kept with it. */
+  picks?: Record<string, unknown>;
   blur?: number;
   distance?: number;
   threshold?: number;
@@ -259,6 +282,70 @@ export interface AtomicMapInfo extends Omit<FourierSettings, "lock_sigma"> {
   lock_sigma: number;
   /** Real-space coarsening radius (image px). */
   coarsening: number;
+}
+
+/** An FFT peak found for PLD mapping: where (cycles/px), how far above the
+ * background, its (h, k) in the lattice found, its label and family (0
+ * Bragg, n: family n of off-lattice peaks, null: none). */
+export interface PldDetected {
+  fy: number;
+  fx: number;
+  height: number;
+  hk?: [number, number];
+  label: "bragg" | "superlattice";
+  family: number | null;
+}
+/** Sites in a reference sublattice's cell, to split columns by (backend
+ * ``CellSitesBody``): each column to the nearest site within ``radius`` px,
+ * or (``mode`` "clusters") each site the dense groups of columns (within
+ * ``link`` px of each other, ``least`` or more) that come within ``radius``
+ * of it, however far they reach. */
+export interface CellSitesRequest {
+  reference: string;
+  vectors: [[number, number], [number, number]];
+  sites: [number, number][];
+  names: string[];
+  radius: number;
+  mode?: "radius" | "clusters";
+  link?: number;
+  least?: number;
+}
+
+/** A site's cluster in the cell: its members' mean place (fractions), how
+ * many columns it took, and whether no group came near it. */
+export interface CellSiteFit {
+  u: number;
+  v: number;
+  count: number;
+  empty: boolean;
+}
+
+/** How a mask was made from an image (backend processing/masks.py). */
+export interface MaskOptions {
+  /** Gaussian blur (px) before thresholding. */
+  smooth: number;
+  keep: "above" | "below" | "between";
+  lo: number | null;
+  hi: number | null;
+  invert: boolean;
+  /** Opening then closing radius (px). */
+  clean: number;
+  /** Regions and holes smaller than this (px) go. */
+  min_area: number;
+}
+
+export interface MaskInfo extends MaskOptions {
+  source_id: string;
+  /** The share of the pixels in it. */
+  fraction: number;
+}
+
+export interface PldFamily {
+  id: number;
+  /** Offset from the lattice (h, k fractions): its peaks are at G ± q. */
+  q: [number, number];
+  count: number;
+  strength: number;
 }
 
 export interface RefinedPeak {
@@ -379,7 +466,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -397,6 +484,8 @@ export interface DatasetSummary {
   curve_model?: { source_id: string; model: CurveModel } | null;
   /** Atomic-resolution maps (kemstem): how each was made. */
   atomic?: AtomicMapInfo | null;
+  /** A mask made from an image (origin "mask"): how. */
+  mask?: MaskInfo | null;
   /** Spectrum image a computed map was made from. */
   parent_id: string | null;
   /** Bumped when the data is recomputed or rebinned. */
@@ -1455,6 +1544,35 @@ export const api = {
     request<ColumnTest>(`/api/datasets/${id}/atomic/columns/test`, { method: "POST", body: JSON.stringify({ ...s, at }) }),
   refineColumns: (id: string, s: ColumnSettings, columns: [number, number][]) =>
     request<JobSummary>(`/api/datasets/${id}/atomic/columns/refine`, { method: "POST", body: JSON.stringify({ ...s, columns }) }),
+  appendColumns: (columns: string, s: ColumnSettings, add: [number, number][]) =>
+    request<JobSummary>(`/api/datasets/${columns}/atomic/columns/append`, { method: "POST", body: JSON.stringify({ ...s, columns: add }) }),
+  setPicks: (id: string, picks: Record<string, unknown>) =>
+    request<void>(`/api/datasets/${id}/atomic/picks`, { method: "PUT", body: JSON.stringify({ picks }) }),
+  cellPositions: (columns: string, reference: string, vectors: [[number, number], [number, number]]) =>
+    request<{ u: (number | null)[]; v: (number | null)[] }>(`/api/datasets/${columns}/atomic/columns/cell`, {
+      method: "POST",
+      body: JSON.stringify({ reference, vectors }),
+    }),
+  cellFit: (columns: string, body: CellSitesRequest) =>
+    request<{ labels: (number | null)[]; sites: CellSiteFit[]; unpicked: { u: number; v: number; count: number }[]; left_out: number }>(
+      `/api/datasets/${columns}/atomic/columns/cell/fit`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  sublatticesByCell: (columns: string, body: CellSitesRequest) =>
+    request<{ file: FileSummary; ids: string[] }>(`/api/datasets/${columns}/atomic/columns/sublattices/cell`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  cageCentres: (nb: string, vectors: [number, number][], threshold: number, nearest = false) =>
+    request<{ columns: [number, number][]; added: number; id: string; name: string }>(
+      `/api/datasets/${nb}/atomic/neighbourhood/centres`,
+      { method: "POST", body: JSON.stringify({ vectors, threshold, nearest }) },
+    ),
+  cageDisplacement: (nb: string, vectors: [number, number][], threshold: number, nearest = false) =>
+    request<{ file: FileSummary; id: string }>(`/api/datasets/${nb}/atomic/neighbourhood/displacement`, {
+      method: "POST",
+      body: JSON.stringify({ vectors, threshold, nearest }),
+    }),
   columnsTable: (id: string) =>
     request<{ fields: string[]; rows: (number | null)[][] }>(`/api/datasets/${id}/atomic/columns`),
   setSublattices: (id: string, labels: (number | null)[], names: string[]) =>
@@ -1483,6 +1601,38 @@ export const api = {
     }),
   bondsTable: (id: string) =>
     request<{ fields: string[]; rows: (number | null)[][] }>(`/api/datasets/${id}/atomic/bonds`),
+  pldDetect: (id: string, body: { count: number; within: number; noise?: number }) =>
+    request<{ peaks: PldDetected[]; basis: [[number, number], [number, number]] | null; families: PldFamily[] }>(
+      `/api/datasets/${id}/atomic/pld/detect`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  pldReference: (id: string, peaks: [number, number][], radius: number) =>
+    request<{ file: FileSummary; ids: string[]; peaks: RefinedPeak[] }>(`/api/datasets/${id}/atomic/pld/reference`, {
+      method: "POST",
+      body: JSON.stringify({ peaks, radius }),
+    }),
+  pldDisplacements: (columns: string, threshold: number) =>
+    request<JobSummary>(`/api/datasets/${columns}/atomic/pld/displacements`, {
+      method: "POST",
+      body: JSON.stringify({ threshold }),
+    }),
+  maskValues: (id: string, smooth: number) =>
+    request<{ values: number[]; otsu: number; min: number; max: number }>(`/api/datasets/${id}/mask/values`, {
+      method: "POST",
+      body: JSON.stringify({ smooth }),
+    }),
+  makeMask: (id: string, options: MaskOptions, replace?: string) =>
+    request<{ file: FileSummary; id: string }>(`/api/datasets/${id}/mask`, {
+      method: "POST",
+      body: JSON.stringify({ ...options, replace: replace ?? null }),
+    }),
+  sublatticeFromMask: (columns: string, mask: string) =>
+    request<{ file: FileSummary; id: string }>(`/api/datasets/${columns}/atomic/columns/sublattices/mask`, {
+      method: "POST",
+      body: JSON.stringify({ mask }),
+    }),
+  displacementsTable: (id: string) =>
+    request<{ fields: string[]; rows: (number | null)[][] }>(`/api/datasets/${id}/atomic/displacements`),
   makeDpc: (settings: DpcSettings) =>
     request<{ ids: Record<"colour" | "x" | "y" | "idpc", string>; files: FileSummary[] }>("/api/dpc", {
       method: "POST",

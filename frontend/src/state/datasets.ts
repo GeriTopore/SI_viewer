@@ -72,9 +72,12 @@ interface DatasetsState {
   rebin: (d: DatasetSummary, factors: number[], time?: number, inPlace?: boolean) => Promise<void>;
   /** Show only this dataset. */
   select: (datasetId: string) => void;
-  /** Plain click in the dataset pane: images and stacks toggle in and out of
-   * the view (shown alone when they can't join it); a spectrum image or
-   * spectrum becomes the view. */
+  /** Click in the dataset pane: the view shows just this dataset (a member
+   * of the linked group in the view is just focused, the group staying). */
+  showOnly: (d: DatasetSummary) => void;
+  /** Shift-click in the dataset pane (and a result added to the view):
+   * images and stacks toggle in and out of the view (shown alone when they
+   * can't join it); a spectrum image or spectrum becomes the view. */
   clickDataset: (d: DatasetSummary) => void;
   /** ⌘/Ctrl-click: add to or remove from the highlighted set. */
   toggleSelect: (d: DatasetSummary) => void;
@@ -387,7 +390,7 @@ export function planeSize(d: DatasetSummary): [number, number] {
 /** A result of the column analysis (kemstem): Columns, a sublattice, a
  * neighbourhood or bonds. It is drawn over the image it came from. */
 export const isColumnItem = (d: DatasetSummary | undefined) =>
-  ["columns", "sublattice", "neighbourhood", "bonds"].includes(d?.atomic?.output ?? "");
+  ["columns", "sublattice", "neighbourhood", "bonds", "displacements"].includes(d?.atomic?.output ?? "");
 
 function combineError(current: DatasetSummary[], d: DatasetSummary): string | null {
   // Column items go with images (drawn over theirs), not with a spectrum image, stack or spectrum.
@@ -706,6 +709,17 @@ export const useDatasets = create<DatasetsState>((set, get) => {
       set({ selection: [id], focusId: id });
     },
 
+    showOnly: (d) => {
+      const { selection } = get();
+      if (!selection.includes(d.id) && d.eels?.linked.some((id) => selection.includes(id))) {
+        useSi.getState().setRegionView(null);
+        follow(d.id);
+        set({ focusId: d.id });
+        return;
+      }
+      get().select(d.id);
+    },
+
     clickDataset: (d) => {
       useSi.getState().setRegionView(null);
       follow(d.id);
@@ -796,7 +810,7 @@ export const canDelete = (d: DatasetSummary) =>
   d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan" ||
   d.origin === "aligned-sum" || d.origin === "rebinned" || d.origin === "zlp-aligned" || d.origin === "aligned" ||
   d.origin === "dpc" || d.origin === "pca" || d.origin === "pca-factors" || d.origin === "pca-denoised" ||
-  d.origin === "cropped" || d.origin === "atomic";
+  d.origin === "cropped" || d.origin === "atomic" || d.origin === "mask";
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);
@@ -812,6 +826,9 @@ export function initialColormap(d: DatasetSummary): string {
   if (d.atomic?.output === "phase") return "phase"; // cmocean's, as kemstem plots it
   // Amplitudes: a colour per peak, so overlaid they map the domains.
   if (d.atomic?.output === "amplitude") return useDisplay.getState().ensureElementColour(`FFT peak ${d.atomic.peaks[0]}`);
+  if (d.atomic?.output === "pld-reference") return "gray";
+  // Masks: a colour each, so overlaid they stay apart.
+  if (d.origin === "mask") return useDisplay.getState().ensureElementColour(`mask:${d.id}`);
   if (d.atomic && d.atomic.output !== "grating") return "rdbu";
   return d.is_element_map ? useDisplay.getState().ensureElementColour(elementOf(d)) : DEFAULT_COLORMAP;
 }

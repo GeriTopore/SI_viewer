@@ -249,6 +249,10 @@ class Dataset:
     # (cycles/px), "sigma", "phase", "lock_sigma", "edge", "mask_threshold",
     # "coarsening" (image px)}.
     atomic: dict | None = None
+    # A mask made from an image (origin "mask", processing/masks.py): 0/1
+    # data; {"source_id", the MaskOptions it was made with, "fraction" of
+    # the pixels in it}.
+    mask: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -448,6 +452,7 @@ class Dataset:
             "pca": self.pca,
             "curve_model": self.curve_model,
             "atomic": self.atomic,
+            "mask": self.mask,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -1902,6 +1907,208 @@ class Session:
                 made.append(ds)
         return made
 
+    def add_sublattice(self, columns: Dataset, rows: np.ndarray, info: dict | None = None) -> Dataset:
+        """One more sublattice of a Columns dataset (its columns' ``rows``),
+        next to those it has, named by the first free letter. Returns it."""
+        import hyperspy.api as hs
+
+        from .processing.atomic import SUBLATTICE_NAMES
+
+        if not (columns.atomic and columns.atomic.get("output") == "columns"):
+            raise ValueError(f"{columns.title} is not a table of columns")
+        subs = self.sublattices_of(columns)
+        taken = {d.title for d in subs}
+        name = next((x for x in SUBLATTICE_NAMES if f"Sublattice {x}" not in taken), None)
+        if name is None:
+            raise ValueError(f"{columns.title} has {len(subs)} sublattices, the most it can have")
+        signal = hs.signals.BaseSignal(np.asarray(rows, dtype=np.int32))
+        signal.metadata.General.title = f"Sublattice {name}"
+        index = max((d.atomic.get("index", 0) for d in subs), default=-1) + 1
+        ds = Dataset(id=_new_id(), file_id=columns.file_id, signal=signal, kind=DatasetKind.OTHER,
+                     origin="atomic", parent_id=columns.id,
+                     atomic={**(info or {}), "output": "sublattice", "index": index, "count": int(len(rows))})
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[columns.file_id].dataset_ids
+            ids.insert(ids.index(subs[-1].id if subs else columns.id) + 1, ds.id)
+        return ds
+
+    def cage_centres(self, nb: Dataset, guesses, threshold: float, nearest: bool = False) -> dict:
+        """New column guesses at the centre of each origin's cage (the
+        neighbours nearest the ``guesses``, picked clusters) of neighbourhood
+        ``nb``, to fit and add to its Columns (``append_columns``):
+        ``columns`` ([y, x] px), ``added``, the Columns' ``id`` and the
+        ``name`` of the sublattice they will make."""
+        from .processing.atomic import SUBLATTICE_NAMES
+
+        columns = self._columns_of(nb)
+        _, o, c = self._cage(nb, guesses, threshold, nearest)
+        centres = o + c
+        centres = centres[np.isfinite(centres).all(axis=1)]
+        if not len(centres):
+            raise ValueError("No origin has every picked neighbour within the threshold")
+        subs = self.sublattices_of(columns)
+        taken = {d.title for d in subs} | ({f"Sublattice {SUBLATTICE_NAMES[0]}"} if not subs else set())
+        name = next((x for x in SUBLATTICE_NAMES if f"Sublattice {x}" not in taken), None)
+        if name is None:
+            raise ValueError("The columns have as many sublattices as they can")
+        return {"columns": np.round(centres, 4).tolist(), "added": int(len(centres)), "id": columns.id, "name": name}
+
+    def append_columns(self, columns: Dataset, table: np.ndarray, info: dict | None = None) -> Dataset:
+        """Fitted columns (a table of COLUMN_FIELDS) added after a Columns
+        dataset's own, which stay as they are with what was made from them.
+        The new ones are a sublattice of their own; when the Columns had no
+        sublattices, the old ones become one first (A), and neighbourhoods of
+        all the old columns are then of that sublattice. Tables with a row
+        per column (displacements) get empty rows. Returns the new sublattice."""
+        import hyperspy.api as hs
+
+        from .processing.atomic import COLUMN_FIELDS
+
+        if not (columns.atomic and columns.atomic.get("output") == "columns"):
+            raise ValueError(f"{columns.title} is not a table of columns")
+        old = np.asarray(columns.signal.data, dtype=np.float32)
+        n_old, n_new = len(old), len(table)
+        subs = self.sublattices_of(columns)
+        if not subs:
+            import re
+
+            base = self.add_sublattice(columns, np.arange(n_old))
+            name = self._short_name(base)
+            with self._lock:
+                for d in self.datasets.values():
+                    if not (d.atomic and d.atomic.get("output") == "neighbourhood"):
+                        continue
+                    if (d.atomic.get("origins") or d.parent_id) == columns.id:
+                        d.atomic = {**d.atomic, "origins": base.id}
+                    if d.atomic.get("neighbours") == columns.id:
+                        d.atomic = {**d.atomic, "neighbours": base.id}
+                    # Its default title follows ("Neighbourhood all → all" → "… A → A").
+                    m = re.fullmatch(r"Neighbourhood (\S+) → (\S+)( \d+)?", d.title)
+                    if m and not d.custom_title:
+                        o, n = (name if x == "all" else x for x in m.group(1, 2))
+                        d.signal.metadata.General.title = f"Neighbourhood {o} → {n}{m.group(3) or ''}"
+        merged = np.concatenate([old, np.asarray(table, dtype=np.float32)])
+        signal = hs.signals.BaseSignal(np.ascontiguousarray(merged))
+        signal.metadata.General.title = columns.signal.metadata.General.title
+        signal.metadata.set_item("Atomic.fields", list(COLUMN_FIELDS))
+        columns.replace_signal(signal)
+        columns.atomic = {**columns.atomic, "count": int(len(merged)),
+                          "failed": int(np.count_nonzero(merged[:, -1]))}
+        # Tables with a row per column stay aligned.
+        under = {columns.id}
+        with self._lock:
+            grew = True
+            while grew:
+                more = {d.id for d in self.datasets.values() if d.parent_id in under} - under
+                grew = bool(more)
+                under |= more
+            per_column = [self.datasets[i] for i in under if self.datasets[i].atomic
+                          and self.datasets[i].atomic.get("output") == "displacements"]
+        for d in per_column:
+            t = np.asarray(d.signal.data, dtype=np.float32)
+            if len(t) == n_old:
+                pad = np.full((n_new, t.shape[1]), np.nan, dtype=np.float32)
+                s2 = hs.signals.BaseSignal(np.concatenate([t, pad]))
+                s2.metadata.General.title = d.signal.metadata.General.title
+                d.replace_signal(s2)
+        return self.add_sublattice(columns, np.arange(n_old, n_old + n_new), info)
+
+    def set_cage_displacement(self, nb: Dataset, guesses, threshold: float, nearest: bool = False) -> Dataset:
+        """Each origin's displacement from the centre of its cage (the mean
+        of the neighbours nearest the ``guesses``), as a "Displacement"
+        dataset under neighbourhood ``nb``: a table of DISPLACEMENT_FIELDS
+        with a row per column of the Columns (NaN for the others, and where
+        a neighbour is missing). Made again in place."""
+        import hyperspy.api as hs
+
+        columns = self._columns_of(nb)
+        rows, _, c = self._cage(nb, guesses, threshold, nearest)
+        d = -c
+        table = np.full((len(columns.signal.data), 4), np.nan)
+        table[rows, :2] = d
+        table[rows, 2] = np.hypot(d[:, 0], d[:, 1])
+        table[rows, 3] = np.degrees(np.arctan2(d[:, 0], d[:, 1]))
+        mag = table[rows, 2]
+        ok = np.isfinite(mag)
+        signal = hs.signals.BaseSignal(np.ascontiguousarray(table, dtype=np.float32))
+        signal.metadata.General.title = "Displacement"
+        info = {"output": "displacements", "kind": "cage", "nearest": bool(nearest),
+                "cage": [] if nearest else [[float(a), float(b)] for a, b in np.asarray(guesses, dtype=np.float64).reshape(-1, 2)],
+                "threshold": float(threshold), "count": int(len(rows)), "missing": int((~ok).sum()),
+                "median": float(np.median(mag[ok])) if ok.any() else None,
+                "max": float(mag[ok].max()) if ok.any() else None}
+        with self._lock:
+            earlier = next((x for x in self.datasets.values() if x.parent_id == nb.id and x.atomic
+                            and x.atomic.get("output") == "displacements"), None)
+        if earlier is not None:
+            earlier.replace_signal(signal)
+            earlier.atomic = info
+            return earlier
+        ds = Dataset(id=_new_id(), file_id=nb.file_id, signal=signal, kind=DatasetKind.OTHER,
+                     origin="atomic", parent_id=nb.id, atomic=info)
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[nb.file_id].dataset_ids
+            under = [i for i in ids if self.datasets[i].parent_id == nb.id]
+            ids.insert(ids.index(under[-1] if under else nb.id) + 1, ds.id)
+        return ds
+
+    def _cage(self, nb: Dataset, guesses, threshold: float, nearest: bool):
+        """Neighbourhood ``nb``'s origins (rows, positions) and the vector to
+        each one's cage centre: the neighbours nearest the picked ``guesses``,
+        or (``nearest``) all its k nearest neighbours."""
+        from .processing.atomic import cage_vectors, nearest_cage
+
+        origins, neighbours = self._nb_sets(nb)
+        rows, o = self.column_positions(origins)
+        if nearest:
+            k = int(nb.atomic.get("k") or 0)
+            v = np.asarray(nb.signal.data, dtype=np.float64)
+            if not k or len(v) != k * len(o):
+                raise ValueError(f"{nb.title} is out of date: make it again")
+            return rows, o, nearest_cage(v, k, threshold)
+        _, n = self.column_positions(neighbours)
+        return rows, o, cage_vectors(n, o, guesses, threshold)
+
+    def _nb_sets(self, nb: Dataset) -> tuple[Dataset, Dataset]:
+        try:
+            return self.get_dataset(nb.atomic.get("origins") or nb.parent_id), self.get_dataset(nb.atomic["neighbours"])
+        except KeyError:
+            raise ValueError("The neighbourhood's columns are gone")
+
+    # ---------- masks ----------
+
+    def set_mask(self, image: Dataset, data: np.ndarray, settings: dict, replace: Dataset | None = None) -> Dataset:
+        """A mask (``data``, bool) made from ``image``: an image of 0 and 1
+        with its calibration under it, titled "Mask" ("Mask 2", …); or
+        ``replace`` (a mask of ``image``) made again, keeping its title.
+        Returns it."""
+        if replace is not None and not (replace.origin == "mask" and replace.parent_id == image.id):
+            raise ValueError(f"{replace.title} is not a mask of {image.title}")
+        if data.shape != tuple(image.signal.data.shape):
+            raise ValueError("The mask's shape is not the image's")
+        signal = image.signal._deepcopy_with_new_data(np.asarray(data, dtype=np.float32))
+        info = {"source_id": image.id, **settings, "fraction": round(float(np.mean(data)), 6)}
+        if replace is not None:
+            signal.metadata.General.title = replace.title
+            replace.replace_signal(signal)
+            replace.mask = info
+            return replace
+        with self._lock:
+            taken = {d.title for d in self.datasets.values() if d.parent_id == image.id}
+        title = "Mask" if "Mask" not in taken else next(f"Mask {i}" for i in range(2, 1000) if f"Mask {i}" not in taken)
+        signal.metadata.General.title = title
+        ds = Dataset(id=_new_id(), file_id=image.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                     origin="mask", parent_id=image.id, mask=info)
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[image.file_id].dataset_ids
+            # After the image's other masks, else right after the image.
+            after = [i for i in ids if self.datasets[i].parent_id == image.id and self.datasets[i].origin == "mask"]
+            ids.insert(ids.index(after[-1] if after else image.id) + 1, ds.id)
+        return ds
+
     # ---------- neighbourhoods and bonds (M22e) ----------
 
     def column_positions(self, ds: Dataset) -> tuple[np.ndarray, np.ndarray]:
@@ -2044,6 +2251,69 @@ class Session:
             ids = self.files[nb.file_id].dataset_ids
             later = [i for i, x in enumerate(ids) if x in self.datasets and self.datasets[x].parent_id == nb.id]
             ids.insert((max(later) if later else ids.index(nb.id)) + 1, ds.id)
+        return ds
+
+    # ---------- periodic lattice displacements (M22f) ----------
+
+    def set_pld_images(self, image: Dataset, made: dict, settings: dict) -> list[Dataset]:
+        """The PLD reference (the image with its superlattice peaks damped) and
+        difference (reference − image) under ``image``: images with its
+        calibration, made again in place. Returns them."""
+        out = []
+        for output, title, data in (("pld-reference", "PLD reference", made["reference"]),
+                                    ("pld-difference", "PLD difference", made["difference"])):
+            signal = image.signal._deepcopy_with_new_data(np.asarray(data, dtype=np.float32))
+            signal.metadata.General.title = title
+            info = {**settings, "output": output}
+            with self._lock:
+                earlier = next((d for d in self.datasets.values() if d.parent_id == image.id and d.atomic
+                                and d.atomic.get("output") == output), None)
+            if earlier is not None:
+                earlier.replace_signal(signal)
+                earlier.atomic = info
+                out.append(earlier)
+                continue
+            ds = Dataset(id=_new_id(), file_id=image.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                         origin="atomic", parent_id=image.id, atomic=info)
+            with self._lock:
+                self.datasets[ds.id] = ds
+                ids = self.files[image.file_id].dataset_ids
+                at = ids.index(out[-1].id) if out else ids.index(image.id)
+                ids.insert(at + 1, ds.id)
+            out.append(ds)
+        return out
+
+    def pld_reference_of(self, image: Dataset) -> Dataset | None:
+        with self._lock:
+            return next((d for d in self.datasets.values() if d.parent_id == image.id and d.atomic
+                         and d.atomic.get("output") == "pld-reference"), None)
+
+    def set_displacements(self, columns: Dataset, table: np.ndarray, settings: dict) -> Dataset:
+        """Each column's periodic lattice displacement (a table of
+        DISPLACEMENT_FIELDS, a row per column) as "Displacements" under the
+        Columns. Made again in place. Returns it."""
+        import hyperspy.api as hs
+
+        signal = hs.signals.BaseSignal(np.ascontiguousarray(table, dtype=np.float32))
+        signal.metadata.General.title = "Displacements"
+        mag = table[:, 2]
+        ok = np.isfinite(mag)
+        info = {**settings, "output": "displacements", "count": int(len(table)), "missing": int((~ok).sum()),
+                "median": float(np.median(mag[ok])) if ok.any() else None,
+                "max": float(mag[ok].max()) if ok.any() else None}
+        with self._lock:
+            earlier = next((d for d in self.datasets.values() if d.parent_id == columns.id and d.atomic
+                            and d.atomic.get("output") == "displacements"), None)
+        if earlier is not None:
+            earlier.replace_signal(signal)
+            earlier.atomic = info
+            return earlier
+        ds = Dataset(id=_new_id(), file_id=columns.file_id, signal=signal, kind=DatasetKind.OTHER,
+                     origin="atomic", parent_id=columns.id, atomic=info)
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[columns.file_id].dataset_ids
+            ids.insert(ids.index(columns.id) + 1, ds.id)
         return ds
 
     def make_dpc(
@@ -2600,7 +2870,7 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model", "atomic"):
+        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model", "atomic", "mask"):
             if dataset.origin == "curve-model" and dataset.parent_id in self.datasets:
                 self.datasets[dataset.parent_id].curve_fits = None  # its fit at the cursor goes with it
             places = self._tree_places(dataset)

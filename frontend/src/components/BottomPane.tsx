@@ -60,6 +60,13 @@ export function BottomPane({ tabs, viewerRef, resizeLabel }: Props) {
   const next = (id: BottomTab, among = ids) => among[(among.indexOf(id) + 1) % among.length];
   const content = (id: BottomTab) => tabs.find((t) => t.id === id)?.content;
 
+  // The tabs shown, for processes that bring their plot forward.
+  const idsKey = ids.join("|");
+  useEffect(() => {
+    useUi.getState().setBottomTabsShown(idsKey ? (idsKey.split("|") as BottomTab[]) : []);
+  }, [idsKey]);
+  useEffect(() => () => useUi.getState().setBottomTabsShown([]), []);
+
   // Keep the stored focus on a shown tab, so setBottomTab replaces the right half.
   useEffect(() => {
     if (split && !split.includes(bottomTab)) focusBottomTab(split[0]);

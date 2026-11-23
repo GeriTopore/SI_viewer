@@ -26,7 +26,7 @@ export function MainView() {
       <div className="placeholder">
         <h1>Nothing selected</h1>
         <p className="muted">
-          Click a spectrum image, stack or spectrum to view it; click maps to add them to the view.
+          Click a dataset to view it; shift-click others to add them to the view.
           {!files.length && " Open files with Open… (⌘/Ctrl+O)."}
         </p>
       </div>

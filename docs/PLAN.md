@@ -1329,6 +1329,13 @@ scans linked. Made once from the loaded data (filters not applied).
 `processing/line_scan.py`, `Session.add_line_scans`, `POST
 …/line-scan {line: {x0, y0, x1, y1, width}, name, with_linked}`.
 
+**Clicks in the dataset pane** (changed after M22): a click shows just
+that dataset, so what the processes work on is plain; shift-click adds an
+image, stack or column result to the view or takes it out (a spectrum
+image or spectrum becomes the view); ⌘/Ctrl-click adds or takes out
+anything. A member of the linked EELS group in the view is only focused.
+Results added by a process (e.g. a thickness map) still join the view.
+
 ### 4.17 Grid panels arranged by hand (M15, done)
 
 In the Grid view, a panel is moved by dragging the strip along its top edge
@@ -2310,14 +2317,96 @@ projects.
   - Lattice indexing (`index_lattice`).
   - Line profiles along a chain of n columns, extrapolated by a fraction
     (`extrapolate_point_pair`), in the profile pane.
-- **M22f: Periodic lattice displacements.**
-  - Pick the superlattice peaks (conjugates added).
-  - Refine them on |FFT| for the backgrounds.
-  - Damp them (radius), giving the reference image and difference image
-    datasets.
-  - Fit the columns in both images (reusing M22d).
-  - `measure_displacements` (threshold), giving the triangles overlay and
-    magnitude and angle maps.
+- **Cage of the k nearest neighbours.** For origins that move different
+  ways (O columns with octahedral tilts), picked clusters split in two; the
+  cage is instead each origin's k nearest neighbours (*Cage → The k
+  nearest*). A cage is kept only when its shape (the neighbours about their
+  centre, in order round it) is within the threshold of the usual one and
+  the origin is inside it, so edges and missing neighbours drop out but
+  large displacements stay. On `iDPC_BTFMO_test.tif`, C → A with k = 4,
+  8 px: median 58.7 pm, largest 119.7 pm (mostly along y, alternating
+  rows), 362 of 1299 left out.
+- **Sublattices by position in cell.** For structures whose sublattices
+  overlap in intensity (e.g. `iDPC_BTFMO_test.tif`).
+  - A reference sublattice (e.g. the brightest columns, split by value)
+    and two of its lattice vectors (picked in a neighbourhood) make a cell;
+    every column is placed in it: its offset from the nearest reference
+    column in fractions of the vectors, wrapped to [−½, ½)
+    (`…/atomic/columns/cell`).
+  - The *Cell* tab under the image plots them (px, the cell outlined and
+    repeated a quarter beyond its edges); clicks add sites of the chosen
+    sublattice (several sites may make one, e.g. (½, ±0.4)), a click on a
+    site removes it.
+  - *Split*: each column to the nearest site within a radius (px, the cell
+    repeating), the sites' sublattices replacing those there were
+    (`…/atomic/columns/sublattices/cell`).
+  - *Sites as: Clusters* (instead of circles): each site takes the dense,
+    connected groups of columns that come within its reach (px) — scikit-
+    learn's DBSCAN on the columns' places in px, the cell tiled 3 × 3 so
+    groups across its edges stay whole; columns ``link`` px apart at most,
+    groups of ``smallest group`` or more — however far they stretch (a
+    tilt streak, both lobes of a site displaced up and down). A group two
+    sites share goes to the nearer; groups no site takes (and scattered
+    columns) are left out and reported with their place and size (an
+    unpicked site). *Preview* (`…/columns/cell/fit`) colours the Cell plot
+    by site and marks the unclaimed groups; Split uses the same.
+    - A Gaussian per site (fitted ellipses, EM) was tried first: a broad,
+      nearly flat streak gives a wide spread, and strays a gap away then
+      fall inside its cut-off (11 of 20 on the iDPC crop at 3σ); trimming
+      the fit makes it collapse. Density follows the gap instead.
+    - iDPC crop (737 columns; v₁ (−0.4, 46.9), v₂ (71.3, −1.0) px; sites
+      (0, 0), (0, ½), (½, ½); reach 8, link 4, smallest 5): A 262, B 207,
+      C 248, 20 left out — the groups at (½, 0) (7 and 5 columns) and a
+      few scattered; circles of 16 px gave C 197 with 71 left out.
+  - On `iDPC_BTFMO_test.tif` (template σ 3.5, blur 1.5, distance 8,
+    correlation 0.4; window 11; reference = brightest of a 3-way intensity
+    split; v₁ (−0.1, 45.9), v₂ (70.5, −1.4) px; sites (0, 0), (0, ½),
+    (½, ±0.4); 10 px): A 1404, B 1142, C 1299 of 4094.
+  - Later: keep the reference's neighbourhoods when splitting (the
+    lattice vectors and sites are kept with the analysis, §4.26b).
+- **Cages (B-site displacement, from the BTFMO polarisation notebook).**
+  - *Find* takes a background σ: a broad Gaussian subtracted first (the
+    notebook's σ 3 − σ 75), so only the brightest columns (A sites) are
+    found.
+  - In a neighbourhood's plot, clusters are picked into a *cage* (e.g. the
+    origin, right, down and the corner between them; or the four A sites
+    diagonal to a B site); its centre is marked.
+  - *Add centres as columns*: for each origin, the mean of the neighbours
+    nearest origin + each picked cluster (`get_vector_to_neighbors`,
+    threshold) gives a new guess; the new guesses go to the Atomic columns
+    process (drawn in their sublattice's colour) and *Fit and add* fits only
+    them (`…/atomic/columns/append`), adding them after the Columns' own,
+    which keep their fit and everything made from them. The new ones are a
+    sublattice of their own; when there were none, the old columns become A
+    first, and neighbourhoods of all of them become of A (renamed).
+  - *Measure displacement*: each origin less its cage centre,
+    "Displacement" under the neighbourhood (a row per column, drawn as
+    vectors like PLD).
+  - Checked on the notebook's image: 1468 A sites, 1156 B sites added, B
+    displacements median 2.7 px (the notebook's mean 2.8 px).
+  - Later: polarisation (−displacement) as a vector option, smoothed
+    vectors (`aggregate_points`), calibration from a typed field of view.
+- **M22f: Periodic lattice displacements** (built; two display bugs open).
+  - The "Lattice displacements" process (kemstem section).
+  - Superlattice peaks labelled automatically: the FFT's peaks found
+    (prominence over the blurred log |F|, a MAD noise floor), the lattice
+    found from the strongest (the smallest cell indexing them all) and each
+    peak indexed; off-lattice peaks grouped into families by their offset q
+    (q₁, q₂ … by strength), ticked to damp (the strongest to start). By
+    hand: on the FFT, a click adds a peak (and its conjugate) or toggles
+    one, a right-click removes one.
+  - Damp them (`refine_peaks_gf` on |F| for the backgrounds,
+    `damp_peaks_circle`, radius): "PLD reference" and "PLD difference" under
+    the image.
+  - The columns fitted again in the reference from their fitted positions,
+    then `measure_displacements` (threshold): "Displacements" under the
+    Columns (dy, dx, magnitude, angle).
+  - Drawn as vectors (triangles as kemstem's `plot_displaced_site`, arrows
+    or lines; length ∝ √|d|, |d| or equal; coloured by direction on a
+    circular map or by magnitude), set in the Layers tab's nested
+    properties.
+  - Open: no hover readout for displacements; grid panels black when items
+    are shown without their image.
 - **Later:**
   - per-frame analysis of stacks and in-situ series (columns or strain over
     time);
@@ -2331,6 +2420,30 @@ projects.
   and the NSMO one). The tests are skipped when the clone is missing.
 - Crops are small (256²) so the tests stay fast. No long jobs in browser
   tests.
+
+### 4.25b Masks from images (general)
+
+- A **Masks** process (General section) on any 2D image, or on an image made
+  from it (chosen with *From*: a Bragg-filtered grating, an amplitude, a PLD
+  difference, …).
+- Settings: Gaussian smoothing, keep above / below / between thresholds
+  (dragged on a histogram of a sample of the smoothed values, typed, or
+  Otsu's), invert, clean-up (opening then closing, scikit-image), and a
+  smallest area for regions and holes.
+- Each mask is a dataset (origin "mask", 0/1, the image's calibration) under
+  the image it was made from, titled "Mask", "Mask 2", …; listed in the
+  process to select (its settings come back), *Update* in place, rename or
+  delete. Saved with analyses. Shown in its own colour, so overlays stay
+  apart.
+- Used by: *Sublattices → By mask*: one sublattice of the columns in the
+  mask (any mask of the file the image's size), added next to the
+  sublattices there are (the next free letter); a column can then be in
+  more than one.
+- Later: combining masks (and / or / not), masks from drawn regions, and
+  masks in other processes (region spectra, quantification, vacuum).
+- Backend: `processing/masks.py`, `api/masks.py`
+  (`POST /api/datasets/{id}/mask/values`, `POST /api/datasets/{id}/mask`),
+  `POST …/atomic/columns/sublattices/mask`.
 
 ### 4.26 Showing and analysing column results (design, M22e onwards)
 
@@ -2474,7 +2587,92 @@ data, not pictures**, and every view of them is linked.
   everything else) or as layers that belong to the Columns dataset (a
   shorter tree).
 
-## 5. Responsiveness rules
+### 4.26b Process pane split (built)
+
+Multi-step analyses (columns → sublattices → neighbourhoods → cells, cages)
+moved between processes and plots at every step. Now:
+- Dragging a process's icon (grid tile, open process's title) or title
+  (list view) onto the Process tab splits it: the left / right third puts
+  it beside, the middle above or below, the tab's own view (grid or list)
+  in the other half, as the bottom pane's tabs split (same drop zones and
+  divider; the share is remembered).
+- The split-off process has its own title: its icon (dragged to move it
+  to another side, or to swap in another process), the dataset it works on,
+  a pin (default on: it stays on that dataset when another is clicked; off:
+  it follows the tab's) and × to close it. Remembered per browser
+  (`si-viewer.processSplit`).
+- Working in a process (opening its tile, or a click in it) brings its plot
+  forward in the pane under the image, when shown: Neighbourhoods →
+  Neighbourhood, Sublattices → Cell.
+- The right-hand pane's tabs shrink at narrow widths (they pushed it
+  sideways).
+- Links: where a section needs another process ("Fit the atomic columns
+  first", "Make a mask", "pick lattice vectors in a neighbourhood", "Fit
+  them" after adding cage centres, the empty Neighbourhood and Cell plots),
+  the words open it: split off beside the one asking (pinned to its
+  image), or, when asked from the split-off process, in the tab's own view
+  (grid: opened; list: unfolded and scrolled to); one already showing is
+  just brought forward (`components/ProcessLink.tsx`).
+- Picks kept with the analysis: a neighbourhood's clusters setting,
+  lattice vectors and cage settings, and the Columns' cell (reference,
+  vectors, sites, radius) are kept on those datasets (`atomic.picks`,
+  `PUT …/atomic/picks`), saved a moment after each change and read back
+  for datasets the page has none for (`state/picks.ts`). They survive a
+  reload and are saved with an analysis; the cell's columns are placed
+  again on loading, so the Cell plot comes back by itself.
+
+### 4.27 Ideas from ptycho-quant-analysis (not planned yet)
+
+Noted from github.com/hexane360/ptycho-quant-analysis (notebooks on ZnMgSe,
+MgCr₂O₄ and Pb₂MgWO₆ ptychography phase stacks; `util/peaks.py`,
+`index.py`, `plot.py`, `filter.py`, `io.py`). None of this is scheduled.
+
+1. **Integrated site intensity** (`integrate_peaks`): the sum of an image
+   within a radius of each site, each pixel going to its nearest site only.
+   A column value computed on any image the size of the columns' image (the
+   image itself, EDS/EELS element maps, a PLD difference, each frame of a
+   stack), giving per-column composition. scipy only.
+2. **More fit outputs**: the integrated Gaussian volume (2π·A·σ₁·σ₂; our
+   "intensity" is amplitude + offset), ellipticity from σ₁ and σ₂, reduced χ²
+   per column (colour and filter bad fits), and the residual image (image −
+   fitted Gaussians) as a dataset.
+3. **Lattice indexing and unit-cell sites**: each column's (row, col) in the
+   lattice, then sites at fractional coordinates of a chosen supercell.
+   - Theirs: lattice directions from a sinogram FFT, rows and columns by a
+     shortest-path graph (networkx), grid slicing for the supercell
+     (`construct_grid_points`).
+   - Ours would start from the FFT basis (PLD's `lattice_basis`) or the
+     lattice vectors picked in Neighbourhoods, rounding positions in that
+     basis and propagating through neighbours to cope with distortion.
+   - Gains: sites with no visible column (empty interstitials, e.g. 16c),
+     sublattices by crystallography ("By unit cell"), per-cell differences
+     (B1 − B2) and bonds along grid neighbours. Matches the unticked
+     "define initial lattice/sublattice through unit vectors".
+4. **Voronoi cell maps** (`plot_voronoi`): site values drawn as filled
+   cells capped at a radius; a "Cells" shape in the Layers tab's nested
+   properties, optionally saved as an image (part of "measurements as
+   maps").
+5. **Depth in stacks** (multislice ptychography): contrast (std) per slice
+   to choose a range, the mean over that range, and site values per slice
+   at fixed positions shown with the frame slider (needs 1).
+6. **Smaller items**:
+   - column finding by normalised cross-correlation with a Gaussian
+     template (`match_template`; a threshold in correlation, −1 to 1)
+     — **built**: *Find → Method: Template correlation* (template σ,
+     correlation threshold; blur, background σ and distance as for local
+     maxima), checked against a direct scikit-image call. On
+     `iDPC_BTFMO_test.tif` (σ 3.5, blur 1.5, distance 8, 0.4) it finds 4094
+     columns; fitted (window 11), intensity separates the A columns, the
+     other two sublattices overlap (still to do);
+   - plane (linear ramp) removal, optionally within a mask;
+   - fit options: maximum shift, circular window, background term; a
+     Lorentzian model (lmfit);
+   - sublattices by pairs (dumbbells closer than a distance, ordered by
+     intensity);
+   - readers for ptychography reconstructions (fold_slice `.mat`, phaser
+     `.h5`: complex objects → phase and amplitude stacks).
+
+
 - The backend holds signals as NumPy arrays in RAM after selection and uses
   lazy (dask) only for files too large for memory.
 - Cursor and ROI requests go over the WebSocket. The frontend sends the latest

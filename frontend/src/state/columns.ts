@@ -10,6 +10,10 @@ export interface ColumnsState {
   settings: ColumnSettings;
   /** Found columns, [y, x] pixels (centres at integers). */
   found: [number, number][] | null;
+  /** The found columns are new ones to add to a Columns dataset (sites at
+   * cage centres): fitting them adds them after its own, as sublattice
+   * ``name``; null: the found columns replace the fitted ones. */
+  append: { columns: string; name: string } | null;
   finding: boolean;
   test: (ColumnTest & { at: [number, number] }) | null;
   testing: boolean;
@@ -23,8 +27,9 @@ export interface ColumnsState {
 
 export const defaultColumns = (): ColumnsState => ({
   // Notebook 2's settings.
-  settings: { blur: 0.5, distance: 4, threshold: 0.1, window: 7 },
+  settings: { blur: 0.5, distance: 4, threshold: 0.1, window: 7, background: 0, method: "maxima", template: 1.5 },
   found: null,
+  append: null,
   finding: false,
   test: null,
   testing: false,
@@ -210,7 +215,7 @@ export async function findColumns(d: DatasetSummary) {
   patch(d.id, { finding: true, error: null });
   try {
     const r = await api.findColumns(d.id, stateOf(d.id).settings);
-    patch(d.id, { found: r.columns, finding: false, test: null });
+    patch(d.id, { found: r.columns, append: null, finding: false, test: null });
   } catch (e) {
     patch(d.id, { finding: false, error: (e as Error).message });
   }
@@ -245,7 +250,9 @@ export async function refineColumns(d: DatasetSummary) {
   const { patch } = useColumns.getState();
   patch(d.id, { error: null });
   try {
-    let job = await api.refineColumns(d.id, st.settings, st.found);
+    let job = st.append
+      ? await api.appendColumns(st.append.columns, st.settings, st.found)
+      : await api.refineColumns(d.id, st.settings, st.found);
     patch(d.id, { job });
     while (job.status === "queued" || job.status === "running") {
       await sleep(400);
@@ -255,7 +262,8 @@ export async function refineColumns(d: DatasetSummary) {
     if (job.status === "done" && job.result) {
       const result = job.result as { file: FileSummary };
       useDatasets.getState().replaceFile(result.file);
-      patch(d.id, { job: null });
+      // Added: they are fitted columns now, not guesses.
+      patch(d.id, st.append ? { job: null, append: null, found: null } : { job: null });
     } else patch(d.id, { job: null, error: job.status === "failed" ? (job.error ?? "Failed") : null });
   } catch (e) {
     patch(d.id, { job: null, error: (e as Error).message });
@@ -342,6 +350,19 @@ export async function applySplit(d: DatasetSummary, c: DatasetSummary, points: C
   }
 }
 
+/** One more sublattice of Columns dataset ``c``: the columns in a mask. */
+export async function maskSublattice(d: DatasetSummary, c: DatasetSummary, mask: string) {
+  const { patch } = useColumns.getState();
+  patch(d.id, { splitting: true, error: null });
+  try {
+    const r = await api.sublatticeFromMask(c.id, mask);
+    useDatasets.getState().replaceFile(r.file);
+    patch(d.id, { splitting: false });
+  } catch (e) {
+    patch(d.id, { splitting: false, error: (e as Error).message });
+  }
+}
+
 /** Remove the sublattices of Columns dataset ``c``. */
 export async function clearSplit(d: DatasetSummary, c: DatasetSummary) {
   const { patch } = useColumns.getState();
@@ -419,4 +440,90 @@ export function bondFrame(p: BondPoints, by: "length" | "angle"): Frame {
     m.set(by, f);
   }
   return f;
+}
+
+/** A displacements table for drawing: per column (its row in the Columns
+ * table) the vector (px), its magnitude (px) and direction (° in [0, 360),
+ * from +x, y down); NaN where none. */
+export interface VectorPoints {
+  dy: Float32Array;
+  dx: Float32Array;
+  magnitude: Float32Array;
+  direction: Float32Array;
+}
+
+export const VECTOR_VALUES: { id: "direction" | "magnitude"; label: string }[] = [
+  { id: "direction", label: "Direction" },
+  { id: "magnitude", label: "Magnitude" },
+];
+
+export const useVectorTables = create<{ tables: Record<string, { key: string; points: VectorPoints }> }>(() => ({ tables: {} }));
+
+const vectorFetches = new Set<string>();
+/** The displacements of dataset ``v`` (fetched once per version). */
+export function ensureVectors(v: DatasetSummary) {
+  const key = `${v.revision}:${v.atomic?.count}:${v.atomic?.missing}`;
+  if (useVectorTables.getState().tables[v.id]?.key === key || vectorFetches.has(v.id)) return;
+  vectorFetches.add(v.id);
+  api
+    .displacementsTable(v.id)
+    .then(({ rows }) => {
+      const n = rows.length;
+      const p: VectorPoints = { dy: new Float32Array(n), dx: new Float32Array(n), magnitude: new Float32Array(n), direction: new Float32Array(n) };
+      rows.forEach((r, i) => {
+        p.dy[i] = r[0] ?? NaN;
+        p.dx[i] = r[1] ?? NaN;
+        p.magnitude[i] = r[2] ?? NaN;
+        const a = r[3];
+        p.direction[i] = a == null ? NaN : ((a % 360) + 360) % 360;
+      });
+      useVectorTables.setState((s) => ({ tables: { ...s.tables, [v.id]: { key, points: p } } }));
+    })
+    .catch(() => {})
+    .finally(() => vectorFetches.delete(v.id));
+}
+
+const vectorFrames = new WeakMap<VectorPoints, Map<string, Frame>>();
+/** A displacements value's finite values as a 1 × n frame, for the contrast histogram. */
+export function vectorFrame(p: VectorPoints, by: "direction" | "magnitude"): Frame {
+  let m = vectorFrames.get(p);
+  if (!m) vectorFrames.set(p, (m = new Map()));
+  let f = m.get(by);
+  if (!f) {
+    const data = p[by].filter((v) => Number.isFinite(v));
+    f = { data, width: data.length, height: 1, bin: 1 };
+    m.set(by, f);
+  }
+  return f;
+}
+
+const spacings = new WeakMap<ColumnPoints, number>();
+/** The columns' typical spacing (px): the median distance from a column to
+ * its nearest neighbour, over a sample of them. */
+export function typicalSpacing(p: ColumnPoints): number {
+  const known = spacings.get(p);
+  if (known !== undefined) return known;
+  const n = p.y.length;
+  const step = Math.max(1, Math.floor(n / 400));
+  const d: number[] = [];
+  for (let i = 0; i < n; i += step) {
+    if (!Number.isFinite(p.x[i]) || !Number.isFinite(p.y[i])) continue;
+    let best = Infinity;
+    const cx = Math.floor(p.x[i] / p.index.cell);
+    const cy = Math.floor(p.y[i] / p.index.cell);
+    for (let r = 1; r <= 4 && !Number.isFinite(best); r++) {
+      for (let j = cy - r; j <= cy + r; j++)
+        for (let k = cx - r; k <= cx + r; k++)
+          for (const o of p.index.cells.get(j * 100003 + k) ?? []) {
+            if (o === i) continue;
+            const dist = Math.hypot(p.x[o] - p.x[i], p.y[o] - p.y[i]);
+            if (dist > 0.5 && dist < best) best = dist;
+          }
+    }
+    if (Number.isFinite(best)) d.push(best);
+  }
+  d.sort((a, b) => a - b);
+  const s = d[Math.floor(d.length / 2)] ?? 4;
+  spacings.set(p, s);
+  return s;
 }

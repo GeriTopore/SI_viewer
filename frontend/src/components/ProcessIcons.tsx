@@ -151,6 +151,19 @@ const ICONS: Record<string, () => ReactNode> = {
       <circle cx="24" cy="24" r="11" stroke={ACCENT} strokeWidth="1.2" strokeDasharray="2.5 2" />
     </>
   ),
+  // Columns displaced in a wave: triangles pointing their way.
+  pld: () => (
+    <>
+      {[10, 24, 38].map((x, i) => (
+        <g key={x}>
+          <path d={i % 2 ? `M${x} 14L${x - 3} 8L${x + 3} 8Z` : `M${x} 8L${x - 3} 14L${x + 3} 14Z`} fill={i % 2 ? ACCENT : "currentColor"} stroke="none" />
+          <path d={i % 2 ? `M${x} 40L${x - 3} 34L${x + 3} 34Z` : `M${x} 34L${x - 3} 40L${x + 3} 40Z`} fill={i % 2 ? ACCENT : "currentColor"} stroke="none" />
+          <circle cx={x} cy={24} r="3" fill="currentColor" />
+        </g>
+      ))}
+      <path d="M4 24C10 18 14 18 17 24S24 30 31 24S38 18 44 24" stroke={ACCENT} strokeWidth="1.2" strokeDasharray="2 2" />
+    </>
+  ),
   // A column's neighbours: vectors from the centre, one picked.
   neighbourhoods: () => (
     <>
@@ -161,6 +174,13 @@ const ICONS: Record<string, () => ReactNode> = {
       <path d="M24 24L37 24" stroke={ACCENT} strokeWidth="2" />
       <path d="M33 20.5L37.5 24L33 27.5" stroke={ACCENT} strokeWidth="2" />
       <path d="M24 24L24 11" stroke={ACCENT} strokeWidth="1.2" strokeDasharray="2 2" />
+    </>
+  ),
+  // An image's bright region cut out as a mask.
+  mask: () => (
+    <>
+      <rect x="6" y="6" width="36" height="36" rx="2" />
+      <path d="M12 30C10 20 18 12 26 14S40 22 34 32S16 40 12 30Z" stroke={ACCENT} fill={ACCENT} fillOpacity="0.35" />
     </>
   ),
   // A lattice of two kinds of columns (two sublattices).

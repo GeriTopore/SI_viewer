@@ -425,3 +425,457 @@ def test_neighbourhoods_and_bonds(client):
     session.set_sublattices(cols, labels, ["A", "B"])
     assert nb_id not in session.datasets
     assert client.delete(f"/api/datasets/{cols.id}").status_code == 200
+
+
+def _pld_lattice(n=160, a=10, amp=0.6):
+    """A square lattice of Gaussian columns, displaced along y by ±amp in turn
+    along x (a period of two columns): (image, true positions, displacements)."""
+    yy, xx = np.mgrid[0:n, 0:n].astype(float)
+    image = np.zeros((n, n))
+    pos, disp = [], []
+    for y0 in np.arange(a / 2, n, a):
+        for x0 in np.arange(a / 2, n, a):
+            d = amp * (-1) ** int(x0 // a)  # ±amp, alternating along x
+            image += np.exp(-((yy - y0 - d) ** 2 + (xx - x0) ** 2) / (2 * 1.6 ** 2))
+            pos.append((y0 + d, x0))
+            disp.append((d, 0.0))
+    return image, np.array(pos), np.array(disp)
+
+
+def test_pld_detect_reference_and_displacements(tmp_path):
+    """Superlattice peaks found and grouped, damped into a reference, and the
+    displacements measured back (against the known ones)."""
+    import tifffile
+
+    image, pos, disp = _pld_lattice()
+    path = tmp_path / "pld.tif"
+    tifffile.imwrite(path, image.astype(np.float32))
+    c = TestClient(create_app())
+    d = c.post("/api/files", json={"path": str(path)}).json()["datasets"][0]
+    url = f"/api/datasets/{d['id']}/atomic/pld"
+
+    r = c.post(f"{url}/detect", json={"count": 60, "within": 0.3}).json()
+    basis = np.array(r["basis"])
+    assert np.allclose(sorted(np.hypot(*basis.T)), [0.1, 0.1], atol=0.01)  # the 10 px lattice
+    fam = r["families"][0]
+    # The modulation: half a lattice vector along x (q = (0, ½) or (½, 0) in the basis).
+    assert sorted(np.abs(fam["q"])) == pytest.approx([0, 0.5], abs=0.05)
+    sl = [p for p in r["peaks"] if p["family"] == fam["id"]]
+    assert len(sl) >= 4 and all(p["label"] == "superlattice" for p in sl)
+    assert any(p["family"] == 0 for p in r["peaks"])
+
+    r = c.post(f"{url}/reference", json={"peaks": [[p["fy"], p["fx"]] for p in sl], "radius": 4})
+    assert r.status_code == 200, r.text
+    made = {x["id"]: x for x in r.json()["file"]["datasets"]}
+    ref, diff = (made[i] for i in r.json()["ids"])
+    assert ref["title"] == "PLD reference" and ref["kind"] == "image" and ref["parent_id"] == d["id"]
+    assert diff["atomic"]["output"] == "pld-difference"
+    assert c.post(f"{url}/reference", json={"peaks": [[0.2, 0.2]], "radius": 0}).status_code == 422
+
+    session = c.app.state.session
+    image_ds = session.get_dataset(d["id"])
+    table = np.zeros((len(pos), 9))
+    table[:, :2] = pos
+    cols = session.set_columns(image_ds, table, {"blur": 0.0, "distance": 5, "threshold": 0.1, "window": 7})
+    job = _wait(c, c.post(f"/api/datasets/{cols.id}/atomic/pld/displacements", json={"threshold": 1.5}).json())
+    assert job["status"] == "done", job
+    out = next(x for x in job["result"]["file"]["datasets"] if x["id"] == job["result"]["id"])
+    assert out["title"] == "Displacements" and out["parent_id"] == cols.id and out["atomic"]["output"] == "displacements"
+    rows = np.array(c.get(f"/api/datasets/{out['id']}/atomic/displacements").json()["rows"], dtype=float)
+    # Away from the edges, the measured displacement is the fitted position less
+    # the reference's: the known wave (fitted positions are the true ones here).
+    inner = (pos[:, 0] > 20) & (pos[:, 0] < 140) & (pos[:, 1] > 20) & (pos[:, 1] < 140)
+    ok = inner & np.isfinite(rows[:, 0])
+    assert ok.sum() > 50
+    assert np.corrcoef(rows[ok, 0], disp[ok, 0])[0, 1] > 0.95
+    assert np.allclose(np.median(np.abs(rows[ok, 0])), 0.6, atol=0.2)
+    assert np.allclose(rows[ok, 2], np.hypot(rows[ok, 0], rows[ok, 1]), atol=1e-4)
+    # Refitting the columns takes them away.
+    session.set_columns(image_ds, table, {"blur": 0.0, "distance": 5, "threshold": 0.1, "window": 7})
+    assert out["id"] not in session.datasets
+
+
+def test_sublattices_from_a_mask(tmp_path):
+    """A sublattice of the columns in a mask, added next to the others."""
+    import tifffile
+
+    image, pos, _ = _pld_lattice(n=100)
+    path = tmp_path / "lattice.tif"
+    tifffile.imwrite(path, image.astype(np.float32))
+    c = TestClient(create_app())
+    d = c.post("/api/files", json={"path": str(path)}).json()["datasets"][0]
+    session = c.app.state.session
+    image_ds = session.get_dataset(d["id"])
+    table = np.zeros((len(pos), 9))
+    table[:, :2] = pos
+    table[0, :2] = np.nan  # a column without a position: in neither
+    cols = session.set_columns(image_ds, table, {"blur": 0.0, "distance": 5, "threshold": 0.1, "window": 7})
+    # A mask of the left half, as a dataset under the image.
+    m = np.zeros(image.shape, bool)
+    m[:, :50] = True
+    mask = session.set_mask(image_ds, m, {"keep": "above", "lo": 0.5})
+
+    url = f"/api/datasets/{cols.id}/atomic/columns/sublattices/mask"
+    r = c.post(url, json={"mask": mask.id})
+    assert r.status_code == 200, r.text
+    made = {x["id"]: x for x in r.json()["file"]["datasets"]}
+    a = made[r.json()["id"]]
+    left = np.isfinite(pos[:, 0]) & (pos[:, 1] < 49.5)
+    left[0] = False
+    assert a["title"] == "Sublattice A" and a["atomic"]["count"] == left.sum() and a["atomic"]["mask"] == mask.id
+    assert sorted(np.asarray(session.get_dataset(a["id"]).signal.data).tolist()) == np.flatnonzero(left).tolist()
+    # Only that one: no sublattice of the rest.
+    assert [x["title"] for x in made.values() if x["atomic"] and x["atomic"].get("output") == "sublattice"] == ["Sublattice A"]
+    # A second is added next to it (B), the first kept.
+    r2 = c.post(url, json={"mask": mask.id}).json()
+    subs = [x for x in r2["file"]["datasets"] if x["atomic"] and x["atomic"].get("output") == "sublattice"]
+    assert [x["title"] for x in subs] == ["Sublattice A", "Sublattice B"]
+    # Not an image of the same size: refused.
+    assert c.post(url, json={"mask": cols.id}).status_code == 422
+
+
+def _perovskite(n=200, a=20, shift=(1.0, -0.6)):
+    """Bright A columns on a square lattice (a px), dimmer B columns at the
+    cell centres displaced by ``shift`` (dy, dx) px, the sign alternating by
+    row of cells: (image, A positions, B positions, B displacements)."""
+    yy, xx = np.mgrid[0:n, 0:n].astype(float)
+    image = np.zeros((n, n))
+    A, Bs, D = [], [], []
+    for y0 in np.arange(a / 2, n, a):
+        for x0 in np.arange(a / 2, n, a):
+            image += np.exp(-((yy - y0) ** 2 + (xx - x0) ** 2) / (2 * 2.0 ** 2))
+            A.append((y0, x0))
+            if y0 + a < n and x0 + a < n:
+                s = 1 if int(y0 // a) % 2 == 0 else -1
+                d = (s * shift[0], s * shift[1])
+                b = (y0 + a / 2 + d[0], x0 + a / 2 + d[1])
+                image += 0.4 * np.exp(-((yy - b[0]) ** 2 + (xx - b[1]) ** 2) / (2 * 2.0 ** 2))
+                Bs.append(b)
+                D.append(d)
+    return image, np.array(A), np.array(Bs), np.array(D)
+
+
+def test_cage_centres_and_displacement(tmp_path):
+    """B sites seeded at the centres of four A sites (a neighbourhood's picked
+    clusters), fitted as a sublattice of their own, then each B's displacement
+    from its A cage measured back."""
+    import tifffile
+
+    image, A, Bs, D = _perovskite()
+    path = tmp_path / "perovskite.tif"
+    tifffile.imwrite(path, image.astype(np.float32))
+    c = TestClient(create_app())
+    d = c.post("/api/files", json={"path": str(path)}).json()["datasets"][0]
+    url = f"/api/datasets/{d['id']}/atomic/columns"
+
+    # Only the bright A columns: a high-pass and a high threshold.
+    found = np.array(c.post(f"{url}/find", json={"blur": 1, "background": 30, "distance": 6, "threshold": 0.5}).json()["columns"])
+    assert len(found) == len(A)
+    job = _wait(c, c.post(f"{url}/refine", json={"columns": found.tolist(), "window": 7}).json())
+    cols = job["result"]["id"]
+
+    # A → A neighbourhood; the cage: the origin, right, down and the corner.
+    nb = c.post(f"/api/datasets/{cols}/atomic/neighbourhood", json={"neighbours": cols, "k": 8}).json()["id"]
+    cage = [[0, 0], [0, 20], [20, 0], [20, 20]]
+    r = c.post(f"/api/datasets/{nb}/atomic/neighbourhood/centres", json={"vectors": cage, "threshold": 4}).json()
+    assert r["name"] == "B" and r["added"] == len(Bs) and r["id"] == cols
+    seeds = np.array(r["columns"])
+    # Each seed at an undisplaced cell centre.
+    centres = Bs - D
+    assert np.allclose(np.sort(seeds, axis=0), np.sort(centres, axis=0), atol=0.05)
+    assert c.post(f"/api/datasets/{nb}/atomic/neighbourhood/centres", json={"vectors": [[0, 0], [7, 7]], "threshold": 2}).status_code == 422
+
+    # Fit only the new ones, added after the A columns (which keep their fit).
+    before = np.array(c.get(f"/api/datasets/{cols}/atomic/columns").json()["rows"], dtype=float)
+    job = _wait(c, c.post(f"/api/datasets/{cols}/atomic/columns/append", json={"columns": r["columns"], "window": 7}).json())
+    assert job["status"] == "done", job
+    assert job["result"]["id"] == cols
+    files = job["result"]["file"]["datasets"]
+    subs = {x["title"]: x for x in files if x["atomic"] and x["atomic"].get("output") == "sublattice"}
+    assert subs["Sublattice A"]["atomic"]["count"] == len(A) and subs["Sublattice B"]["atomic"]["count"] == len(Bs)
+    assert subs["Sublattice B"]["id"] == job["result"]["sublattice"]
+    after = np.array(c.get(f"/api/datasets/{cols}/atomic/columns").json()["rows"], dtype=float)
+    assert len(after) == len(A) + len(Bs)
+    assert np.allclose(after[:len(A), :len(before[0])], before, equal_nan=True)  # untouched
+    # The A → A neighbourhood stays, now of Sublattice A.
+    kept = next(x for x in files if x["id"] == nb)
+    assert kept["atomic"]["origins"] == subs["Sublattice A"]["id"] and kept["atomic"]["neighbours"] == subs["Sublattice A"]["id"]
+    assert kept["title"] == "Neighbourhood A → A"
+
+    # B → A: the four diagonal A sites make the cage; displacement = B − their mean.
+    b, a = subs["Sublattice B"]["id"], subs["Sublattice A"]["id"]
+    nb2 = c.post(f"/api/datasets/{b}/atomic/neighbourhood", json={"neighbours": a, "k": 4}).json()["id"]
+    diag = [[-10, -10], [-10, 10], [10, -10], [10, 10]]
+    r = c.post(f"/api/datasets/{nb2}/atomic/neighbourhood/displacement", json={"vectors": diag, "threshold": 4})
+    assert r.status_code == 200, r.text
+    out = next(x for x in r.json()["file"]["datasets"] if x["id"] == r.json()["id"])
+    assert out["title"] == "Displacement" and out["parent_id"] == nb2 and out["atomic"]["output"] == "displacements"
+    rows = np.array(c.get(f"/api/datasets/{out['id']}/atomic/displacements").json()["rows"], dtype=float)
+    table = np.array(c.get(f"/api/datasets/{job['result']['id']}/atomic/columns").json()["rows"], dtype=float)
+    # Rows of B columns: compare with the known shift of the nearest true B.
+    got = 0
+    for i in range(len(A), len(table)):
+        j = np.argmin(np.hypot(*(Bs - table[i, :2]).T))
+        assert np.allclose(rows[i, :2], D[j], atol=0.15)
+        got += 1
+    assert got == len(Bs)
+    assert np.isnan(rows[:len(A), 0]).all()  # A rows: none
+    assert out["atomic"]["median"] == pytest.approx(np.hypot(1.0, 0.6), abs=0.1)
+    # Again: the same dataset.
+    again = c.post(f"/api/datasets/{nb2}/atomic/neighbourhood/displacement", json={"vectors": diag, "threshold": 4}).json()
+    assert again["id"] == out["id"]
+
+
+def test_template_finding(crop, client):
+    """Finding by correlation with a Gaussian template matches
+    ptycho-quant-analysis's ``find_peaks`` (match_template + peak_local_max)
+    on the same prepared image, and reaches the dim columns too."""
+    from skimage.feature import match_template, peak_local_max
+
+    opts = atomic.ColumnOptions(blur=1.0, distance=3, threshold=0.6, method="template", template=1.5)
+    got = atomic.find_columns(crop, opts)
+    im = atomic.prepared(crop, 1.0)
+    w = 2 * int(np.ceil(2 * 1.5)) + 1
+    yy, xx = np.indices((w, w))
+    tmpl = np.exp(-((xx - (w - 1) / 2) ** 2 + (yy - (w - 1) / 2) ** 2) / (2 * 1.5 ** 2))
+    cc = match_template(im, tmpl, pad_input=True, mode="edge")
+    ref = peak_local_max(cc, min_distance=3, threshold_abs=0.6, exclude_border=2)
+    assert np.array_equal(got, ref) and len(got) > 100
+    # The correlation doesn't care how bright a column is: it finds more than
+    # a 0.6 threshold on the image itself.
+    assert len(got) > len(atomic.find_columns(crop, atomic.ColumnOptions(blur=1.0, distance=3, threshold=0.6)))
+    with pytest.raises(ValueError):
+        atomic.ColumnOptions(method="template", threshold=1.5).check()
+    with pytest.raises(ValueError):
+        atomic.ColumnOptions(method="template", template=0.1).check()
+
+    d = client.post("/api/examples/kemstem-sites").json()["datasets"][0]
+    url = f"/api/datasets/{d['id']}/atomic/columns/find"
+    r = client.post(url, json={"method": "template", "template": 1.5, "threshold": 0.6, "distance": 3, "blur": 1.0})
+    assert r.status_code == 200 and len(r.json()["columns"]) > 1000
+    assert client.post(url, json={"method": "template", "threshold": -2}).status_code == 422
+    assert client.post(url, json={"method": "nope"}).status_code == 422
+
+
+def test_sublattices_by_position_in_cell(tmp_path):
+    """Columns placed in the cell of a reference sublattice's lattice, then
+    split by the nearest picked site (the cell repeating)."""
+    import tifffile
+
+    image, A, Bs, D = _perovskite()
+    path = tmp_path / "perovskite.tif"
+    tifffile.imwrite(path, image.astype(np.float32))
+    c = TestClient(create_app())
+    d = c.post("/api/files", json={"path": str(path)}).json()["datasets"][0]
+    session = c.app.state.session
+    pos = np.concatenate([A, Bs])
+    table = np.zeros((len(pos) + 1, 9))
+    table[:-1, :2] = pos
+    table[-1, :2] = np.nan  # no position: no place, no site
+    cols = session.set_columns(session.get_dataset(d["id"]), table, {"window": 7})
+    # The reference: the A columns (a sublattice), lattice vectors along x and y.
+    [ref] = session.set_sublattices(cols, [0] * len(A) + [None] * (len(Bs) + 1), ["A"])
+    vectors = [[0, 20], [20, 0]]
+
+    r = c.post(f"/api/datasets/{cols.id}/atomic/columns/cell", json={"reference": ref.id, "vectors": vectors}).json()
+    u, v = np.array(r["u"][:-1], dtype=float), np.array(r["v"][:-1], dtype=float)
+    assert r["u"][-1] is None
+    assert np.allclose(u[:len(A)], 0, atol=1e-6) and np.allclose(v[:len(A)], 0, atol=1e-6)
+    # B: half a cell along both, less its shift (±1, ∓0.6 px of 20).
+    assert np.allclose(np.abs(v[len(A):]), np.abs(0.5 - np.abs(D[:, 0]) / 20), atol=1e-3)
+    assert np.allclose(np.abs(u[len(A):]), np.abs(0.5 - np.abs(D[:, 1]) / 20), atol=1e-3)
+
+    url = f"/api/datasets/{cols.id}/atomic/columns/sublattices/cell"
+    r = c.put(url, json={"reference": ref.id, "vectors": vectors, "sites": [[0, 0], [0.5, 0.5]], "radius": 3})
+    assert r.status_code == 200, r.text
+    subs = {x["title"]: x["atomic"]["count"] for x in r.json()["file"]["datasets"]
+            if x["atomic"] and x["atomic"].get("output") == "sublattice"}
+    assert subs == {"Sublattice A": len(A), "Sublattice B": len(Bs)}
+    # The split replaces the sublattices (the reference too): the new A is the reference now.
+    a = lambda r: next(x["id"] for x in r["file"]["datasets"] if x["title"] == "Sublattice A")
+    assert c.put(url, json={"reference": ref.id, "vectors": vectors, "sites": [[0, 0]]}).status_code == 404
+    # A site at (−½, −½) is the same one, the cell repeating.
+    r = c.put(url, json={"reference": a(r.json()), "vectors": vectors, "sites": [[0, 0], [-0.5, -0.5]], "radius": 3}).json()
+    subs = {x["title"]: x["atomic"]["count"] for x in r["file"]["datasets"]
+            if x["atomic"] and x["atomic"].get("output") == "sublattice"}
+    assert subs["Sublattice B"] == len(Bs)
+    # Too small a radius: the shifted B columns are left out.
+    r = c.put(url, json={"reference": a(r), "vectors": vectors, "sites": [[0, 0], [0.5, 0.5]], "radius": 0.5}).json()
+    subs = {x["title"]: x["atomic"]["count"] for x in r["file"]["datasets"]
+            if x["atomic"] and x["atomic"].get("output") == "sublattice"}
+    assert subs["Sublattice B"] == 0 and subs["Sublattice A"] == len(A)
+    # Errors: parallel vectors, no sites.
+    assert c.put(url, json={"reference": a(r), "vectors": [[0, 20], [0, 40]], "sites": [[0, 0]]}).status_code == 422
+    assert c.put(url, json={"reference": a(r), "vectors": vectors, "sites": []}).status_code == 422
+    # Two sites of one sublattice (named alike).
+    r = c.put(url, json={"reference": a(r), "vectors": vectors, "sites": [[0, 0], [0.5, 0.5], [0.5, -0.5]],
+                         "names": ["A", "B", "B"], "radius": 3}).json()
+    subs = {x["title"]: x["atomic"]["count"] for x in r["file"]["datasets"]
+            if x["atomic"] and x["atomic"].get("output") == "sublattice"}
+    assert subs == {"Sublattice A": len(A), "Sublattice B": len(Bs)}
+    assert c.put(url, json={"reference": a(r), "vectors": vectors, "sites": [[0, 0]], "names": ["A", "B"]}).status_code == 422
+
+
+def test_cage_of_the_k_nearest(tmp_path):
+    """A cage of each origin's k nearest neighbours (no clusters picked):
+    sites moving up and down in turn (as oxygen with octahedral tilts) all
+    measured from the centre of their four A columns; a site without a whole
+    cage (at the edge) is left out."""
+    import tifffile
+
+    a = 20
+    A = np.array([(y, x) for y in np.arange(10, 200, a) for x in np.arange(10, 200, a)], dtype=float)
+    C, D = [], []
+    for i, y in enumerate(np.arange(20, 180, a)):
+        for j, x in enumerate(np.arange(20, 180, a)):
+            d = 1.0 if (i + j) % 2 else -1.0  # up and down in turn
+            C.append((y + d, x))
+            D.append((d, 0.0))
+    C.append((1.0, 100.0))  # above the first A row: no whole cage
+    C, D = np.array(C), np.array(D)
+    path = tmp_path / "tilts.tif"
+    tifffile.imwrite(path, np.zeros((200, 200), np.float32))
+    c = TestClient(create_app())
+    d = c.post("/api/files", json={"path": str(path)}).json()["datasets"][0]
+    session = c.app.state.session
+    table = np.zeros((len(A) + len(C), 9))
+    table[:, :2] = np.concatenate([A, C])
+    cols = session.set_columns(session.get_dataset(d["id"]), table, {"window": 7})
+    sa, sc = session.set_sublattices(cols, [0] * len(A) + [1] * len(C), ["A", "C"])
+    nb = c.post(f"/api/datasets/{sc.id}/atomic/neighbourhood", json={"neighbours": sa.id, "k": 4}).json()["id"]
+
+    url = f"/api/datasets/{nb}/atomic/neighbourhood/displacement"
+    assert c.post(url, json={"threshold": 3}).status_code == 422  # neither clusters nor nearest
+    r = c.post(url, json={"nearest": True, "threshold": 3})
+    assert r.status_code == 200, r.text
+    out = next(x for x in r.json()["file"]["datasets"] if x["id"] == r.json()["id"])
+    assert out["atomic"]["nearest"] and out["atomic"]["missing"] == 1
+    rows = np.array(c.get(f"/api/datasets/{out['id']}/atomic/displacements").json()["rows"], dtype=float)
+    got = rows[len(A):len(A) + len(D), :2]
+    assert np.allclose(got, D, atol=1e-6)
+    assert np.isnan(rows[-1, 0]) and np.isnan(rows[:len(A), 0]).all()
+    # As seeds: the cage centres (undisplaced sites).
+    r = c.post(f"/api/datasets/{nb}/atomic/neighbourhood/centres", json={"nearest": True, "threshold": 3}).json()
+    assert r["added"] == len(D) and np.allclose(np.sort(np.array(r["columns"]), axis=0), np.sort(C[:-1] - D, axis=0))
+
+
+def test_picks_kept_with_datasets(tmp_path):
+    """Picks made in the page (lattice vectors, cell sites …) kept on their
+    dataset, in its summary, through later changes, and in saved analyses."""
+    import tifffile
+
+    image, A, Bs, _ = _perovskite(n=100)
+    path = tmp_path / "picks.tif"
+    tifffile.imwrite(path, image.astype(np.float32))
+    c = TestClient(create_app())
+    d = c.post("/api/files", json={"path": str(path)}).json()["datasets"][0]
+    session = c.app.state.session
+    table = np.zeros((len(A), 9))
+    table[:, :2] = A
+    cols = session.set_columns(session.get_dataset(d["id"]), table, {"window": 7})
+    nb = c.post(f"/api/datasets/{cols.id}/atomic/neighbourhood", json={"neighbours": cols.id, "k": 4}).json()["id"]
+    picks = {"vectors": [{"name": "v₁", "dy": 0.0, "dx": 20.0}], "cage": [[0, 0], [20, 20]], "cageNearest": False}
+    assert c.put(f"/api/datasets/{nb}/atomic/picks", json={"picks": picks}).status_code == 204
+    assert c.put(f"/api/datasets/{cols.id}/atomic/picks", json={"picks": {"cell": {"sites": [[0, 0, "A"]]}}}).status_code == 204
+    assert c.put(f"/api/datasets/{d['id']}/atomic/picks", json={"picks": {}}).status_code == 400  # not of the analysis
+    assert c.put("/api/datasets/nope/atomic/picks", json={"picks": {}}).status_code == 404
+    # In the summary, and kept through clustering.
+    c.post(f"/api/datasets/{nb}/atomic/neighbourhood/clusters", json={"n": 4})
+    files = c.get("/api/files").json()
+    ds = {x["id"]: x for f in files for x in f["datasets"]}
+    assert ds[nb]["atomic"]["picks"] == picks and ds[nb]["atomic"]["clusters"]
+    assert ds[cols.id]["atomic"]["picks"]["cell"]["sites"] == [[0, 0, "A"]]
+    # Saved with the analysis and back on opening it.
+    out = tmp_path / "a.h5"
+    assert c.post("/api/project/save", json={"path": str(out)}).status_code == 200
+    c2 = TestClient(create_app())
+    r = c2.post("/api/project/open", json={"path": str(out)})
+    assert r.status_code == 200, r.text
+    ds2 = {x["id"]: x for f in c2.get("/api/files").json() for x in f["datasets"]}
+    assert ds2[nb]["atomic"]["picks"] == picks
+
+
+def _streaked_cell(seed=0):
+    """Columns of a 24 × 71 px cell (as the iDPC image's): A on the lattice,
+    B tight at (0, ½), C at (½, ½) displaced up or down by 6–14 px (a tilt
+    streak, across the cell's corners), and a few strays at (½, 0) of no
+    site. (positions, true site per column: 0 A, 1 B, 2 C, None stray)."""
+    rng = np.random.default_rng(seed)
+    pos, site = [], []
+    h = 71.0
+    for i in range(12):
+        for j in range(12):
+            y0, x0 = h * i, 24.0 * j
+            pos.append((y0 + rng.normal(0, 0.3), x0 + rng.normal(0, 0.3)))
+            site.append(0)
+            pos.append((y0 + h / 2 + rng.normal(0, 0.5), x0 + rng.normal(0, 0.5)))
+            site.append(1)
+            d = rng.choice([-1, 1]) * rng.uniform(6, 14)
+            pos.append((y0 + h / 2 + d, x0 + 12 + rng.normal(0, 0.5)))
+            site.append(2)
+            if (i + j) % 9 == 0:
+                pos.append((y0 + rng.normal(0, 1), x0 + 12 + rng.normal(0, 1)))
+                site.append(None)
+    return np.array(pos), site
+
+
+def test_site_clusters_follow_streaks():
+    """Each site takes the dense group of columns it sits in: a streaked
+    site whole (where a circle loses its ends), across the cell's edges;
+    strays apart from any site are left out and reported; an empty site
+    takes nothing."""
+    pos, site = _streaked_cell()
+    A = pos[[s == 0 for s in site]]
+    vectors = [[0, 24], [71, 0]]
+    cell = atomic.cell_coordinates(pos, A, vectors)
+    sites = [[0, 0], [0, 0.5], [0.5, 0.5]]
+    truth = np.array([-1 if s is None else s for s in site])
+
+    # A circle small enough to leave the strays out loses C's ends.
+    circle = np.array([-1 if x is None else x for x in atomic.assign_sites(cell, sites, vectors, 5)])
+    assert (circle[truth == 2] == 2).mean() < 0.2
+    labels, fits, unpicked = atomic.cluster_sites(cell, sites, vectors, link=4, least=5)
+    got = np.array([-1 if x is None else x for x in labels])
+    for k in range(3):
+        assert (got[truth == k] == k).all(), k
+    assert (got[truth == -1] == -1).all()
+    assert [f["count"] for f in fits] == [(truth == k).sum() for k in range(3)]
+    assert np.allclose([abs(fits[2]["u"])], [0.5], atol=0.02)
+    # The strays: a group no site took, at (½, 0).
+    assert unpicked and unpicked[0]["count"] == (truth == -1).sum()
+    assert abs(abs(unpicked[0]["u"]) - 0.5) < 0.05 and abs(unpicked[0]["v"]) < 0.05
+    # An empty site takes nothing; two sites in one group split it by nearness.
+    labels, fits, _ = atomic.cluster_sites(cell, sites + [[0.25, 0.25]], vectors, reach=3)
+    assert fits[3]["empty"] and fits[3]["count"] == 0
+    labels, fits, _ = atomic.cluster_sites(cell, [[0, 0], [0, 0.5], [0.5, 0.4], [0.5, 0.6]], vectors)
+    assert fits[2]["count"] + fits[3]["count"] == (truth == 2).sum() and fits[2]["count"] > 0 and fits[3]["count"] > 0
+    with pytest.raises(ValueError):
+        atomic.cluster_sites(cell, [], vectors)
+
+
+def test_cell_fit_and_split_by_clusters(tmp_path):
+    import tifffile
+
+    pos, site = _streaked_cell(seed=1)
+    path = tmp_path / "streaks.tif"
+    tifffile.imwrite(path, np.zeros((860, 288), np.float32))
+    c = TestClient(create_app())
+    d = c.post("/api/files", json={"path": str(path)}).json()["datasets"][0]
+    session = c.app.state.session
+    table = np.zeros((len(pos), 9))
+    table[:, :2] = pos
+    cols = session.set_columns(session.get_dataset(d["id"]), table, {"window": 7})
+    [ref] = session.set_sublattices(cols, [0 if s == 0 else None for s in site], ["A"])
+    body = {"reference": ref.id, "vectors": [[0, 24], [71, 0]], "sites": [[0, 0], [0, 0.5], [0.5, 0.5]],
+            "mode": "clusters", "link": 4, "least": 5, "radius": 8}
+    r = c.post(f"/api/datasets/{cols.id}/atomic/columns/cell/fit", json=body)
+    assert r.status_code == 200, r.text
+    fit = r.json()
+    assert fit["left_out"] == sum(1 for s in site if s is None)
+    assert [x["count"] for x in fit["sites"]] == [site.count(0), site.count(1), site.count(2)]
+    assert len(fit["labels"]) == len(pos) and fit["unpicked"][0]["count"] == sum(1 for s in site if s is None)
+    r = c.put(f"/api/datasets/{cols.id}/atomic/columns/sublattices/cell", json=body)
+    assert r.status_code == 200, r.text
+    subs = {x["title"]: x["atomic"]["count"] for x in r.json()["file"]["datasets"]
+            if x["atomic"] and x["atomic"].get("output") == "sublattice"}
+    assert subs == {"Sublattice A": site.count(0), "Sublattice B": site.count(1), "Sublattice C": site.count(2)}

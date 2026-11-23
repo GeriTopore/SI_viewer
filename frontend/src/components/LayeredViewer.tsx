@@ -35,6 +35,8 @@ import {
 import { useColumns } from "../state/columns";
 import { neighbourhoodsOf } from "../state/neighbourhoods";
 import { NeighbourhoodPlot } from "./NeighbourhoodPlot";
+import { CellPlot } from "./CellPlot";
+import { useCell } from "../state/cell";
 import { AnnotationsToggle } from "./AnnotationsToggle";
 import { lineMenuItems } from "./ProfilePanel";
 import { useFftBoxTool } from "../views/useFftBoxTool";
@@ -191,6 +193,7 @@ export function LayeredViewer({
   const focusId = useDatasets((s) => s.focusId);
   const { setFocus, deselect, addToSelection } = useDatasets.getState();
   const files = useDatasets((s) => s.files);
+  const cellStates = useCell((s) => s.byImage);
   const displays = useDisplay((s) => s.display);
   const setDisplay = useDisplay((s) => s.setDisplay);
   const layerProps = useLayers((s) => s.props);
@@ -488,6 +491,9 @@ export function LayeredViewer({
   // Neighbourhoods of an image's columns (kemstem): their plot.
   const nbImage = [baseDataset?.id, ...images.map((d) => d.id)].find((id) => id && neighbourhoodsOf(files, id).length);
   if (nbImage) tabs.push({ id: "neighbourhood" as const, label: "Neighbourhood", content: <NeighbourhoodPlot image={nbImage} /> });
+  // Sublattices by position in cell: the cell plot, once shown.
+  const cellImage = [baseDataset?.id, ...images.map((d) => d.id)].find((id) => id && cellStates[id]?.data);
+  if (cellImage) tabs.push({ id: "cell" as const, label: "Cell", content: <CellPlot image={cellImage} /> });
   // The histogram tab is always offered (with regions drawn, also theirs).
   {
     // The layer's own pixels (not stretched over the scan).

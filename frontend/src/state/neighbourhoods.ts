@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type DatasetSummary, type FileSummary } from "../api/client";
+import { useColumns } from "./columns";
 import { allDatasets, useDatasets } from "./datasets";
 import { useUi } from "./ui";
 
@@ -34,6 +35,19 @@ export interface NeighbourhoodAnalysis {
   vectors: LatticeVector[];
   /** The vector a click on a cluster sets (index), or none. */
   pick: number | null;
+  /** A cage: the clusters ([dy, dx] px) whose nearest neighbours surround
+   * each origin (e.g. the four A sites round a B site); its centre seeds
+   * new columns, or each origin's displacement from it is measured. */
+  cage: [number, number][];
+  /** Clicks on clusters add them to the cage (or take them out). */
+  cagePick: boolean;
+  /** The cage is all the k nearest neighbours instead of picked clusters
+   * (e.g. when the origins move different ways, as with octahedral tilts). */
+  cageNearest: boolean;
+  /** How far (px) a cage neighbour may be from origin + cluster. */
+  cageThreshold: number;
+  /** What the last "Add centres" did, for the process. */
+  cageNote: string | null;
 }
 
 export interface NeighbourhoodState {
@@ -59,6 +73,11 @@ export const defaultAnalysis = (): NeighbourhoodAnalysis => ({
     { name: "v₂", dy: null, dx: null },
   ],
   pick: 0,
+  cage: [],
+  cagePick: false,
+  cageNearest: false,
+  cageThreshold: 3,
+  cageNote: null,
 });
 
 /** A neighbourhood's vectors for plotting, fetched once per version. */
@@ -98,7 +117,7 @@ type Files = Parameters<typeof allDatasets>[0];
 export function imageOfAtomic(files: Files, d: DatasetSummary | undefined): string | null {
   const all = allDatasets(files);
   let up = d;
-  while (up && ["sublattice", "neighbourhood", "bonds"].includes(up.atomic?.output ?? "")) {
+  while (up && ["sublattice", "neighbourhood", "bonds", "displacements"].includes(up.atomic?.output ?? "")) {
     const parent = up.parent_id;
     up = all.find((x) => x.id === parent);
   }
@@ -202,4 +221,36 @@ export function measureBonds(image: string, nb: DatasetSummary) {
     if (!file) throw new Error("Pick a vector first");
     return file;
   });
+}
+
+/** Add a cluster to the cage of ``nb``, or take it out (clicked again). */
+export function toggleCage(nb: string, at: [number, number]) {
+  const a = analysisOf(nb);
+  const i = a.cage.findIndex(([y, x]) => Math.hypot(y - at[0], x - at[1]) < 1e-6);
+  useNeighbourhoods.getState().patchNb(nb, { cage: i >= 0 ? a.cage.filter((_, j) => j !== i) : [...a.cage, at] });
+}
+
+/** New column guesses at each origin's cage centre, into the Atomic
+ * columns process: fitted there, they are added to the Columns (which keep
+ * their fit) as a sublattice of their own. */
+export async function seedCageCentres(image: string, nb: DatasetSummary) {
+  const a = analysisOf(nb.id);
+  const { patch } = useNeighbourhoods.getState();
+  patch(image, { busy: "Seeding", error: null });
+  try {
+    const r = await api.cageCentres(nb.id, a.cage, a.cageThreshold, a.cageNearest);
+    useColumns.getState().patch(image, { found: r.columns, append: { columns: r.id, name: r.name }, test: null });
+    useNeighbourhoods.getState().patchNb(nb.id, {
+      cageNote: `${r.added} new column guesses (${r.name}).`,
+    });
+    patch(image, { busy: null });
+  } catch (e) {
+    patch(image, { busy: null, error: (e as Error).message });
+  }
+}
+
+/** Each origin's displacement from its cage centre: "Displacement" under ``nb``. */
+export function measureCageDisplacement(image: string, nb: DatasetSummary) {
+  const a = analysisOf(nb.id);
+  return run(image, "Displacing", async () => (await api.cageDisplacement(nb.id, a.cage, a.cageThreshold, a.cageNearest)).file);
 }

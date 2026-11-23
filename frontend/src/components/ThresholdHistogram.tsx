@@ -7,12 +7,16 @@ const H = 64;
 const BINS = 64;
 
 /** A histogram of ``values`` with draggable thresholds (largest first) that
- * split it into groups, each bar in its group's colour. */
-export function ThresholdHistogram({ values, thresholds, colours, onChange }: {
+ * split it into groups, each bar in its group's colour. The groups are
+ * listed with their counts (A, B, … or ``labels``; as shares when
+ * ``share``). */
+export function ThresholdHistogram({ values, thresholds, colours, onChange, labels, share }: {
   values: Float32Array;
   thresholds: number[];
   colours: string[];
   onChange: (thresholds: number[]) => void;
+  labels?: string[];
+  share?: boolean;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const dragging = useRef<number | null>(null);
@@ -95,7 +99,7 @@ export function ThresholdHistogram({ values, thresholds, colours, onChange }: {
         {sizes.map((n, k) => (
           <span key={k} className="threshold-count">
             <span className="threshold-swatch" style={{ background: colours[k] }} />
-            {String.fromCharCode(65 + k)} {n}
+            {labels?.[k] ?? String.fromCharCode(65 + k)} {share ? `${formatValue((100 * n) / Math.max(1, values.length))} %` : n}
           </span>
         ))}
       </div>

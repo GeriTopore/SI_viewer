@@ -54,7 +54,8 @@ export const isZlpShift = (d: DatasetSummary) => d.origin === "zlp-shift";
 const ATOMIC_LABEL: Record<NonNullable<DatasetSummary["atomic"]>["output"], string> = {
   amplitude: "Amp", grating: "Grating", phase: "Phase", "strain-par": "ε∥", "strain-perp": "ε⊥",
   exx: "εxx", eyy: "εyy", exy: "εxy", oxy: "ωxy", columns: "Columns", sublattice: "Sublattice",
-  neighbourhood: "Neighbours", bonds: "Bonds",
+  neighbourhood: "Neighbours", bonds: "Bonds", "pld-reference": "PLD ref", "pld-difference": "PLD diff",
+  displacements: "PLD",
 };
 
 export function kindLabel(d: DatasetSummary): string {
@@ -69,7 +70,9 @@ export function kindLabel(d: DatasetSummary): string {
   if (isZlpShift(d)) return "eV";
   if (d.survey) return "Survey";
   if (d.origin === "curve-model") return "Model";
+  if (d.atomic?.kind === "cage") return "Disp";
   if (d.atomic) return ATOMIC_LABEL[d.atomic.output];
+  if (d.origin === "mask") return "Mask";
   if (d.origin === "fitted" || d.origin === "curve-fit") return "Fit";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.
@@ -143,9 +146,28 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
   if (d.origin === "background-r") return `${base}\nPower-law exponent r of the background fit at each pixel`;
   if (d.origin === "computed") return `${base}\nNet counts of ${d.title}, from the raw spectrum image`;
   if (d.origin === "curve-model") return `${base}\nThe curve fit of every pixel: the model at each pixel, its maps under it`;
+  if (d.mask) {
+    const m = d.mask;
+    const f = (v: number | null) => (v == null ? "–" : formatValue(v));
+    const rule = m.keep === "above" ? `≥ ${f(m.lo)}` : m.keep === "below" ? `≤ ${f(m.hi)}` : `${f(m.lo)} – ${f(m.hi)}`;
+    const extra = [m.smooth ? `smoothed σ ${m.smooth} px` : "", m.invert ? "inverted" : "", m.clean ? `cleaned ${m.clean} px` : "", m.min_area ? `regions ≥ ${m.min_area} px` : ""].filter(Boolean);
+    return `${base}\nPixels of ${parentTitle ?? "its image"} ${rule}${extra.length ? `, ${extra.join(", ")}` : ""}: ${formatValue(m.fraction * 100)} % of the image`;
+  }
   if (d.atomic?.output === "columns") {
     const a = d.atomic;
     return `${d.title}\n${a.count} atomic columns fitted with 2D Gaussians (kemstem)${a.failed ? `, ${a.failed} failed` : ""}: window ${a.window} px, blur σ ${a.blur} px; shown over ${parentTitle ?? "its image"}`;
+  }
+  if (d.atomic?.output === "pld-reference" || d.atomic?.output === "pld-difference") {
+    const a = d.atomic;
+    return `${d.title}\n${a.output === "pld-reference" ? "The image with" : "Reference less the image, with"} ${a.damped?.length ?? 0} superlattice peaks damped within ${a.radius} FFT px (kemstem)`;
+  }
+  if (d.atomic?.output === "displacements") {
+    const a = d.atomic;
+    if (a.kind === "cage") {
+      const cage = a.nearest ? "its nearest neighbours" : `${a.cage?.length ?? 0} picked neighbours`;
+      return `${d.title}\nEach of ${parentTitle ?? "the neighbourhood"}'s origins less the centre of its cage of ${cage} (within ${a.threshold} px)${a.missing ? `; ${a.missing} without` : ""}`;
+    }
+    return `${d.title}\nPeriodic lattice displacement of each column: fitted position less its position in the PLD reference${a.missing ? `; ${a.missing} without` : ""} (kemstem)`;
   }
   if (d.atomic?.output === "neighbourhood") {
     const a = d.atomic;
@@ -156,7 +178,7 @@ Deconvolved${parentTitle ? ` from ${parentTitle}` : ""}${how ? `: ${how}` : ""}`
     return `${d.title}\nFrom each origin, the vector to the neighbour nearest (${a.vector?.map((v) => formatValue(v)).join(", ")}) px, within ${a.threshold} px${a.missing ? `; ${a.missing} without one` : ""} (kemstem)`;
   }
   if (d.atomic?.output === "sublattice") {
-    return `${d.title}\n${d.atomic.count} of ${parentTitle ?? "the columns"}; shown over their image`;
+    return `${d.title}\n${d.atomic.count} of ${parentTitle ?? "the columns"}${d.atomic.mask ? ", those in a mask" : ""}; shown over their image`;
   }
   if (d.atomic) {
     const a = d.atomic;

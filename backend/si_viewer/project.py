@@ -54,7 +54,7 @@ FIELDS = (
     "id", "file_id", "is_element_map", "origin", "element", "parent_id", "window", "background",
     "thickness", "deconvolution", "quantity", "source_frame", "map_options", "rebinned", "zlp_aligned",
     "ops", "copied_at", "filters", "alignment", "technique_source", "eels_role", "eels_role_source",
-    "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope", "curve_model", "atomic",
+    "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope", "curve_model", "atomic", "mask",
 )
 # Bytes of a raw file hashed for its fingerprint.
 FINGERPRINT_BYTES = 1 << 20

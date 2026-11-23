@@ -30,6 +30,7 @@ export function ColumnsSection({ d }: { d: DatasetSummary }) {
   }, [d.id]);
 
   const { settings: s, found, job, test } = st;
+  const method = s.method ?? "maxima";
   const windowOk = s.window >= 3 && s.window % 2 === 1;
   const running = !!job;
   const num = (v: string, fallback: number) => (Number.isFinite(Number(v)) && v.trim() !== "" ? Number(v) : fallback);
@@ -40,23 +41,58 @@ export function ColumnsSection({ d }: { d: DatasetSummary }) {
   return (
     <section className="q-form">
       <h4 className="process-heading">Find</h4>
+      <label title="Local maxima of the image (kemstem), or of its correlation with a Gaussian the size of a column (finds dim columns as well as bright ones)">
+        <span>Method</span>
+        <select
+          value={method}
+          onChange={(e) => {
+            const m = e.target.value as "maxima" | "template";
+            // Each its own kind of threshold: of the image (0–1), or a correlation.
+            set({ method: m, threshold: m === "template" ? 0.6 : 0.1 });
+          }}
+        >
+          <option value="maxima">Local maxima</option>
+          <option value="template">Template correlation</option>
+        </select>
+      </label>
+      {method === "template" && (
+        <label title="σ (px) of the Gaussian template: about a column's">
+          <span>Template σ (px)</span>
+          <input type="number" min={0.3} step={0.5} value={s.template ?? 1.5} onChange={(e) => set({ template: Math.max(0.3, num(e.target.value, s.template ?? 1.5)) })} />
+        </label>
+      )}
       <label title="Gaussian blur (σ, px) of the normalised image, before finding and fitting">
         <span>Blur σ (px)</span>
         <input type="number" min={0} step={0.25} value={s.blur} onChange={(e) => set({ blur: Math.max(0, num(e.target.value, s.blur)) })} />
+      </label>
+      <label title="Finding only: a broad Gaussian (σ, px) subtracted first, leaving the brightest columns (e.g. the A sites); 0: none">
+        <span>Background σ (px)</span>
+        <input type="number" min={0} step={5} value={s.background ?? 0} onChange={(e) => set({ background: Math.max(0, num(e.target.value, s.background ?? 0)) })} />
       </label>
       <label title="Least distance between two columns (px)">
         <span>Distance (px)</span>
         <input type="number" min={1} step={1} value={s.distance} onChange={(e) => set({ distance: Math.max(1, Math.round(num(e.target.value, s.distance))) })} />
       </label>
-      <label title="Columns dimmer than this (0–1 of the normalised image) are left out">
-        <span>Threshold</span>
-        <input type="number" min={0} max={0.99} step={0.05} value={s.threshold} onChange={(e) => set({ threshold: Math.min(0.99, Math.max(0, num(e.target.value, s.threshold))) })} />
-      </label>
+      {method === "template" ? (
+        <label title="Places correlating less than this with the template (−1 to 1) are left out">
+          <span>Correlation</span>
+          <input type="number" min={-0.99} max={0.99} step={0.05} value={s.threshold} onChange={(e) => set({ threshold: Math.min(0.99, Math.max(-0.99, num(e.target.value, s.threshold))) })} />
+        </label>
+      ) : (
+        <label title="Columns dimmer than this (0–1 of the normalised image) are left out">
+          <span>Threshold</span>
+          <input type="number" min={0} max={0.99} step={0.05} value={s.threshold} onChange={(e) => set({ threshold: Math.min(0.99, Math.max(0, num(e.target.value, s.threshold))) })} />
+        </label>
+      )}
       <div className="process-actions">
         <button className="primary" disabled={st.finding || running} onClick={() => findColumns(d)}>
           {st.finding ? "Finding…" : "Find"}
         </button>
-        {found && <span className="muted small">{found.length} columns</span>}
+        {found && (
+          <span className="muted small">
+            {found.length} {st.append ? `new columns (${st.append.name})` : "columns"}
+          </span>
+        )}
       </div>
 
       <h4 className="process-heading">Fit</h4>
@@ -108,7 +144,7 @@ export function ColumnsSection({ d }: { d: DatasetSummary }) {
         </div>
       ) : (
         <button className="primary" disabled={!found?.length || !windowOk} onClick={() => refineColumns(d)}>
-          Fit {found?.length ? `${found.length} columns` : "the columns"}
+          {st.append ? `Fit and add ${found?.length ?? 0} columns as ${st.append.name}` : `Fit ${found?.length ? `${found.length} columns` : "the columns"}`}
         </button>
       )}
       {made?.atomic && (

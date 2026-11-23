@@ -4,11 +4,15 @@ import { formatValue } from "../format";
 import { sublatticesOf } from "../state/columns";
 import { allDatasets, useDatasets } from "../state/datasets";
 import {
-  clusterNeighbourhood, computeNeighbourhood, measureBonds, neighbourhoodsOf, originsOf, selectNeighbourhood, shownNeighbourhood,
-  useAnalysis, useNeighbourhoods, useNeighbourhoodState, type NeighbourhoodAnalysis, type NeighbourhoodDraft,
+  clusterNeighbourhood, computeNeighbourhood, measureBonds, measureCageDisplacement, neighbourhoodsOf, originsOf, seedCageCentres,
+  selectNeighbourhood, shownNeighbourhood, useAnalysis, useNeighbourhoods, useNeighbourhoodState, type NeighbourhoodAnalysis,
+  type NeighbourhoodDraft,
 } from "../state/neighbourhoods";
+import { pixelSize } from "./AtomicSection";
+import { displacementText } from "./PldSection";
 import { useUi } from "../state/ui";
 import { EditableTitle } from "./RenameInput";
+import { ProcessLink } from "./ProcessLink";
 
 /** Process tab, images: neighbourhoods of the fitted atomic columns
  * (kemstem, M22e). An image can have several (any origins, neighbours and
@@ -22,7 +26,12 @@ export function NeighbourhoodSection({ d }: { d: DatasetSummary }) {
     () => allDatasets(files).find((x) => x.parent_id === d.id && x.atomic?.output === "columns"),
     [files, d.id],
   );
-  if (!columns) return <p className="muted small">Fit the atomic columns first.</p>;
+  if (!columns)
+    return (
+      <p className="muted small">
+        <ProcessLink to="columns" from="neighbourhoods" image={d.id}>Fit the atomic columns</ProcessLink> first.
+      </p>
+    );
   return <Neighbourhoods d={d} columns={columns} />;
 }
 
@@ -229,6 +238,90 @@ function Analysis({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy
         </button>
       </div>
       <BondsSummary nb={nb} />
+      <Cage d={d} nb={nb} busy={busy} />
+    </>
+  );
+}
+
+/** A cage of neighbours round each origin (clusters picked in the plot, e.g.
+ * the four A sites round a B site): its centre added as new columns, or
+ * each origin's displacement from it measured (vectors, under the
+ * neighbourhood). */
+function Cage({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy: string | null }) {
+  const a = useAnalysis(nb.id);
+  const patch = (p: Partial<NeighbourhoodAnalysis>) => useNeighbourhoods.getState().patchNb(nb.id, p);
+  const files = useDatasets((s) => s.files);
+  const made = useMemo(
+    () => allDatasets(files).find((x) => x.parent_id === nb.id && x.atomic?.output === "displacements"),
+    [files, nb.id],
+  );
+  const num = (v: string, fallback: number) => (v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : fallback);
+  const centre = a.cage.length
+    ? [a.cage.reduce((t, c) => t + c[0], 0) / a.cage.length, a.cage.reduce((t, c) => t + c[1], 0) / a.cage.length]
+    : null;
+  const px = pixelSize(d);
+  const pm = (v: number | null | undefined) => (v == null ? "–" : displacementText(v, px));
+  return (
+    <>
+      <h4 className="process-heading">Cage</h4>
+      <label className="q-check-line small" title="The cage is each column's k nearest neighbours (whichever way it has moved) instead of picked clusters">
+        <input type="checkbox" checked={a.cageNearest} onChange={(e) => patch({ cageNearest: e.target.checked, cagePick: false })} />
+        The {nb.atomic?.k ?? "k"} nearest
+      </label>
+      {!a.cageNearest && <div className="process-actions">
+        <button
+          className={`icon-toggle${a.cagePick ? " active" : ""}`}
+          aria-pressed={a.cagePick}
+          title="Click clusters in the plot to add them to the cage (again to take one out)"
+          onClick={() => {
+            patch({ cagePick: !a.cagePick, pick: null });
+            if (!a.cagePick) useUi.getState().setBottomTab("neighbourhood");
+          }}
+        >
+          ⌖
+        </button>
+        <span className="muted small">
+          {a.cage.length ? `${a.cage.length} clusters · centre (${centre!.map((v) => formatValue(v)).join(", ")}) px` : "No clusters picked"}
+        </span>
+        {a.cage.length > 0 && (
+          <button className="icon-button" title="Clear the cage" onClick={() => patch({ cage: [], cageNote: null })}>
+            ×
+          </button>
+        )}
+      </div>}
+      <label title={a.cageNearest ? "How far (px) a neighbour may be from the usual distance for its place (more: the column is left out, e.g. at an edge)" : "How far (px) a cage neighbour may be from the column + its cluster"}>
+        <span>Within (px)</span>
+        <input type="number" min={0.5} step={0.5} value={a.cageThreshold} onChange={(e) => patch({ cageThreshold: Math.max(0.1, num(e.target.value, a.cageThreshold)) })} />
+      </label>
+      <div className="process-actions">
+        <button
+          disabled={!!busy || (!a.cageNearest && !a.cage.length)}
+          onClick={() => seedCageCentres(d.id, nb)}
+          title="New column guesses at each origin's cage centre, after the fitted columns: fit them all in Atomic columns (the new ones a sublattice of their own)"
+        >
+          {busy === "Seeding" ? "Adding…" : "Add centres as columns"}
+        </button>
+        <button
+          className="primary"
+          disabled={!!busy || (!a.cageNearest && !a.cage.length)}
+          onClick={() => measureCageDisplacement(d.id, nb)}
+          title="Each origin's displacement from its cage centre, drawn as vectors"
+        >
+          {busy === "Displacing" ? "Measuring…" : made ? "Measure again" : "Measure displacement"}
+        </button>
+      </div>
+      {a.cageNote && (
+        <p className="muted small">
+          {a.cageNote}{" "}
+          <ProcessLink to="columns" from="neighbourhoods" image={d.id}>Fit them</ProcessLink>
+        </p>
+      )}
+      {made?.atomic && (
+        <p className="muted small q-elements">
+          median {pm(made.atomic.median)} · largest {pm(made.atomic.max)}
+          {made.atomic.missing ? ` · ${made.atomic.missing} without` : ""}
+        </p>
+      )}
     </>
   );
 }

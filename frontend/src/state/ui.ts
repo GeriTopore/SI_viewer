@@ -15,14 +15,20 @@ export type GridContext = "si" | "images" | "stacks";
  * a stored one that is not shown falls back, see BottomPane). */
 export type BottomTab =
   | "spectrum" | "profile" | "histogram" | "exploded" | "alignment" | "pca-component" | "pca-scree" | "neighbourhood"
-  | `eels:${string}`;
+  | "cell" | `eels:${string}`;
 const isBottomTab = (t: string | undefined): t is BottomTab =>
   t === "spectrum" || t === "profile" || t === "histogram" || t === "exploded" || t === "alignment" ||
-  t === "pca-component" || t === "pca-scree" || t === "neighbourhood" ||
+  t === "pca-component" || t === "pca-scree" || t === "neighbourhood" || t === "cell" ||
   (!!t && t.startsWith("eels:") && t.length > 5);
 export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
 /** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */
 export type BottomSplit = [BottomTab, BottomTab];
+/** A process split off in the Process tab (see ``processSplit``). */
+export interface ProcessSplit {
+  id: string;
+  side: SplitSide;
+  image: string | null;
+}
 export type SplitDir = "cols" | "rows";
 /** Where a dragged tab lands in the pane. */
 export type SplitSide = "left" | "right" | "top" | "bottom";
@@ -37,6 +43,8 @@ export const PANE_SIZES = {
   // of its width / height.
   split: { initial: 0.5, min: 0.2, max: 0.8 },
   splitRow: { initial: 0.5, min: 0.2, max: 0.8 },
+  // The Process tab's split: the share of the split-off process.
+  processSplit: { initial: 0.5, min: 0.15, max: 0.85 },
   // The alignment's row of compared cross-correlations, as a fraction of the step.
   compare: { initial: 0.38, min: 0.12, max: 0.8 },
 };
@@ -98,6 +106,16 @@ function loadSplit(): BottomSplit | null {
   return isBottomTab(a) && isBottomTab(b) && a !== b ? [a, b] : null;
 }
 
+function loadProcessSplit(): ProcessSplit | null {
+  try {
+    const v = JSON.parse(load<string>("si-viewer.processSplit", "null"));
+    return v && typeof v.id === "string" && ["left", "right", "top", "bottom"].includes(v.side)
+      ? { id: v.id, side: v.side, image: typeof v.image === "string" ? v.image : null }
+      : null;
+  } catch {
+    return null;
+  }
+}
 const saveSplit = (split: BottomSplit | null) => save("si-viewer.bottomSplit", split ? split.join("|") : "none");
 
 interface UiState {
@@ -182,6 +200,17 @@ interface UiState {
   /** The process opened from the icon grid (null: the grid). */
   processOpen: string | null;
   setProcessOpen: (id: string | null) => void;
+  /** A process split off beside the Process tab's own view (dragged there by
+   * its icon): which, on which side, and the dataset it stays on (null:
+   * whatever the tab is working on). */
+  processSplit: ProcessSplit | null;
+  setProcessSplit: (split: ProcessSplit | null) => void;
+  /** Share of the Process tab the split-off process takes. */
+  processSplitFraction: number;
+  setProcessSplitFraction: (f: number) => void;
+  /** The bottom pane's tabs now shown (so a process can bring its plot forward). */
+  bottomTabsShown: BottomTab[];
+  setBottomTabsShown: (tabs: BottomTab[]) => void;
   /** Image views whose annotations (regions, lines, FFT boxes) are hidden, by view key. */
   annotationsHidden: Record<string, true>;
   setAnnotationsHidden: (view: string, hidden: boolean) => void;
@@ -369,6 +398,22 @@ export const useUi = create<UiState>((set, get) => ({
   },
   processOpen: null,
   setProcessOpen: (processOpen) => set({ processOpen }),
+  processSplit: loadProcessSplit(),
+  setProcessSplit: (processSplit) => {
+    save("si-viewer.processSplit", processSplit ? JSON.stringify(processSplit) : "none");
+    set({ processSplit });
+  },
+  processSplitFraction: loadNumber("si-viewer.processSplitFraction", PANE_SIZES.processSplit),
+  setProcessSplitFraction: (f) => {
+    const processSplitFraction = clamp(f, PANE_SIZES.processSplit);
+    save("si-viewer.processSplitFraction", processSplitFraction.toFixed(3));
+    set({ processSplitFraction });
+  },
+  bottomTabsShown: [],
+  setBottomTabsShown: (tabs) => {
+    const cur = get().bottomTabsShown;
+    if (cur.length !== tabs.length || cur.some((t, i) => t !== tabs[i])) set({ bottomTabsShown: tabs });
+  },
   annotationsHidden: {},
   setAnnotationsHidden: (view, hidden) =>
     set((s) => {

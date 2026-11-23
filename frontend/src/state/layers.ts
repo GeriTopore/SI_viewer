@@ -10,6 +10,11 @@ export interface LayerProps {
   colourBy?: string;
   /** A shape layer's mark size (× its default). */
   size?: number;
+  /** A vector layer's marks, and how their length follows the vector's
+   * magnitude (√: area ∝ magnitude, as kemstem's triangles; equal: all
+   * alike). */
+  shape?: "triangle" | "arrow" | "line";
+  length?: "sqrt" | "linear" | "equal";
 }
 
 export const DEFAULT_LAYER: LayerProps = { visible: true, opacity: 1 };

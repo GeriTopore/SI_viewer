@@ -1,21 +1,36 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DatasetSummary } from "../api/client";
 import {
-  COLUMN_VALUES, SUBLATTICE_COLOURS, applySplit, clearSplit, ensureTable, kmeansSplit, sublatticesOf, useColumns,
+  COLUMN_VALUES, SUBLATTICE_COLOURS, SUBLATTICE_NAMES, applySplit, clearSplit, ensureTable, kmeansSplit, maskSublattice, sublatticesOf, useColumns,
   useColumnsState, valuesFrame, type ColumnPoints,
 } from "../state/columns";
 import { allDatasets, useDatasets } from "../state/datasets";
+import { masksFor } from "../state/masks";
+import { fitCell, removeSite, showCell, splitByCell, useCell, useCellState, type Vectors } from "../state/cell";
+import { neighbourhoodsOf, useNeighbourhoods } from "../state/neighbourhoods";
+import { formatValue } from "../format";
+import { useUi } from "../state/ui";
 import { ThresholdHistogram } from "./ThresholdHistogram";
+import { ProcessLink } from "./ProcessLink";
 
 /** Process tab, images: sublattices of the fitted atomic columns (M22d),
- * each a dataset under the Columns. Made in one of several ways; so far by
- * a value of the columns. */
+ * each a dataset under the Columns. Made in one of several ways: split by
+ * a value of the columns, one at a time from a mask (the columns in it), or
+ * by position in the cell of a reference sublattice's lattice. */
 export function SublatticesSection({ d }: { d: DatasetSummary }) {
   const made = useDatasets((st) => allDatasets(st.files).find((x) => x.parent_id === d.id && x.atomic?.output === "columns"));
-  if (!made) return <p className="muted small">Fit the atomic columns first.</p>;
+  if (!made)
+    return (
+      <p className="muted small">
+        <ProcessLink to="columns" from="sublattices" image={d.id}>Fit the atomic columns</ProcessLink> first.
+      </p>
+    );
   return (
     <section className="q-form">
       <ByValue d={d} made={made} />
+      <ByMask d={d} made={made} />
+      <ByCell d={d} made={made} />
+      <SplitError d={d} />
     </section>
   );
 }
@@ -95,6 +110,211 @@ function ByValue({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
       )}
     </>
   );
+}
+
+/** A sublattice of the columns in a mask the size of the image (any of the
+ * file's), added next to the others. */
+function ByMask({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
+  const files = useDatasets((s) => s.files);
+  const masks = useMemo(() => masksFor(files, d), [files, d]);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const mask = masks.find((m) => m.id === chosen) ?? masks[0];
+  const splitting = useColumnsState(d.id).splitting;
+  const all = useMemo(() => allDatasets(files), [files]);
+  const from = (m: DatasetSummary) => all.find((x) => x.id === m.parent_id)?.title;
+  return (
+    <>
+      <h4 className="process-heading">By mask</h4>
+      {mask ? (
+        <>
+          <label title="A sublattice of the columns in the mask, added next to the others">
+            <span>Mask</span>
+            <select value={mask.id} onChange={(e) => setChosen(e.target.value)}>
+              {masks.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.parent_id === d.id ? m.title : `${m.title} (${from(m)})`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="process-actions">
+            <button className="primary" disabled={splitting} onClick={() => maskSublattice(d, made, mask.id)}>
+              Add sublattice
+            </button>
+          </div>
+        </>
+      ) : (
+        <p className="muted small">
+          <ProcessLink to="mask" from="sublattices" image={d.id}>Make a mask</ProcessLink> first.
+        </p>
+      )}
+    </>
+  );
+}
+
+/** Splitting by position in cell: every column placed in the cell of a
+ * reference sublattice's lattice (the first two lattice vectors picked in
+ * a neighbourhood), shown in the Cell tab below the image, where sites are
+ * clicked; each column goes to the nearest site's sublattice. */
+function ByCell({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
+  const files = useDatasets((s) => s.files);
+  const st = useCellState(d.id);
+  const patch = (p: Parameters<ReturnType<typeof useCell.getState>["patch"]>[1]) => useCell.getState().patch(d.id, p);
+  const subs = useMemo(() => sublatticesOf(files, made), [files, made]);
+  // The reference: as chosen (after a split, the new sublattice of its name).
+  const ref = subs.find((x) => x.id === st.reference) ?? subs.find((x) => x.title === (st.referenceTitle || "Sublattice A")) ?? subs[0];
+  const nbs = useMemo(() => neighbourhoodsOf(files, d.id), [files, d.id]);
+  const byNb = useNeighbourhoods((s) => s.byNb);
+  const withVectors = nbs.filter((n) => (byNb[n.id]?.vectors ?? []).filter((v) => v.dy !== null && v.dx !== null).length >= 2);
+  const nb = withVectors.find((n) => n.id === st.nb) ?? withVectors[0];
+  const set = nb ? (byNb[nb.id]?.vectors ?? []).filter((v) => v.dy !== null && v.dx !== null) : [];
+  const vectors: Vectors | null = set.length >= 2 ? [[set[0].dy!, set[0].dx!], [set[1].dy!, set[1].dx!]] : null;
+  const num = (v: string, fallback: number) => (v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : fallback);
+  const busy = !!st.busy;
+  const names = SUBLATTICE_NAMES;
+  return (
+    <>
+      <h4 className="process-heading">By position in cell</h4>
+      {!subs.length ? (
+        <p className="muted small">Make a reference sublattice first (e.g. the brightest columns, by value).</p>
+      ) : !withVectors.length ? (
+        <p className="muted small">
+          Pick two lattice vectors of the reference in a{" "}
+          <ProcessLink to="neighbourhoods" from="sublattices" image={d.id}>neighbourhood</ProcessLink>.
+        </p>
+      ) : (
+        <>
+          <label title="The columns whose lattice makes the cell">
+            <span>Reference</span>
+            <select
+              value={ref?.id ?? ""}
+              onChange={(e) => {
+                patch({ reference: e.target.value, referenceTitle: subs.find((x) => x.id === e.target.value)?.title ?? "" });
+              }}
+            >
+              {subs.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label title="The neighbourhood whose first two lattice vectors span the cell">
+            <span>Vectors</span>
+            <select value={nb?.id ?? ""} onChange={(e) => patch({ nb: e.target.value })}>
+              {withVectors.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          {vectors && (
+            <p className="muted small">
+              {set[0].name} ({vectors[0].map((v) => formatValue(v)).join(", ")}) · {set[1].name} ({vectors[1].map((v) => formatValue(v)).join(", ")}) px
+            </p>
+          )}
+          <div className="process-actions">
+            <button disabled={busy || !ref || !vectors} onClick={() => ref && vectors && showCell(d.id, made, ref, vectors, nb?.id)} title="Place every column in the cell and plot them below the image">
+              {st.busy === "Placing" ? "Placing…" : st.data ? "Place again" : "Show cell"}
+            </button>
+          </div>
+          {st.data && (
+            <>
+              <label title="Clicks on the Cell plot add a site of this sublattice (a click on a site removes it)">
+                <span>Add sites as</span>
+                <select value={st.name} onChange={(e) => patch({ name: e.target.value })}>
+                  {names.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {st.sites.length ? (
+                <ul className="nb-list">
+                  {st.sites.map((x, i) => (
+                    <li key={i} className="nb-row" onClick={() => useUi.getState().setBottomTab("cell")}>
+                      <span className="nb-row-name">
+                        <span className="pld-swatch" style={{ background: SUBLATTICE_COLOURS[names.indexOf(x.name)] }} /> {x.name}
+                      </span>
+                      <span className="muted small">
+                        ({formatValue(x.u)}, {formatValue(x.v)})
+                      </span>
+                      <button
+                        className="icon-button"
+                        title="Remove"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeSite(d.id, i);
+                        }}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="muted small">Click the sites on the Cell plot below the image.</p>
+              )}
+              <label title="Circles: each column to the nearest site within a radius. Clusters: each site the dense groups of columns that come near it, however far they reach (e.g. a tilt streak); columns apart from any site's group are left out">
+                <span>Sites as</span>
+                <select value={st.mode} onChange={(e) => patch({ mode: e.target.value as "radius" | "clusters", fits: null })}>
+                  <option value="radius">Circles</option>
+                  <option value="clusters">Clusters</option>
+                </select>
+              </label>
+              <label title={st.mode === "radius" ? "How far (px) a column may be from its site" : "How near (px) a group must come to a site to be its"}>
+                <span>{st.mode === "radius" ? "Within (px)" : "Reach (px)"}</span>
+                <input type="number" min={0.5} step={1} value={st.radius} onChange={(e) => patch({ radius: Math.max(0.1, num(e.target.value, st.radius)), fits: null })} />
+              </label>
+              {st.mode === "clusters" && (
+                <>
+                  <label title="Columns this close (px) are of one group">
+                    <span>Link (px)</span>
+                    <input type="number" min={0.5} step={0.5} value={st.link} onChange={(e) => patch({ link: Math.max(0.5, num(e.target.value, st.link)), fits: null })} />
+                  </label>
+                  <label title="The fewest columns round a group's core (fewer: left out as scattered)">
+                    <span>Smallest group</span>
+                    <input type="number" min={1} step={1} value={st.least} onChange={(e) => patch({ least: Math.max(1, Math.round(num(e.target.value, st.least))), fits: null })} />
+                  </label>
+                </>
+              )}
+              <div className="process-actions">
+                {st.mode === "clusters" && (
+                  <button disabled={busy || !st.sites.length} onClick={() => ref && fitCell(d.id, made, ref.id)} title="Find each site's clusters and colour the Cell plot by them (without splitting)">
+                    {st.busy === "Fitting" ? "Finding…" : "Preview"}
+                  </button>
+                )}
+                <button
+                  className="primary"
+                  disabled={busy || !st.sites.length}
+                  onClick={() => ref && splitByCell(d.id, made, ref.id)}
+                  title={st.mode === "clusters" ? "Each site's clusters its sublattice (replacing the sublattices there are)" : "Each column to its nearest site's sublattice (replacing the sublattices there are)"}
+                >
+                  {st.busy === "Splitting" ? "Splitting…" : "Split"}
+                </button>
+              </div>
+              {st.mode === "clusters" && st.fits && (
+                <p className="muted small q-elements">
+                  {st.sites.map((x, i) => `${x.name} ${st.fits!.sites[i]?.count ?? 0}${st.fits!.sites[i]?.empty ? " (none near)" : ""}`).join(" · ")} ·{" "}
+                  {st.fits.leftOut} left out
+                  {st.fits.unpicked.length > 0 &&
+                    ` · no site: ${st.fits.unpicked.map((g) => `${g.count} at (${g.u.toFixed(2)}, ${g.v.toFixed(2)})`).join(", ")}`}
+                </p>
+              )}
+            </>
+          )}
+          {st.error && <p className="field-error">{st.error}</p>}
+        </>
+      )}
+    </>
+  );
+}
+
+function SplitError({ d }: { d: DatasetSummary }) {
+  const error = useColumnsState(d.id).error;
+  return error ? <p className="field-error">{error}</p> : null;
 }
 
 /** k − 1 thresholds at even quantiles of ``values``, largest first. */

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { isColour, swatchBackground } from "../viewer/colormaps";
 import type { DisplayParams } from "../viewer/renderer";
 
@@ -11,10 +11,12 @@ export interface PanelLayer {
   removable: boolean;
   /** A shape layer's colour (else the image's colormap). */
   colour?: string;
-  /** A choice beside the label (e.g. what a shape layer is coloured by). */
   /** A shape layer's mark size (× its default). */
-  size?: { value: number; onChange: (value: number) => void };
+  size?: { value: number; onChange: (value: number) => void; label?: string };
+  /** What a shape layer is coloured by. */
   choice?: { value: string; options: { value: string; label: string }[]; title: string; onChange: (value: string) => void };
+  /** More of its properties (e.g. a vector's shape). */
+  properties?: { label: string; control: ReactNode }[];
 }
 
 export interface LayersPanelProps {
@@ -29,12 +31,55 @@ export interface LayersPanelProps {
 }
 
 /** List of image layers: visibility, colour, opacity, remove. Floating over
- * the image, or ``docked`` in the Layers tab (no header to fold it), which
- * also has the shape layers' size and colour-by. */
+ * the image, or ``docked`` in the Layers tab (no header to fold it), where a
+ * layer with properties (a shape layer's size, colour-by, a vector's shape
+ * …) opens them nested under it (▸). */
 export function LayersPanel({
   layers, active, onActivate, onChange, onColour, onRemove, opacity = true, docked = false,
 }: LayersPanelProps & { docked?: boolean }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  const toggleOpen = (id: string) =>
+    setOpen((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const propsOf = (l: PanelLayer) => [
+    ...(l.size
+      ? [{
+          label: l.size.label ?? "Size",
+          control: (
+            <input
+              type="range"
+              className="layer-size"
+              min={0.5}
+              max={4}
+              step={0.25}
+              value={l.size.value}
+              title={`×${l.size.value}`}
+              onChange={(e) => l.size!.onChange(Number(e.target.value))}
+            />
+          ),
+        }]
+      : []),
+    ...(l.choice
+      ? [{
+          label: "Colour by",
+          control: (
+            <select className="layer-choice" value={l.choice.value} title={l.choice.title} onChange={(e) => l.choice!.onChange(e.target.value)}>
+              {l.choice.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          ),
+        }]
+      : []),
+    ...(l.properties ?? []),
+  ];
 
   return (
     <div className={docked ? "layers-panel docked" : "layers-panel"}>
@@ -48,9 +93,11 @@ export function LayersPanel({
         <ul>
           {layers.map((l) => {
             const cm = l.colour ?? l.display?.colormap ?? "gray";
+            const props = docked ? propsOf(l) : [];
+            const expanded = props.length > 0 && open.has(l.id);
             return (
+              <Fragment key={l.id}>
               <li
-                key={l.id}
                 className={`layer-row${l.id === active ? " active" : ""}${l.visible ? "" : " hidden"}${opacity ? "" : " no-opacity"}`}
                 onClick={() => onActivate(l.id)}
                 title="Click to edit this layer's contrast and colour"
@@ -78,39 +125,22 @@ export function LayersPanel({
                     onChange={(e) => onColour(l.id, e.target.value)}
                   />
                 </label>
-                {docked && (l.choice || l.size) ? (
-                  <span className="layer-main">
-                    <span className="layer-label" title={l.label}>{l.label}</span>
-                    {l.size && (
-                      <input
-                        type="range"
-                        className="layer-size"
-                        min={0.5}
-                        max={4}
-                        step={0.25}
-                        value={l.size.value}
-                        title={`Dot size ×${l.size.value}`}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => l.size!.onChange(Number(e.target.value))}
-                      />
-                    )}
-                    {l.choice && <select
-                      className="layer-choice"
-                      value={l.choice.value}
-                      title={l.choice.title}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => l.choice!.onChange(e.target.value)}
+                <span className="layer-main">
+                  {props.length > 0 && (
+                    <button
+                      className="layer-expand"
+                      aria-expanded={expanded}
+                      title={expanded ? "Hide its properties" : "Its properties"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleOpen(l.id);
+                      }}
                     >
-                      {l.choice.options.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>}
-                  </span>
-                ) : (
-                  <span className="layer-label">{l.label}</span>
-                )}
+                      {expanded ? "▾" : "▸"}
+                    </button>
+                  )}
+                  <span className="layer-label" title={l.label}>{l.label}</span>
+                </span>
                 {opacity && <input
                   type="range"
                   className="layer-opacity"
@@ -137,6 +167,17 @@ export function LayersPanel({
                   <span className="layer-remove-spacer" />
                 )}
               </li>
+              {expanded && (
+                <li className="layer-props" onClick={(e) => e.stopPropagation()}>
+                  {props.map((q) => (
+                    <label key={q.label}>
+                      <span>{q.label}</span>
+                      {q.control}
+                    </label>
+                  ))}
+                </li>
+              )}
+              </Fragment>
             );
           })}
         </ul>

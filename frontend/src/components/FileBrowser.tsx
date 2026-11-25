@@ -8,7 +8,8 @@ import { bytesLabel } from "../format";
 /** Modal for picking one or more files (or a whole folder) on the backend's
  * disk; or an analysis to open, or where to save one (``browserMode``). */
 export function FileBrowser() {
-  const { lastDir, setLastDir, setBrowserOpen, browserMode: mode } = useUi();
+  const { lastDir, setLastDir, setBrowserOpen, browserMode: mode, browserPick: pick } = useUi();
+  const [pickName, setPickName] = useState(pick?.name ?? "");
   // Save analysis: the active workspace (with what it links to).
   const [toSave] = useState(() => (mode === "save-analysis" ? workspaceToSave() : null));
   const [name, setName] = useState(() => `${toSave?.name ?? "analysis"} analysis.hspy`);
@@ -33,12 +34,19 @@ export function FileBrowser() {
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
-  const close = useCallback(() => setBrowserOpen(false), [setBrowserOpen]);
+  /** Closes it; ``picked`` is the answer to whoever asked for a path. */
+  const finishPick = useCallback((picked: string | null) => {
+    const waiting = useUi.getState().browserPick;
+    useUi.setState({ browserPick: null });
+    setBrowserOpen(false);
+    waiting?.resolve(picked);
+  }, [setBrowserOpen]);
+  const close = useCallback(() => finishPick(null), [finishPick]);
 
   const navigate = useCallback(
     async (path?: string): Promise<boolean> => {
       try {
-        const l = await api.listDir(path);
+        const l = await api.listDir(path, useUi.getState().browserPick?.ext);
         setListing(l);
         setPathInput(l.path);
         setSelected(new Set());
@@ -66,6 +74,10 @@ export function FileBrowser() {
 
   const openPathsAndClose = (paths: string[]) => {
     if (!paths.length) return;
+    if (mode === "pick") {
+      if (pick?.kind === "file") finishPick(paths[0]);
+      return;
+    }
     if (mode === "open-analysis") {
       if (locate) return void startOpen(locate.project, { ...locate.locations, [locate.missing[0].id]: paths[0] });
       return void startOpen(paths[0]);
@@ -185,7 +197,7 @@ export function FileBrowser() {
       <div
         className="modal file-browser"
         role="dialog"
-        aria-label={mode === "save-analysis" ? "Save analysis" : mode === "open-analysis" ? "Open analysis" : "Open files"}
+        aria-label={pick?.title ?? (mode === "save-analysis" ? "Save analysis" : mode === "open-analysis" ? "Open analysis" : "Open files")}
       >
         <header className="fb-header">
           <button
@@ -236,7 +248,34 @@ export function FileBrowser() {
           ))}
         </ul>
 
-        {mode !== "data" ? (
+        {mode === "pick" && pick ? (
+          <footer className="fb-footer">
+            {pick.kind === "new-folder" ? (
+              <input
+                className="fb-name-input"
+                value={pickName}
+                onChange={(e) => setPickName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && listing && pickName.trim() && finishPick(join(listing.path, pickName.trim()))}
+                spellCheck={false}
+                aria-label="Folder name"
+              />
+            ) : (
+              <span className="muted small">{pick.title} (.{pick.ext})</span>
+            )}
+            <div className="fb-actions">
+              <button
+                className="primary"
+                disabled={!listing || (pick.kind === "new-folder" ? !pickName.trim() : selectedPaths.length !== 1)}
+                onClick={() => {
+                  if (pick.kind === "file") finishPick(selectedPaths[0]);
+                  else if (listing) finishPick(join(listing.path, pickName.trim()));
+                }}
+              >
+                {pick.action}
+              </button>
+            </div>
+          </footer>
+        ) : mode !== "data" ? (
           <footer className="fb-footer">
             {mode === "save-analysis" ? (
               <input

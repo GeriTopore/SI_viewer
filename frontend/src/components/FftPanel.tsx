@@ -127,7 +127,7 @@ export function FftPanel() {
     () =>
       pldId
         ? {
-            list: (pld?.peaks ?? []).map((p): FftPeak => ({ fy: p.fy, fx: p.fx, refined: null })),
+            list: (pld?.peaks ?? []).map((p): FftPeak => ({ fy: p.fy, fx: p.fx, refined: p.refined ?? null })),
             picking: pld?.picking ?? true,
             onAdd: (fy: number, fx: number) => addPldPeak(pldId, fy, fx),
             onDelete: (i: number) => deletePldPeak(pldId, i),
@@ -150,6 +150,7 @@ export function FftPanel() {
         : null,
     [atomicId, atomic?.peaks, atomic?.picking, pldId, pld?.peaks, pld?.picking, pld?.settings.radius, pldDs],
   );
+  const fftSize = useUi((s) => s.fftSize);
   const setSource = (id: string | null) => fftView && useFftBoxes.getState().patch(fftView, { source: id, selected: id });
   // The focused dataset's bandpass filter, drawn like the alignment's mask
   // (which takes its place while an alignment is shown).
@@ -302,6 +303,7 @@ export function FftPanel() {
           onMask={fftMask ? onMask : null}
           onBand={fftMask ? null : onBand}
           peaks={peaks}
+          size={fftSize}
         />
       )}
     </section>
@@ -388,8 +390,10 @@ const LOUPE_N = 23;
 const LOUPE_PX = 92;
 
 export function FftView({
-  image, box, zoom, mask, band: bandProp, measure, onMask, onBand, compact = false, peaks = null, filter = null,
+  image, box, zoom, mask, band: bandProp, measure, onMask, onBand, compact = false, peaks = null, filter = null, size = null,
 }: {
+  /** The FFT's largest size (px), set with the splitter below it; null: the default. */
+  size?: number | null;
   /** The Fourier filter to tint the FFT with. */
   filter?: PeakFilter | null;
   /** FFT peaks to draw (the whole image is transformed while there are). */
@@ -564,12 +568,15 @@ export function FftView({
     const gain = 1 / Math.max(hi - lo, 1e-30);
     // Frequency (cycles per frame pixel) per FFT pixel from the centre.
     const perPixel = 1 / (n * shown.patch.bin);
+    // FFT pixel i is drawn centred on coordinate i (its frequency, i − n/2
+    // from the centre), as clicks, peaks and rings are placed.
+    const at = (t: number) => Math.min(n - 1, Math.max(0, Math.floor(start + (t * span) / d + 0.5)));
     for (let cy = 0; cy < d; cy++) {
-      const ya = Math.floor(start + (cy * span) / d);
-      const yb = Math.max(ya + 1, Math.floor(start + ((cy + 1) * span) / d));
+      const ya = at(cy);
+      const yb = Math.max(ya + 1, at(cy + 1));
       for (let cx = 0; cx < d; cx++) {
-        const xa = Math.floor(start + (cx * span) / d);
-        const xb = Math.max(xa + 1, Math.floor(start + ((cx + 1) * span) / d));
+        const xa = at(cx);
+        const xb = Math.max(xa + 1, at(cx + 1));
         let m = -Infinity;
         for (let y = ya; y < yb; y++) {
           const row = y * n;
@@ -825,9 +832,10 @@ export function FftView({
     const img = ctx.createImageData(d, d);
     const start = { u: loupe.u - LOUPE_N / 2, v: loupe.v - LOUPE_N / 2 };
     for (let cy = 0; cy < d; cy++) {
-      const y = Math.floor(start.v + ((cy + 0.5) * LOUPE_N) / d);
+      // Pixel i centred on coordinate i, as in the panel.
+      const y = Math.floor(start.v + ((cy + 0.5) * LOUPE_N) / d + 0.5);
       for (let cx = 0; cx < d; cx++) {
-        const x = Math.floor(start.u + ((cx + 0.5) * LOUPE_N) / d);
+        const x = Math.floor(start.u + ((cx + 0.5) * LOUPE_N) / d + 0.5);
         const o = (cy * d + cx) * 4;
         if (x < 0 || y < 0 || x >= n || y >= n) {
           img.data[o + 3] = 255;
@@ -886,7 +894,7 @@ export function FftView({
           if (!drag.current) setHover(null);
           setPointerAt(null);
         }}
-        style={{ cursor: hover?.cursor || undefined, touchAction: (onMask && ring) || (onBand && band) ? "none" : undefined }}
+        style={{ maxWidth: !compact && size ? size : undefined, cursor: hover?.cursor || undefined, touchAction: (onMask && ring) || (onBand && band) ? "none" : undefined }}
         title={
           hover
             ? "Drag to resize"

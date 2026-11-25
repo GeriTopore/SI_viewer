@@ -7,7 +7,7 @@ import { useAlignment } from "../state/alignment";
 import { PANE_SIZES, useUi, type SplitSide } from "../state/ui";
 import { Splitter } from "./Splitter";
 import { followProcess } from "./ProcessLink";
-import { filterLabel, isInsituView, isLineScan } from "../format";
+import { allowsProcess, filterLabel, isInsituView, isLineScan } from "../format";
 import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { AlignSection } from "./AlignSection";
@@ -30,6 +30,7 @@ import { PldSection } from "./PldSection";
 import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
+import { usePluginProcesses, usePluginProjectPanel } from "../plugins/host";
 import { GridIcon, ListIcon } from "./DatasetList";
 
 const SPATIAL: { id: SpatialFilter; label: string; title: string }[] = [
@@ -275,8 +276,9 @@ export function ProcessPanel() {
   const d = useProcessTarget();
   const split = useUi((s) => s.processSplit);
   const files = useDatasets((s) => s.files);
+  const projectPanel = usePluginProjectPanel();
   const main = !d ? (
-    <p className="muted">Select a dataset to filter it.</p>
+    projectPanel ?? <p className="muted">Select a dataset to filter it.</p>
   ) : d.kind === "other" ? (
     <p className="muted">{d.title} can't be filtered.</p>
   ) : (
@@ -504,6 +506,7 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
   const mode = useUi((s) => s.processMode);
+  const pluginProcesses = usePluginProcesses(d);
   // The processes that apply, in workflow order.
   const processes = ([
     d.kind === "stack" && d.origin !== "pca" && {
@@ -767,7 +770,12 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
         : "Decompose over an energy window (HyperSpy): the components' maps and spectra",
       body: <PcaSection d={d} />,
     },
-  ] as (Process | false)[]).filter((x): x is Process => !!x);
+    ...pluginProcesses,
+  ] as (Process | false)[])
+    .filter((x): x is Process => !!x)
+    // A plugin's tree item isn't data: only plugins' processes apply.
+    .filter((p) => d.kind !== "item" || p.id.startsWith("plugin:"))
+    .filter((p) => allowsProcess(d, p.id));
 
   if (only) {
     const k = processes.findIndex((p) => p.id === only);

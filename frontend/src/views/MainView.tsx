@@ -3,6 +3,7 @@ import type { DatasetSummary } from "../api/client";
 import { allDatasets, isColumnItem, planeSize, useDatasets } from "../state/datasets";
 import { useAlignment } from "../state/alignment";
 import { isLineScan } from "../format";
+import { PluginItemView } from "../plugins/ItemView";
 import { AlignmentWorkspace } from "./AlignmentWorkspace";
 import { ImagesView } from "./ImagesView";
 import { LineScanView } from "./LineScanView";
@@ -16,12 +17,14 @@ export function MainView() {
   const files = useDatasets((s) => s.files);
   const selection = useDatasets((s) => s.selection);
   const alignOpen = useAlignment((s) => s.openId);
+  const inPluginProject = useDatasets((s) => !!s.files.find((f) => f.id === s.active)?.plugin);
   const selected = useMemo(() => {
     const byId = new Map(allDatasets(files).map((d) => [d.id, d]));
     return selection.map((id) => byId.get(id)).filter((d): d is DatasetSummary => !!d);
   }, [files, selection]);
 
   if (!selected.length) {
+    if (inPluginProject) return <div className="placeholder" />;
     return (
       <div className="placeholder">
         <h1>Nothing selected</h1>
@@ -66,6 +69,8 @@ export function MainView() {
       );
     case "spectrum":
       return <SpectrumView key={key} ds={primary} />;
+    case "item":
+      return <PluginItemView key={key} d={primary} />;
     case undefined: {
       const shown = [...images, ...implied];
       if (!shown.length) return <div className="placeholder"><p className="muted">Its image is gone.</p></div>;

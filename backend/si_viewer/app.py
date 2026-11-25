@@ -17,12 +17,14 @@ from .api import (
     project, registration, thickness, zlp,
 )
 from .jobs import JobManager
+from .plugins import load_plugins
 from .session import Session
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-def create_app(session: Session | None = None) -> FastAPI:
+def create_app(session: Session | None = None, plugins=None) -> FastAPI:
+    """The app, with ``plugins`` (default: those installed)."""
     app = FastAPI(title="SI Viewer", version=version("si-viewer"))
     app.state.session = session or Session()
     app.state.jobs = JobManager()
@@ -52,6 +54,7 @@ def create_app(session: Session | None = None) -> FastAPI:
     app.include_router(dpc.router)
     app.include_router(decomposition.router)
     app.include_router(crop.router)
+    load_plugins(app, plugins)
 
     @app.get("/api/health", tags=["meta"])
     def health() -> dict:

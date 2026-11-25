@@ -25,6 +25,9 @@ class DatasetKind(str, Enum):
     SPECTRUM = "spectrum"
     SPECTRUM_IMAGE = "spectrum_image"
     OTHER = "other"
+    # A plugin's tree item that isn't data (a structure): ``signal`` is a
+    # 1×1 placeholder, and ``Dataset.plugin`` says what it is.
+    ITEM = "item"
 
 
 class NotAvailable(ValueError):
@@ -175,6 +178,8 @@ class Dataset:
     # Curve fitting of every pixel (processing/curve_fit.PixelFits), likewise.
     curve_fits: object | None = field(default=None, repr=False)
     curve_fits_version: tuple = ()
+    # A plugin's result: {"id": plugin id, "settings": {...}}; saved with projects.
+    plugin: dict | None = None
     # Bumped whenever the data is recomputed, so clients refresh caches.
     revision: int = 0
     # Bumped when the data is replaced by other data of the same kind (the next
@@ -413,6 +418,7 @@ class Dataset:
             # acquisition record), e.g. {"name": "DFS", "segments": [0, 4], ...}.
             "detector": _detector_info(self.loaded_signal),
             "origin": self.origin,
+            "plugin": self.plugin,
             "element": self.element,
             "pixel_fit": self.current_pixel_fits is not None,
             # The curve fit of every pixel: the model it was made with.
@@ -510,6 +516,9 @@ class FileEntry:
     # Opened from a copy of the raw file embedded in a saved analysis (``path``
     # is that copy): where the raw file was ({"path", "fingerprint"}).
     saved_ref: dict | None = None
+    # A plugin's project ({"id": plugin id, "type": ...}): ``path`` is its
+    # folder, there is no raw file, and all its datasets are stored.
+    plugin: dict | None = None
 
     def role(self, session: "Session") -> str | None:
         """What the file is in its experiment: "Survey", "ADF", "EELS LL",
@@ -543,6 +552,7 @@ class FileEntry:
             "name": self.label or self.path.name,
             "raw_missing": self.raw_missing,
             "embedded": self.saved_ref is not None,
+            "plugin": self.plugin,
             "experiment": experiment.summary() if experiment else None,
             "role": self.role(session) if experiment else None,
             "datasets": [session.datasets[d].summary() for d in self.dataset_ids],
@@ -1315,6 +1325,74 @@ class Session:
         return made
 
     # ---------- operations run as a new dataset ----------
+
+    def add_plugin_dataset(
+        self, parent: Dataset | None, signal, plugin_id: str, title: str, settings: dict | None = None,
+        label: str | None = None, stack: dict | None = None, hidden_processes: list[str] | None = None,
+        entry: FileEntry | None = None, colormap: str | None = None,
+    ) -> Dataset:
+        """A plugin's result as a new dataset under ``parent`` (or, with no
+        parent, last in ``entry``), ``origin`` ``plugin:<id>``, with the
+        settings it was made with. ``label`` names its object type (its badge);
+        it keeps the processes of its data kind, but for ``hidden_processes``.
+        ``stack``: what a stack's frames and projections are called ({"frame",
+        "frames", "sum", "initial"}). ``colormap``: the one it is first shown in."""
+        if parent is None and entry is None:
+            raise ValueError("A plugin dataset needs a parent or a file")
+        signal.metadata.General.title = title
+        plugin = {"id": plugin_id, "settings": settings or {}}
+        for key, value in (
+            ("label", label), ("stack", stack), ("hidden_processes", hidden_processes), ("colormap", colormap),
+        ):
+            if value:
+                plugin[key] = value
+        file_id = parent.file_id if parent is not None else entry.id
+        ds = Dataset(
+            id=_new_id(), file_id=file_id, signal=signal, kind=classify(signal),
+            origin=f"plugin:{plugin_id}", parent_id=parent.id if parent is not None else None, plugin=plugin,
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[file_id].dataset_ids
+            if parent is None:
+                ids.append(ds.id)
+            else:
+                ids.insert(ids.index(parent.id) + 1, ds.id)
+        return ds
+
+    def add_plugin_project(self, path: str | Path, plugin_id: str, project_type: str, label: str | None = None) -> FileEntry:
+        """An empty top-level entry for a plugin's project in the folder ``path``."""
+        entry = FileEntry(
+            id=_new_id(), path=Path(path).expanduser().resolve(), label=label,
+            plugin={"id": plugin_id, "type": project_type},
+        )
+        with self._lock:
+            self.files[entry.id] = entry
+        return entry
+
+    def add_plugin_item(
+        self, entry: FileEntry, plugin_id: str, item: str, label: str, title: str,
+        settings: dict | None = None, detail: str | None = None, parent: Dataset | None = None,
+    ) -> Dataset:
+        """A tree item of a plugin that isn't data (``item``, e.g. "structure";
+        ``label`` on its badge, ``detail`` beside its title), last in ``entry``
+        or under ``parent``."""
+        import hyperspy.api as hs
+
+        signal = hs.signals.Signal2D(np.zeros((1, 1), np.float32))
+        signal.metadata.General.title = title
+        ds = Dataset(
+            id=_new_id(), file_id=entry.id, signal=signal, kind=DatasetKind.ITEM, origin=f"plugin:{plugin_id}",
+            parent_id=parent.id if parent is not None else None,
+            plugin={"id": plugin_id, "item": item, "label": label, "detail": detail, "settings": settings or {}},
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            if parent is None:
+                entry.dataset_ids.append(ds.id)
+            else:
+                entry.dataset_ids.insert(entry.dataset_ids.index(parent.id) + 1, ds.id)
+        return ds
 
     def copy_as(self, src: Dataset, origin: str, title: str, signal=None) -> Dataset:
         """A new dataset under ``src`` holding a copy of its loaded data (or
@@ -2870,7 +2948,7 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model", "atomic", "mask"):
+        if dataset.origin.startswith("plugin:") or dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model", "atomic", "mask"):
             if dataset.origin == "curve-model" and dataset.parent_id in self.datasets:
                 self.datasets[dataset.parent_id].curve_fits = None  # its fit at the cursor goes with it
             places = self._tree_places(dataset)

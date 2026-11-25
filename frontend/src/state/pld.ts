@@ -1,9 +1,10 @@
 import { create } from "zustand";
-import { api, type DatasetSummary, type FileSummary, type JobSummary, type PldFamily } from "../api/client";
+import { api, type DatasetSummary, type FileSummary, type JobSummary, type PldFamily, type RefinedPeak } from "../api/client";
 import { allDatasets, useDatasets } from "./datasets";
 
 /** Periodic lattice displacements of an image (kemstem, M22f): its FFT
- * peaks labelled (found and grouped automatically, or picked), the
+ * peaks picked and refined (automatic finding is hidden until it works
+ * better: ``detectPeaks``), the
  * superlattice ones damped into a reference image, and each column's
  * displacement measured against it. */
 
@@ -17,7 +18,12 @@ export interface PldPeak {
   hk?: [number, number];
   family: number | null;
   damp: boolean;
+  /** Refined with a 2D Gaussian on |F| (null: not yet, or picked since). */
+  refined?: RefinedPeak | null;
 }
+
+/** Where a peak is: refined if it was, else as picked. */
+export const pldPeakAt = (p: PldPeak) => (p.refined && !p.refined.failed ? p.refined : p);
 
 export interface PldSettings {
   /** Detection: how many peaks at most, within how far of the centre (cycles/px). */
@@ -29,6 +35,9 @@ export interface PldSettings {
   threshold: number;
   /** Picks add their conjugate too. */
   conjugates: boolean;
+  /** Refining (and damping): the fit window (odd, FFT px) and blur σ (FFT px). */
+  window: number;
+  blur: number;
 }
 
 export interface PldState {
@@ -48,7 +57,7 @@ export const defaultPld = (): PldState => ({
   peaks: [],
   basis: null,
   families: [],
-  settings: { count: 120, within: 0.25, radius: 8, threshold: 0.4, conjugates: true },
+  settings: { count: 120, within: 0.25, radius: 8, threshold: 0.4, conjugates: true, window: 9, blur: 1 },
   picking: true,
   busy: null,
   job: null,
@@ -126,6 +135,29 @@ export function addPldPeak(image: string, fy: number, fx: number) {
   usePld.getState().patch(image, { peaks: [...st.peaks, ...added], error: null });
 }
 
+/** Refine every peak from where it is with a 2D Gaussian on the blurred
+ * |F| (as damping does), so the positions can be checked first. */
+export async function refinePldPeaks(d: DatasetSummary) {
+  const st = stateOf(d.id);
+  if (!st.peaks.length) return;
+  const { patch } = usePld.getState();
+  patch(d.id, { busy: "Refining", error: null });
+  try {
+    const r = await api.refineFftPeaks(d.id, st.peaks.map((p) => { const q = pldPeakAt(p); return [q.fy, q.fx]; }), {
+      method: "gauss", window: st.settings.window, blur: st.settings.blur, edge: "none", pattern: "abs",
+    });
+    const now = stateOf(d.id);
+    if (now.peaks !== st.peaks) return patch(d.id, { busy: null }); // changed since
+    patch(d.id, {
+      busy: null,
+      peaks: st.peaks.map((p, i) => ({ ...p, refined: r.peaks[i] ?? null })),
+      error: r.peaks.some((p) => p.failed) ? "Some peaks could not be fitted (kept as picked)" : null,
+    });
+  } catch (e) {
+    patch(d.id, { busy: null, error: (e as Error).message });
+  }
+}
+
 /** Remove peak ``i`` (and its conjugate, if listed). */
 export function deletePldPeak(image: string, i: number) {
   const st = stateOf(image);
@@ -139,10 +171,10 @@ export function deletePldPeak(image: string, i: number) {
 export async function makeReference(d: DatasetSummary) {
   const st = stateOf(d.id);
   const { patch } = usePld.getState();
-  const damped = st.peaks.filter((p) => p.damp).map((p): [number, number] => [p.fy, p.fx]);
+  const damped = st.peaks.filter((p) => p.damp).map((p): [number, number] => { const q = pldPeakAt(p); return [q.fy, q.fx]; });
   patch(d.id, { busy: "Damping", error: null });
   try {
-    const r = await api.pldReference(d.id, damped, st.settings.radius);
+    const r = await api.pldReference(d.id, damped, st.settings.radius, st.settings.window, st.settings.blur);
     useDatasets.getState().replaceFile(r.file);
     patch(d.id, { busy: null });
   } catch (e) {

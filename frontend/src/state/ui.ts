@@ -15,11 +15,11 @@ export type GridContext = "si" | "images" | "stacks";
  * a stored one that is not shown falls back, see BottomPane). */
 export type BottomTab =
   | "spectrum" | "profile" | "histogram" | "exploded" | "alignment" | "pca-component" | "pca-scree" | "neighbourhood"
-  | "cell" | `eels:${string}`;
+  | "cell" | `eels:${string}` | `plugin:${string}`;
 const isBottomTab = (t: string | undefined): t is BottomTab =>
   t === "spectrum" || t === "profile" || t === "histogram" || t === "exploded" || t === "alignment" ||
   t === "pca-component" || t === "pca-scree" || t === "neighbourhood" || t === "cell" ||
-  (!!t && t.startsWith("eels:") && t.length > 5);
+  (!!t && t.startsWith("eels:") && t.length > 5) || (!!t && t.startsWith("plugin:") && t.length > 7);
 export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
 /** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */
 export type BottomSplit = [BottomTab, BottomTab];
@@ -45,6 +45,8 @@ export const PANE_SIZES = {
   splitRow: { initial: 0.5, min: 0.2, max: 0.8 },
   // The Process tab's split: the share of the split-off process.
   processSplit: { initial: 0.5, min: 0.15, max: 0.85 },
+  // The FFT pane's image (px), dragged with the splitter between it and the tabs.
+  fft: { initial: 0, min: 100, max: 1600 },
   // The alignment's row of compared cross-correlations, as a fraction of the step.
   compare: { initial: 0.38, min: 0.12, max: 0.8 },
 };
@@ -216,6 +218,9 @@ interface UiState {
   setAnnotationsHidden: (view: string, hidden: boolean) => void;
   /** FFT of the viewer's image, above the tabs. */
   fftOpen: boolean;
+  /** The FFT's largest size (px), dragged with the splitter under it; null: the default (32vh). */
+  fftSize: number | null;
+  setFftSize: (px: number | null) => void;
   setFftOpen: (open: boolean) => void;
   /** Clicking the FFT marks a spatial frequency (and shows the mark). */
   fftMeasure: boolean;
@@ -249,12 +254,24 @@ interface UiState {
   browserOpen: boolean;
   /** What the file browser is for: data, opening an analysis or saving one. */
   browserMode: BrowserMode;
+  /** With mode "pick": what is being picked, and who is waiting for it. */
+  browserPick: BrowserPick | null;
   setListMode: (mode: ListMode) => void;
   setLastDir: (dir: string) => void;
   setBrowserOpen: (open: boolean, mode?: BrowserMode) => void;
 }
 
-export type BrowserMode = "data" | "open-analysis" | "save-analysis";
+export type BrowserMode = "data" | "open-analysis" | "save-analysis" | "pick";
+
+/** A path picked in the file browser: a file of type ``ext``, or a new folder. */
+export interface BrowserPick {
+  kind: "file" | "new-folder";
+  title: string;
+  action: string;
+  ext?: string;
+  name?: string;
+  resolve: (path: string | null) => void;
+}
 
 export const useUi = create<UiState>((set, get) => ({
   theme: document.documentElement.dataset.theme === "dark" ? "dark" : "light",
@@ -423,6 +440,15 @@ export const useUi = create<UiState>((set, get) => ({
       return { annotationsHidden };
     }),
   fftOpen: load<string>("si-viewer.fftOpen", "true") === "true",
+  fftSize: (() => {
+    const v = Number(load<string>("si-viewer.fftSize", ""));
+    return v > 0 ? v : null;
+  })(),
+  setFftSize: (px) => {
+    const fftSize = px == null ? null : Math.round(Math.min(PANE_SIZES.fft.max, Math.max(PANE_SIZES.fft.min, px)));
+    save("si-viewer.fftSize", fftSize == null ? "" : String(fftSize));
+    set({ fftSize });
+  },
   fftMeasure: load<string>("si-viewer.fftMeasure", "true") === "true",
   fftScale: load<string>("si-viewer.fftScale", "log") === "linear" ? "linear" : "log",
   setFftScale: (fftScale) => {
@@ -479,6 +505,7 @@ export const useUi = create<UiState>((set, get) => ({
   },
   browserOpen: false,
   browserMode: "data",
+  browserPick: null,
   setListMode: (listMode) => {
     save("si-viewer.listMode", listMode);
     set({ listMode });

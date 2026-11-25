@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { Interaction, Pt, Transform } from "../components/ImageView";
+import { GRAB, GRABBING, type Interaction, type Pt, type Transform } from "../components/ImageView";
 import { getViewFftBoxes, useFftBoxes, type BoxGeometry, type FftBox } from "../state/fftBoxes";
 
 type Corner = 0 | 1 | 2 | 3; // top-left, top-right, bottom-right, bottom-left
@@ -63,13 +63,13 @@ export function useFftBoxTool(view: string, width: number, height: number): Inte
     cursor,
 
     onHover(p, t) {
-      const h = p && t ? hit(p, t) : null;
-      setCursor(!h ? "crosshair" : h.corner === null ? "move" : h.corner % 2 ? "nesw-resize" : "nwse-resize");
+      setCursor(p && t && hit(p, t) ? GRAB : "crosshair");
     },
 
     onDown(p, _e, t) {
       const h = hit(p, t);
       if (h) {
+        setCursor(GRABBING);
         // Touching a box shows its FFT.
         patch(view, { selected: h.box.id, source: h.box.id });
         if (h.corner !== null) {
@@ -100,9 +100,10 @@ export function useFftBoxTool(view: string, width: number, height: number): Inte
       }
     },
 
-    onUp() {
+    onUp(p, _e, t) {
       const d = drag.current;
       drag.current = null;
+      setCursor(hit(p, t) ? GRAB : "crosshair");
       if (d?.mode !== "draw") return;
       // A click (or a box too small to transform) draws nothing and
       // deselects; the FFT keeps its region.

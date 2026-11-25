@@ -32,4 +32,5 @@ frontend/dist/
 
 # Built frontend, served by the backend
 backend/si_viewer/static/
+plugins/abtem/src/si_viewer_abtem/frontend/
 *.tsbuildinfo

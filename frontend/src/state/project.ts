@@ -95,6 +95,15 @@ export function workspaceToSave(): { fileIds: string[]; name: string } | null {
   return { fileIds: ws.files.map((f) => f.id), name };
 }
 
+/** Where the workspace is saved without asking: a plugin's project has its
+ * analysis file in its folder, ``<folder>/<folder>.hspy``. */
+export function projectToSave(): { path: string; fileIds: string[] } | null {
+  const ws = workspaceToSave();
+  const file = ws && useDatasets.getState().files.find((f) => ws.fileIds.includes(f.id) && f.plugin);
+  if (!ws || !file) return null;
+  return { path: `${file.path}/${file.path.split("/").pop()}.hspy`, fileIds: ws.fileIds };
+}
+
 /** Save the files ``fileIds`` (as the estimate gave them: a workspace and
  * what it links to) as an analysis at ``path``. Throws (an ApiError, 409 if it exists and
  * ``overwrite`` isn't set). Returns where it was saved. */

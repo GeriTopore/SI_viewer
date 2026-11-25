@@ -54,7 +54,7 @@ FIELDS = (
     "id", "file_id", "is_element_map", "origin", "element", "parent_id", "window", "background",
     "thickness", "deconvolution", "quantity", "source_frame", "map_options", "rebinned", "zlp_aligned",
     "ops", "copied_at", "filters", "alignment", "technique_source", "eels_role", "eels_role_source",
-    "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope", "curve_model", "atomic", "mask",
+    "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope", "curve_model", "atomic", "mask", "plugin",
 )
 # Bytes of a raw file hashed for its fingerprint.
 FINGERPRINT_BYTES = 1 << 20
@@ -146,7 +146,7 @@ def embeds(session, entry, level: str) -> bool:
 
 def stores_raw(session, entry, level: str) -> bool:
     """Whether the datasets loaded from ``entry``'s raw file are stored."""
-    if entry.raw_missing or level == "results":
+    if entry.raw_missing or entry.plugin or level == "results":
         return True
     return level == "raw" and not embeds(session, entry, level)
 
@@ -250,7 +250,7 @@ def save_project(
             files.append({
                 "id": entry.id, "path": str(where), "relative": rel(where), "label": entry.label,
                 "experiment_id": entry.experiment_id, "dataset_ids": list(entry.dataset_ids),
-                "fingerprint": fp, "stored": stored, "embedded": entry.id in embed,
+                "fingerprint": fp, "stored": stored, "embedded": entry.id in embed, "plugin": entry.plugin,
             })
         kept = {e.id for e in entries}
         experiments = [
@@ -452,6 +452,11 @@ def open_project(
     for fe in files:
         p = _find(fe, base, locations)
         name = Path(fe["path"]).name
+        if fe.get("plugin"):  # a plugin's project: a folder, with no raw file
+            if p is None:
+                warnings.append(f"The folder of {name} was not found: its saved data is used")
+            found[fe["id"]] = p or base
+            continue
         changed = p is not None and _changed(p, fe.get("fingerprint"))
         if p is not None and not changed:
             pass
@@ -476,6 +481,12 @@ def open_project(
         with session._lock:
             session.experiments.setdefault(e["id"], Experiment(id=e["id"], path=ep))
     for fe in files:
+        if fe.get("plugin"):
+            with session._lock:
+                session.files[fe["id"]] = FileEntry(
+                    id=fe["id"], path=found[fe["id"]], label=fe.get("label"), plugin=fe["plugin"],
+                )
+            continue
         if fe["id"] in detached:
             entry = FileEntry(
                 id=fe["id"], path=Path(fe["path"]), label=fe.get("label"), raw_missing=True,

@@ -40,6 +40,8 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
   const { patch, updateLine } = useProfiles.getState();
   const units = calX.units || "px";
   const shown = lines.filter((l) => l.visible);
+  // Fixed lines are a plugin's: listed only while it shows them.
+  const listed = lines.filter((l) => l.visible || !l.fixed);
   const drawn = layers.filter((l) => l.visible && l.frame);
   // The base image (e.g. HAADF) gets its own axis beside maps, unless normalised.
   const baseAxis = !normalise && drawn.length > 1 && drawn[0] === layers[0];
@@ -107,7 +109,7 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
     <div className="profile-panel">
       <div className="profile-header">
         <div className="profile-lines">
-          {lines.map((l) => (
+          {listed.map((l) => (
             <LineChip
               key={l.id}
               line={l}
@@ -169,7 +171,7 @@ export function ProfilePanel({ view, layers, calX, calY, title, pickable, onShow
           onClose={() => setExporting(false)}
         />
       )}
-      {!lines.length ? (
+      {!listed.length ? (
         <p className="muted small profile-empty">
           Drag on the image to draw a line; its profile appears here for every image layer shown.
           {pickable && " Shift-click or shift-drag on the profile to see the spectrum there."}
@@ -253,16 +255,18 @@ function LineChip({
         />
         px
       </label>
-      <button
-        className="icon-button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove();
-        }}
-        title={`Delete ${line.name}`}
-      >
-        ×
-      </button>
+      {!line.fixed && (
+        <button
+          className="icon-button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+          title={`Delete ${line.name}`}
+        >
+          ×
+        </button>
+      )}
     </span>
   );
 }

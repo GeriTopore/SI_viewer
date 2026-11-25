@@ -810,7 +810,7 @@ export const canDelete = (d: DatasetSummary) =>
   d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan" ||
   d.origin === "aligned-sum" || d.origin === "rebinned" || d.origin === "zlp-aligned" || d.origin === "aligned" ||
   d.origin === "dpc" || d.origin === "pca" || d.origin === "pca-factors" || d.origin === "pca-denoised" ||
-  d.origin === "cropped" || d.origin === "atomic" || d.origin === "mask";
+  d.origin === "cropped" || d.origin === "atomic" || d.origin === "mask" || d.origin.startsWith("plugin:");
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);
@@ -820,6 +820,7 @@ export const elementOf = (d: DatasetSummary) => d.element ?? d.title;
 
 /** Colormap an image starts with: its element colour for element maps. */
 export function initialColormap(d: DatasetSummary): string {
+  if (d.plugin?.colormap) return d.plugin.colormap;
   if (isWindowMap(d)) return useDisplay.getState().ensureWindowColour(d.id);
   if (d.dpc?.output === "colour") return "hsv"; // a direction: a circular map
   // Atomic-resolution maps: a phase is circular; strains and rotations diverge from 0.

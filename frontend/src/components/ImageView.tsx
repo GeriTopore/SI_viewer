@@ -37,6 +37,10 @@ export interface Transform {
 
 /** Pointer/keyboard tool on top of pan/zoom (e.g. a cursor or region tool).
  * Middle-drag or Space+drag always pans. */
+/** Cursors over what a tool can move or resize (lines, regions, boxes), and while dragging it. */
+export const GRAB = "grab";
+export const GRABBING = "grabbing";
+
 export interface Interaction {
   /** CSS cursor over the image. */
   cursor?: string;

@@ -3,15 +3,15 @@ import type { DatasetSummary } from "../api/client";
 import { formatValue } from "../format";
 import { useDatasets } from "../state/datasets";
 import {
-  detectPeaks, makeReference, measureDisplacements, pldResults, setFamilyDamp, usePld, usePldState, type PldSettings,
+  deletePldPeak, makeReference, measureDisplacements, pldPeakAt, pldResults, refinePldPeaks, togglePeak, usePld, usePldState, type PldSettings,
 } from "../state/pld";
 import { pixelSize } from "./AtomicSection";
 import { ProcessLink } from "./ProcessLink";
 
 /** Process tab, images: periodic lattice displacements (kemstem, M22f;
- * notebook 3). 1. Label the FFT's peaks: found and grouped automatically
- * (Bragg; off-lattice families q₁, q₂ …), or picked on the FFT; ticked
- * families and clicked peaks are damped. 2. Damp them into a reference
+ * notebook 3). 1. Pick the superlattice peaks on the FFT and refine them
+ * (automatic finding is hidden for now: ``detectPeaks`` in state/pld.ts and
+ * ``/atomic/pld/detect`` stay); ticked peaks are damped. 2. Damp them into a reference
  * image ("PLD reference", and "PLD difference"). 3. Fit the columns again
  * in the reference and measure each one's displacement ("Displacements"
  * under the Columns, drawn as vectors). */
@@ -33,58 +33,80 @@ export function PldSection({ d }: { d: DatasetSummary }) {
   const s = st.settings;
   const num = (v: string, fallback: number) => (v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : fallback);
   const damped = st.peaks.filter((p) => p.damp).length;
-  const bragg = st.peaks.filter((p) => p.family === 0).length;
+  const windowOk = s.window >= 3 && s.window % 2 === 1;
   const busy = !!st.busy || !!st.job;
-  const famDamped = (id: number) => {
-    const m = st.peaks.filter((p) => p.family === id);
-    return m.length > 0 && m.every((p) => p.damp);
-  };
   const pm = (v: number | null | undefined) => (v == null ? "–" : displacementText(v, px));
 
   return (
     <section className="q-form">
       <h4 className="process-heading">Superlattice peaks</h4>
-      <label title="How many peaks to find at most">
-        <span>Peaks</span>
-        <input type="number" min={10} max={500} step={10} value={s.count} onChange={(e) => set({ count: Math.max(10, Math.min(500, Math.round(num(e.target.value, s.count)))) })} />
-      </label>
-      <label title="How far from the FFT's centre (cycles/px; 0.5 is Nyquist)">
-        <span>Within (1/px)</span>
-        <input type="number" min={0.02} max={0.5} step={0.05} value={s.within} onChange={(e) => set({ within: Math.max(0.02, Math.min(0.5, num(e.target.value, s.within))) })} />
-      </label>
       <div className="process-actions">
-        <button className="primary" disabled={busy} onClick={() => detectPeaks(d)} title="Find the FFT's peaks, index them in the lattice and group the others by their offset from it">
-          {st.busy === "Detecting" ? "Finding…" : "Find peaks"}
-        </button>
-        {st.peaks.length > 0 && (
-          <button onClick={() => patch({ peaks: [], families: [] })} title="Remove all the peaks">
-            Clear
-          </button>
-        )}
+        <label className="q-check" title="Click the FFT to add a peak, or to switch one between damped and not; right-click a peak to delete it">
+          <input type="checkbox" checked={st.picking} onChange={(e) => patch({ picking: e.target.checked })} />
+          Pick on the FFT
+        </label>
+        <label className="q-check" title="Each click also adds the peak at −k">
+          <input type="checkbox" checked={s.conjugates} onChange={(e) => set({ conjugates: e.target.checked })} />
+          Conjugates
+        </label>
       </div>
-      {st.families.length > 0 && (
-        <div className="pld-families">
-          <span className="muted small">Damp</span>
-          {st.families.map((f) => (
-            <label key={f.id} className="q-check-line small" title={`Peaks at G ± q, q = (${f.q.join(", ")}) in the lattice; ${f.count} peaks`}>
-              <input type="checkbox" checked={famDamped(f.id)} onChange={(e) => setFamilyDamp(d.id, f.id, e.target.checked)} />
-              <span className={`pld-swatch family-${(f.id - 1) % 6}`} />
-              q{subscript(f.id)} ({f.q.map((v) => formatValue(v)).join(", ")}) · {f.count}
-            </label>
-          ))}
-        </div>
+      {st.peaks.length === 0 ? (
+        <p className="muted small q-elements">No peaks</p>
+      ) : (
+        <table className="q-table">
+          <thead>
+            <tr>
+              <th title="Damped in the reference">Damp</th>
+              <th>#</th>
+              <th className="num">d ({px.units})</th>
+              <th className="num">Angle</th>
+              <th />
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {st.peaks.map((p, i) => {
+              const sp = spacing(pldPeakAt(p), px);
+              return (
+                <tr key={i}>
+                  <td>
+                    <input type="checkbox" checked={p.damp} onChange={() => togglePeak(d.id, i)} aria-label={`Damp peak ${i + 1}`} />
+                  </td>
+                  <td>{i + 1}</td>
+                  <td className="num">{formatValue(sp.d)}</td>
+                  <td className="num">{formatValue(Math.round(sp.angle * 10) / 10)}°</td>
+                  <td className="muted small" title={p.refined ? (p.refined.failed ? "Not fitted (as picked)" : "Refined") : "As picked"}>
+                    {p.refined ? (p.refined.failed ? "✕" : "✓") : ""}
+                  </td>
+                  <td>
+                    <button className="link-button" onClick={() => deletePldPeak(d.id, i)} title="Delete the peak (and its conjugate)">
+                      ×
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
-      <label className="q-check-line small" title="Clicks on the FFT add a peak (with its conjugate), or switch a peak between damped and not; right-click removes one">
-        <input type="checkbox" checked={st.picking} onChange={(e) => patch({ picking: e.target.checked })} />
-        Pick on the FFT
-        <input type="checkbox" checked={s.conjugates} onChange={(e) => set({ conjugates: e.target.checked })} style={{ marginLeft: 10 }} />
-        Conjugates
+      <label title="Width of the window fitted round each peak (odd, FFT px)">
+        <span>Window (px)</span>
+        <input type="number" min={3} step={2} value={s.window} onChange={(e) => set({ window: Math.round(num(e.target.value, s.window)) })} />
       </label>
-      {st.peaks.length > 0 && (
-        <p className="muted small">
-          {damped} to damp · {bragg} Bragg · {st.peaks.length} in all
-        </p>
-      )}
+      <label title="Gaussian blur of |F| before fitting (σ, FFT px)">
+        <span>Blur σ (px)</span>
+        <input type="number" min={0} step={0.5} value={s.blur} onChange={(e) => set({ blur: Math.max(0, num(e.target.value, s.blur)) })} />
+      </label>
+      {!windowOk && <p className="field-error">The window must be odd, 3 or more</p>}
+      <div className="process-actions">
+        <button className="primary" disabled={busy || !st.peaks.length || !windowOk} onClick={() => refinePldPeaks(d)} title="Fit a 2D Gaussian to each peak, from where it is">
+          {st.busy === "Refining" ? "Refining…" : "Refine"}
+        </button>
+        <button disabled={!st.peaks.length} onClick={() => patch({ peaks: [], families: [], error: null })}>
+          Clear
+        </button>
+        {st.peaks.length > 0 && <span className="muted small">{damped} of {st.peaks.length} damped</span>}
+      </div>
 
       <h4 className="process-heading">Reference</h4>
       <label title="Each damped peak is set to its background within this radius (FFT px)">
@@ -92,7 +114,7 @@ export function PldSection({ d }: { d: DatasetSummary }) {
         <input type="number" min={1} step={1} value={s.radius} onChange={(e) => set({ radius: Math.max(0.5, num(e.target.value, s.radius)) })} />
       </label>
       <div className="process-actions">
-        <button className="primary" disabled={busy || !damped} onClick={() => makeReference(d)} title="The image without the damped peaks: PLD reference (and difference) under it">
+        <button className="primary" disabled={busy || !damped || !windowOk} onClick={() => makeReference(d)} title="The image without the damped peaks: PLD reference (and difference) under it">
           {st.busy === "Damping" ? "Damping…" : reference ? "Make again" : "Make reference"}
         </button>
       </div>
@@ -143,4 +165,9 @@ export function displacementText(v: number, px: { x: number; units: string }) {
   return px.units === "px" ? `${formatValue(v)} px` : `${formatValue(v * px.x)} ${px.units}`;
 }
 
-const subscript = (n: number) => String(n).replace(/\d/g, (c) => "₀₁₂₃₄₅₆₇₈₉"[Number(c)]);
+/** A peak's lattice spacing and angle (y up), in the image's units. */
+function spacing({ fy, fx }: { fy: number; fx: number }, px: { y: number; x: number }) {
+  const ky = fy / px.y;
+  const kx = fx / px.x;
+  return { d: 1 / Math.hypot(kx, ky), angle: (Math.atan2(-ky, kx) * 180) / Math.PI };
+}

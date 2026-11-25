@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "si-viewer-abtem"
+version = "0.1.0"
+description = "Multislice simulation projects for SI Viewer (abTEM)"
+requires-python = ">=3.11"
+# abTEM itself runs in its own environment (see docs/ABTEM_PLUGIN_PLAN.md).
+dependencies = ["si-viewer", "ase"]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[project.entry-points."si_viewer.plugins"]
+abtem = "si_viewer_abtem.plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+si_viewer_abtem = ["frontend/*"]
+"si_viewer_abtem.worker" = ["*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]

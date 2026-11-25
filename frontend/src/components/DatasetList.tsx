@@ -10,7 +10,7 @@ import { useLayers } from "../state/layers";
 import { useDisplay } from "../state/display";
 import { useUi } from "../state/ui";
 import { isColour, swatchBackground } from "../viewer/colormaps";
-import { datasetTooltip, isBackgroundRemoved, isDeconvolved, isLineScan, isThickness, isWindowMap, isZlpShift, kindLabel, shapeLabel } from "../format";
+import { allowsProcess, datasetTooltip, isBackgroundRemoved, isDeconvolved, isLineScan, isThickness, isWindowMap, isZlpShift, kindLabel, shapeLabel } from "../format";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { CollapseButton } from "./PaneToggle";
 import { DATASET_MIME } from "./LayeredViewer";
@@ -32,7 +32,7 @@ function countUnder(id: string, tree: FileTree): number {
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
 export const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${d.origin === "curve-model" ? "model" : d.origin === "mask" ? "mask" : d.atomic ? "atomic" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
+  `badge badge-${d.plugin?.label ? `item badge-label-${d.plugin.label.toLowerCase().replace(/\W+/g, "-")}` : d.origin === "curve-model" ? "model" : d.origin === "mask" ? "mask" : d.atomic ? "atomic" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
   d.origin === "mask"
@@ -407,8 +407,8 @@ export function DatasetList() {
           items={[
             { label: "Rename…", onSelect: () => setRenaming(menu.d.id) },
             ...eelsItems(menu.d, partners, files),
-            ...(menu.d.kind === "stack" ? [{ label: "Align frames…", onSelect: () => openAlignment(menu.d) }] : []),
-            ...(canRebin(menu.d) ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
+            ...(menu.d.kind === "stack" && allowsProcess(menu.d, "align") ? [{ label: "Align frames…", onSelect: () => openAlignment(menu.d) }] : []),
+            ...(canRebin(menu.d) && allowsProcess(menu.d, "rebin") ? [{ label: "Rebin…", onSelect: () => setRebinTarget(menu.d) }] : []),
             ...(exportFormats[menu.d.kind]?.length ? [{ label: "Export…", onSelect: () => setExporting([menu.d]) }] : []),
             ...(canDelete(menu.d) ? [{ label: "Delete", danger: true, onSelect: () => deleteDataset(menu.d) }] : []),
           ]}

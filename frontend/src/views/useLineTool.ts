@@ -1,5 +1,5 @@
-import { useRef } from "react";
-import type { Interaction, Pt } from "../components/ImageView";
+import { useRef, useState } from "react";
+import { GRAB, GRABBING, type Interaction, type Pt } from "../components/ImageView";
 import { getViewProfiles, useProfiles, type LineGeometry, type ProfileLine } from "../state/profiles";
 import { useUi } from "../state/ui";
 import { askDeleteLine } from "../components/LineDeleteDialog";
@@ -11,6 +11,7 @@ type Drag =
   | { mode: "move"; id: string; orig: LineGeometry; start: Pt };
 
 const HANDLE_PX = 7;
+const DRAW_CURSOR = "crosshair";
 // Shift-drag snaps the angle to multiples of this.
 const SNAP_RAD = Math.PI / 12;
 
@@ -39,13 +40,33 @@ export function lineAt(view: string, p: { x: number; y: number }, zoom: number):
 export function useLineTool(view: string): Interaction {
   const { patch, addLine, updateLine, removeLine } = useProfiles.getState();
   const drag = useRef<Drag | null>(null);
+  // A hand over a line or its ends (they can be dragged), closed while dragging.
+  const [cursor, setCursor] = useState(DRAW_CURSOR);
+
+  /** The visible line (or one of its ends) under ``p``, if any. */
+  const grabbable = (p: Pt, t: { zoom: number }) => {
+    const tol = HANDLE_PX / t.zoom;
+    return getViewProfiles(view).lines.some(
+      (l) =>
+        l.visible &&
+        (Math.hypot(p.x - l.x0, p.y - l.y0) <= tol ||
+          Math.hypot(p.x - l.x1, p.y - l.y1) <= tol ||
+          distanceToLine(l, p.x, p.y) <= Math.max(tol, l.width / 2)),
+    );
+  };
 
   return {
-    cursor: "crosshair",
+    cursor,
+
+    onHover(p, t) {
+      setCursor(p && t && grabbable(p, t) ? GRAB : DRAW_CURSOR);
+    },
 
     onDown(p, _e, t) {
-      // Every drag below draws or changes a line: show its profile.
-      useUi.getState().setBottomTab("profile");
+      if (grabbable(p, t)) setCursor(GRABBING);
+      // Every drag below draws or changes a line: show its profile, unless a
+      // plugin's tab is shown (it may follow the lines, as a cross-section does).
+      if (!useUi.getState().bottomTab.startsWith("plugin:")) useUi.getState().setBottomTab("profile");
       const s = getViewProfiles(view);
       const tol = HANDLE_PX / t.zoom;
       const visible = s.lines.filter((l) => l.visible);
@@ -92,9 +113,10 @@ export function useLineTool(view: string): Interaction {
       }
     },
 
-    onUp() {
+    onUp(p, _e, t) {
       const d = drag.current;
       drag.current = null;
+      setCursor(grabbable(p, t) ? GRAB : DRAW_CURSOR);
       if (d?.mode !== "draw") return;
       // A click without a drag draws nothing (and deselects).
       const l = getViewProfiles(view).lines.find((x) => x.id === d.id);

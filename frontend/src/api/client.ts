@@ -3,7 +3,33 @@
 export type Technique = "EDS" | "EELS";
 export type TechniqueSource = "metadata" | "dm_tag" | "energy_axis" | "user";
 
-export type DatasetKind = "image" | "stack" | "spectrum" | "spectrum_image" | "other";
+export type DatasetKind = "image" | "stack" | "spectrum" | "spectrum_image" | "other" | "item";
+
+/** A dataset made by a plugin; ``item`` when it is a tree item, not data. */
+export interface DatasetPlugin {
+  id: string;
+  item?: string;
+  label?: string;
+  detail?: string | null;
+  settings: Record<string, unknown>;
+  /** The colormap it is first shown in. */
+  colormap?: string;
+  /** What a stack's frames and projections are called. */
+  stack?: {
+    frame: string;
+    frames: string;
+    sum: string;
+    initial?: "frame" | "mean" | "sum";
+    /** Open on the last frame. */
+    start?: "last";
+    /** False: no Mean or Sum (they would mean nothing). */
+    projections?: boolean;
+    /** Frames are planes at a depth, not ranges of it. */
+    planes?: boolean;
+  };
+  /** The processes of its data kind that don't apply to it. */
+  hidden_processes?: string[];
+}
 
 /** What an in-situ series dataset holds: one frame, or the mean/sum of frames
  * start…end (0-based, inclusive). */
@@ -437,6 +463,7 @@ export interface DatasetSummary {
   file_id: string;
   title: string;
   kind: DatasetKind;
+  plugin?: DatasetPlugin | null;
   signal_type: string;
   is_element_map: boolean;
   navigation_shape: number[];
@@ -994,6 +1021,8 @@ export interface FileSummary {
   raw_missing?: boolean;
   /** Opened from a copy of its raw file embedded in a saved analysis. */
   embedded?: boolean;
+  /** A plugin's project: ``path`` is its folder. */
+  plugin?: { id: string; type: string } | null;
   datasets: DatasetSummary[];
 }
 
@@ -1097,7 +1126,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -1524,7 +1553,7 @@ export const api = {
       body: JSON.stringify({ inputs, normalise }),
     }),
   /** Make (or make again) DPC x, DPC y and iDPC images. */
-  refineFftPeaks: (id: string, peaks: [number, number][], options: FftPeakOptions) =>
+  refineFftPeaks: (id: string, peaks: [number, number][], options: FftPeakOptions & { pattern?: "log" | "abs" }) =>
     request<{ peaks: RefinedPeak[]; shape: [number, number] }>(`/api/datasets/${id}/atomic/fft-peaks`, {
       method: "POST",
       body: JSON.stringify({ peaks, ...options }),
@@ -1606,10 +1635,10 @@ export const api = {
       `/api/datasets/${id}/atomic/pld/detect`,
       { method: "POST", body: JSON.stringify(body) },
     ),
-  pldReference: (id: string, peaks: [number, number][], radius: number) =>
+  pldReference: (id: string, peaks: [number, number][], radius: number, window = 9, blur = 1) =>
     request<{ file: FileSummary; ids: string[]; peaks: RefinedPeak[] }>(`/api/datasets/${id}/atomic/pld/reference`, {
       method: "POST",
-      body: JSON.stringify({ peaks, radius }),
+      body: JSON.stringify({ peaks, radius, window, blur }),
     }),
   pldDisplacements: (columns: string, threshold: number) =>
     request<JobSummary>(`/api/datasets/${columns}/atomic/pld/displacements`, {

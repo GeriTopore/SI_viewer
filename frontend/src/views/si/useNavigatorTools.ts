@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Interaction, Pt, Transform } from "../../components/ImageView";
+import { GRAB, GRABBING, type Interaction, type Pt, type Transform } from "../../components/ImageView";
 import {
   containsPoint, getSiState, shapeBounds, translateShape, useSi, type Shape,
 } from "../../state/si";
@@ -188,9 +188,20 @@ export function useNavigatorTools(
     };
   }, [drawing]);
 
+  /** Something under ``p`` a press would drag: a cursor marker, the selected
+   * region's corners, or (with a region tool) a region to move. */
+  const grabbable = (p: Pt, t: Transform) => {
+    if (tool === "line" || tool === "fft") return false;
+    if (tool === "cursor" && (onMarker(p, t) || (cursors && onMarker(p, t, 2)))) return true;
+    if (tool === "polygon") return false;
+    const s = getSiState(si);
+    const sel = s.rois.find((r) => r.id === s.selected && r.visible);
+    if (sel && cornerAt(sel.shape, p, t)) return true;
+    return tool !== "cursor" && s.rois.some((r) => r.visible && containsPoint(r.shape, p.x, p.y));
+  };
+
   const interaction: Interaction = {
-    cursor:
-      tool === "cursor" ? (grabbing ? "grabbing" : near ? "move" : undefined) : "cell",
+    cursor: grabbing ? GRABBING : near ? GRAB : tool === "cursor" ? undefined : "cell",
 
     onDown(p, e, t) {
       if (tool === "line" || tool === "fft") return false; // lines, FFT boxes: the viewer's tools
@@ -215,6 +226,7 @@ export function useNavigatorTools(
         if (corner) {
           const orig = normalise(selected.shape) as Shape & { kind: "rect" | "ellipse" };
           drag.current = { mode: "resize", id: selected.id, orig, corner };
+          setGrabbing(true);
           return true;
         }
       }
@@ -249,6 +261,7 @@ export function useNavigatorTools(
       const hit = [...s.rois].reverse().find((r) => r.visible && containsPoint(r.shape, p.x, p.y));
       if (hit) {
         drag.current = { mode: "move", id: hit.id, orig: hit.shape, start: p };
+        setGrabbing(true);
         return true;
       }
       const x = inX(snap(p.x));
@@ -281,11 +294,12 @@ export function useNavigatorTools(
       }
     },
 
-    onUp() {
+    onUp(p, _e, t) {
       const d = drag.current;
       drag.current = null;
-      if (d?.mode === "cursor") setGrabbing(false);
-      else if (d?.mode === "draw" && draft && draft.kind !== "polygon") {
+      setGrabbing(false);
+      setNear(grabbable(p, t));
+      if (d?.mode === "draw" && draft && draft.kind !== "polygon") {
         const n = normalise(draft) as Shape & { kind: "rect" | "ellipse" };
         if (n.x1 - n.x0 >= 1 && n.y1 - n.y0 >= 1) {
           addRoi(si, n);
@@ -300,7 +314,7 @@ export function useNavigatorTools(
 
     onHover(p, t) {
       if (tool === "polygon") setHover(p);
-      setNear(tool === "cursor" && !!p && !!t && (onMarker(p, t) || (cursors && onMarker(p, t, 2))));
+      setNear(!!p && !!t && grabbable(p, t));
     },
 
     onDoubleClick() {

@@ -15,6 +15,23 @@ export interface ProfileLine {
   width: number;
   /** Line scans generated along it (dataset ids): deleted with it. */
   lineScans?: string[];
+  /** A line kept along an image axis ("x": horizontal, "y": vertical) at its
+   * full length: it only moves across, and can't be deleted. */
+  fixed?: "x" | "y";
+}
+
+/** ``line`` changed by ``patch``; a fixed line keeps its axis and length. */
+function constrain(line: ProfileLine, patch: Partial<ProfileLine>): ProfileLine {
+  const next = { ...line, ...patch };
+  if (line.fixed === "x") {
+    const y = patch.y0 ?? patch.y1 ?? line.y0;
+    return { ...next, x0: line.x0, x1: line.x1, y0: y, y1: y };
+  }
+  if (line.fixed === "y") {
+    const x = patch.x0 ?? patch.x1 ?? line.x0;
+    return { ...next, y0: line.y0, y1: line.y1, x0: x, x1: x };
+  }
+  return next;
 }
 
 export type LineGeometry = Pick<ProfileLine, "x0" | "y0" | "x1" | "y1">;
@@ -51,7 +68,7 @@ interface ProfilesStore {
   imageTool: ImageTool;
   setImageTool: (tool: ImageTool) => void;
   patch: (view: string, patch: Partial<ViewProfiles>) => void;
-  addLine: (view: string, geometry: LineGeometry) => string;
+  addLine: (view: string, geometry: LineGeometry, extra?: Partial<Pick<ProfileLine, "name" | "fixed" | "visible">>) => string;
   updateLine: (view: string, id: string, patch: Partial<ProfileLine>) => void;
   removeLine: (view: string, id: string) => void;
   /** The user deletes a line: it can be undone. */
@@ -77,19 +94,21 @@ export const useProfiles = create<ProfilesStore>((set, get) => {
     imageTool: "pan",
     setImageTool: (imageTool) => set({ imageTool }),
     patch: (view, patch) => update(view, () => patch),
-    addLine: (view, geometry) => {
-      const id = `line${nextId++}`;
+    addLine: (view, geometry, extra = {}) => {
+      let id = `line${nextId++}`;
+      // Ids restored with a saved analysis may already use the next number.
+      while (Object.values(get().byView).some((v) => v.lines.some((l) => l.id === id))) id = `line${nextId++}`;
       update(view, (s) => {
         const used = new Set(s.lines.map((l) => l.color));
         const color = LINE_COLORS.find((c) => !used.has(c)) ?? LINE_COLORS[s.lines.length % LINE_COLORS.length];
-        const n = s.lines.reduce((m, l) => Math.max(m, Number(l.name.match(/\d+$/)?.[0] ?? 0)), 0) + 1;
-        const line: ProfileLine = { id, name: `Line ${n}`, color, visible: true, width: 1, ...geometry };
+        const n = s.lines.filter((l) => !l.fixed).reduce((m, l) => Math.max(m, Number(l.name.match(/\d+$/)?.[0] ?? 0)), 0) + 1;
+        const line: ProfileLine = { id, name: `Line ${n}`, color, visible: true, width: 1, ...geometry, ...extra };
         return { lines: [...s.lines, line], selected: id };
       });
       return id;
     },
     updateLine: (view, id, patch) =>
-      update(view, (s) => ({ lines: s.lines.map((l) => (l.id === id ? { ...l, ...patch } : l)) })),
+      update(view, (s) => ({ lines: s.lines.map((l) => (l.id === id ? constrain(l, patch) : l)) })),
     removeLine: (view, id) =>
       update(view, (s) => ({
         lines: s.lines.filter((l) => l.id !== id),
@@ -103,6 +122,7 @@ export const useProfiles = create<ProfilesStore>((set, get) => {
       const i = lines.findIndex((l) => l.id === id);
       if (i < 0) return;
       const line = lines[i];
+      if (line.fixed) return;
       get().removeLine(view, id);
       useUndo.getState().push(line.name, () => update(view, (s) => ({ lines: putBack(s.lines, line, i) })));
     },

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent, type ReactNode, type RefObject } from "react";
 import { useShortcuts } from "../keyboard";
+import { usePluginTabs } from "../plugins/host";
 import { PANE_SIZES, useUi, type BottomTab, type SplitSide } from "../state/ui";
 import { Splitter } from "./Splitter";
 
@@ -22,7 +23,8 @@ interface Props {
 
 /** The pane under the image: tabs, any two of which can be shown side by side
  * or stacked (the Split button, or dragging a tab onto the pane). */
-export function BottomPane({ tabs, viewerRef, resizeLabel }: Props) {
+export function BottomPane({ tabs: ownTabs, viewerRef, resizeLabel }: Props) {
+  const tabs = [...ownTabs, ...usePluginTabs()];
   const bottomTab = useUi((s) => s.bottomTab);
   const bottomSplit = useUi((s) => s.bottomSplit);
   const bottomFraction = useUi((s) => s.bottomFraction);

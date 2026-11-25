@@ -108,10 +108,15 @@ export function StackView({ ds, images, others = [] }: {
   const g = imageGeometry(ds, "signal");
   const previewBin = Math.max(1, Math.ceil(Math.max(g.width, g.height) / PREVIEW_MAX_SIZE));
 
-  const [index, setIndex] = useState(0);
+  // A plugin's stack can name its frames and projections, and start on one.
+  const names = ds.plugin?.stack;
+  const [index, setIndex] = useState(names?.start === "last" ? n - 1 : 0);
   // A PCA: its kept components' maps side by side.
   const [pcaGrid, setPcaGrid] = useState(false);
-  const [projection, setProjection] = useState<Projection>("frame");
+  const frameName = names?.frame ?? "Frame";
+  const framesName = names?.frames ?? "frames";
+  const sumName = names?.sum ?? "Sum";
+  const [projection, setProjection] = useState<Projection>(names?.initial ?? "frame");
   const [scrubbing, setScrubbing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,7 +132,7 @@ export function StackView({ ds, images, others = [] }: {
   // At most one request in flight; when it lands, fetch whatever is wanted now.
   // Every frame that arrives is shown, so dragging stays responsive.
   const cache = useRef(new Map<string, Frame>());
-  const wanted = useRef<Request>({ index: 0, projection: "frame", bin: 1 });
+  const wanted = useRef<Request>({ index: 0, projection, bin: 1 });
   const inFlight = useRef(false);
 
   const remember = (key: string, f: Frame) => {
@@ -258,9 +263,20 @@ export function StackView({ ds, images, others = [] }: {
       }));
   // In the grid the component shown is the panel being edited.
   const activeRequest = useMemo(() => (showGrid ? { key: componentKey(index) } : null), [showGrid, index]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A named stack's frame: where it is along its axis.
+  const stackAxis = names ? ds.axes.find((a) => a.navigate) : undefined;
+  const depth = stackAxis
+    ? names?.planes
+      ? `${stackAxis.name} ${formatValue(stackAxis.offset + index * stackAxis.scale)} ${stackAxis.units}`
+      : `${stackAxis.name} ${formatValue(stackAxis.offset + index * stackAxis.scale)}–${formatValue(stackAxis.offset + (index + 1) * stackAxis.scale)} ${stackAxis.units}`
+    : null;
   const frameLabel = isPca && projection === "frame"
     ? `Component ${index + 1} / ${n}${pctOf(index)}`
-    : (projection === "frame" ? `Frame ${index + 1} / ${n}` : `${projection} of ${n} frames`) +
+    : (projection === "frame"
+        ? `${frameName} ${index + 1} / ${n}${depth ? ` · ${depth}` : ""}`
+        : projection === "sum" && names
+          ? `${sumName} · ${n} ${framesName}`
+          : `${projection} of ${n} ${framesName}`) +
       (alignment?.active ? " · aligned" : "");
 
   const stackBar = (
@@ -277,20 +293,20 @@ export function StackView({ ds, images, others = [] }: {
         onPointerDown={() => setScrubbing(true)}
         onPointerUp={() => setScrubbing(false)}
         onBlur={() => setScrubbing(false)}
-        aria-label="Frame"
+        aria-label={frameName}
       />
       <span className="stack-index">
         {index + 1} / {n}
       </span>
       <div className="segmented" role="group" aria-label="Projection">
-        {(["frame", "mean", "sum"] as Projection[]).map((p) => (
+        {(names?.projections === false ? ["frame"] : ["frame", "mean", "sum"] as Projection[]).map((p) => (
           <button
             key={p}
             className={projection === p ? "active" : undefined}
             aria-pressed={projection === p}
-            onClick={() => setProjection(p)}
+            onClick={() => setProjection(p as Projection)}
           >
-            {p === "frame" ? "Frame" : p === "mean" ? "Mean" : "Sum"}
+            {p === "frame" ? frameName : p === "mean" ? "Mean" : sumName}
           </button>
         ))}
       </div>

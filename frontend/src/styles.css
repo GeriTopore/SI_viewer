@@ -17,18 +17,18 @@
   --badge-spectrum: #0d9488;
   --badge-spectrum_image: #d97706;
   --badge-map: #db2777;
-  --badge-window: #0891b2;
+  --badge-window: #1b0e4e;
   --badge-background: #65a30d;
-  --badge-deconvolved: #0f766e;
+  --badge-deconvolved: #571d05;
   --badge-thickness: #e11d48;
-  --badge-shift: #7c3aed;
+  --badge-shift: #4f5705;
   --badge-other: #6b7280;
-  --badge-survey: #4f46e5;
+  --badge-survey: #0c0ce9;
   --badge-dpc: #c026d3;
   --badge-pca: #0891b2;
   --badge-model: #059669;
-  --badge-atomic: #b45309;
-  --badge-mask: #6d28d9;
+  --badge-atomic: #9b3b92;
+  --badge-mask: #080891;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -1100,6 +1100,16 @@ button.primary:disabled {
   text-align: center;
   overflow-wrap: anywhere;
 }
+
+/* A plugin's tree item, filling the middle column. */
+.item-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.badge-item { background: var(--accent); }
 
 /* Inspector */
 .props {
@@ -3756,6 +3766,15 @@ button.primary.danger {
   border-bottom: 1px solid var(--border);
 }
 
+/* Open, the splitter under it takes the gap. */
+.fft-panel:not(.closed) {
+  margin-bottom: 0;
+}
+
+.fft-resizer {
+  flex: none;
+}
+
 .fft-panel.closed {
   padding-bottom: 6px;
 }
@@ -6187,6 +6206,7 @@ kbd {
 
 /* The magnifier beside the pointer (FFT panel, image viewers). */
 .loupe {
+  box-sizing: content-box; /* the canvas and overlays fill it exactly, inside the border */
   position: fixed;
   z-index: 20;
   pointer-events: none;

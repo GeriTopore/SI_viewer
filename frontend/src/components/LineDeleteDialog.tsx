@@ -14,6 +14,7 @@ function lineScansOf(view: string, id: string): DatasetSummary[] {
  * scans were generated along it (they are deleted with it). */
 export function askDeleteLine(view: string, id: string) {
   const { deleteLine, setConfirming } = useProfiles.getState();
+  if (getViewProfiles(view).lines.find((l) => l.id === id)?.fixed) return;
   if (lineScansOf(view, id).length) setConfirming({ view, id });
   else deleteLine(view, id);
 }
@@ -35,6 +36,7 @@ export function LineDeleteDialog() {
   const line = getViewProfiles(view).lines.find((l) => l.id === id);
   if (!line) return null;
   const scans = lineScansOf(view, id);
+  if (line.fixed) return null;
   const confirm = async () => {
     close();
     const { deleteDataset } = useDatasets.getState();

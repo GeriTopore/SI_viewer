@@ -6,7 +6,12 @@ export const KIND_LABEL: Record<DatasetKind, string> = {
   spectrum: "Spectrum",
   spectrum_image: "SI",
   other: "Data",
+  item: "Item",
 };
+
+/** Whether the process ``id`` of ``d``'s data kind applies to it (a plugin's
+ * object can leave some out). */
+export const allowsProcess = (d: DatasetSummary, id: string) => !d.plugin?.hidden_processes?.includes(id);
 
 /** The spectrum image of an in-situ series: it holds one frame, or a reduction of a frame range. */
 export const isInsituView = (d: DatasetSummary) => !!d.insitu?.view;
@@ -59,6 +64,8 @@ const ATOMIC_LABEL: Record<NonNullable<DatasetSummary["atomic"]>["output"], stri
 };
 
 export function kindLabel(d: DatasetSummary): string {
+  if (d.plugin?.label) return d.plugin.label;
+  if (d.kind === "item") return KIND_LABEL.item;
   if (isWindowMap(d)) return "Window";
   if (d.origin === "pca") return "Decomp";
   if (d.origin === "pca-factors") return "Factors";
@@ -85,12 +92,13 @@ export function kindLabel(d: DatasetSummary): string {
 
 /** e.g. "EELS spectrum image" (the technique is left out when unknown). */
 export function kindName(d: DatasetSummary): string {
+  if (d.plugin?.label) return d.plugin.label;
   const t = hasTechnique(d) && d.technique ? `${d.technique} ` : "";
   const name = isLineScan(d)
     ? "LineScan"
     : isInsituView(d)
       ? "in-situ spectrum image"
-      : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", other: "data" } as const)[
+      : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", other: "data", item: d.plugin?.label?.toLowerCase() ?? "item" })[
           d.kind
         ];
   return t ? t + name : name[0].toUpperCase() + name.slice(1);
@@ -230,6 +238,7 @@ export function filterLabel(f: Filters | undefined): string {
 
 /** Shape as HyperSpy prints it: navigation | signal. */
 export function shapeLabel(d: DatasetSummary): string {
+  if (d.kind === "item") return d.plugin?.detail ?? "";
   // In-situ series: frames × frame (x×y) | channels, short for the dataset list, e.g. "208×100×100|3456".
   if (d.insitu?.view) {
     const [h, w] = d.insitu.frame_shape;

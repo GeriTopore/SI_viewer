@@ -5,6 +5,7 @@ import { LayersTab } from "./LayersTab";
 import { CollapseButton } from "./PaneToggle";
 import { ProcessPanel } from "./ProcessPanel";
 import { QuantifyPanel } from "./QuantifyPanel";
+import { Splitter } from "./Splitter";
 
 const TABS: { id: RightTab; label: string }[] = [
   { id: "info", label: "Info" },
@@ -17,10 +18,25 @@ const TABS: { id: RightTab; label: string }[] = [
  * details), Process (rebin, filters), Quantify (fitting) and Layers (what
  * the viewer draws) tabs. */
 export function RightPanel() {
-  const { rightTab, setRightTab } = useUi();
+  const { rightTab, setRightTab, fftOpen } = useUi();
   return (
     <>
       <FftPanel />
+      {fftOpen && (
+        <Splitter
+          direction="row"
+          className="split-row-resizer fft-resizer"
+          label="Resize the FFT"
+          onDrag={(pos) => {
+            // The FFT grows by as much as the pointer is below the pane's foot.
+            const panel = document.querySelector(".fft-panel");
+            const wrap = panel?.querySelector(".fft-canvas-wrap");
+            if (!panel || !wrap) return;
+            useUi.getState().setFftSize(wrap.getBoundingClientRect().width + pos - panel.getBoundingClientRect().bottom);
+          }}
+          onReset={() => useUi.getState().setFftSize(null)}
+        />
+      )}
       <div className="panel-tabs" role="tablist">
         {TABS.map((t) => (
           <button

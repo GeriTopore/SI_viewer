@@ -1,8 +1,19 @@
 # abTEM plugin: organisation and rollout (draft, 2026-11-23)
 
-Status: proposal. Nothing here is built. abTEM has not been installed or run
-yet; its API below comes from its docs and PyPI metadata, and Phase 0 tests the
-assumptions marked **check**.
+Status: Phases 0 to 2 built (plugin host, simulation projects, structure viewer
+and models). Phases 3 onwards are proposals. Remaining unknowns are marked
+**check**.
+
+Interactive session: the `si-viewer-abtem` configuration in `.claude/launch.json`
+(http://localhost:8767). It uses `plugins/abtem/.venv`, which adds the plugin and
+ASE on top of the `si-viewer` environment and leaves that environment unchanged.
+Test project (from 2026-11-24): `examples/abtem/Si simulation/`, from
+`examples/abtem/Si.cif` (diamond, a = 5.431 Å), with a [110] 2×2×5 model whose
+dumbbells (1.36 Å) show in the projected potential. Tested on 8767 and left open.
+The earlier STO project is `examples/abtem/STO simulation/`.
+`examples/abtem` stays out of commits.
+
+Plugin tests: `plugins/abtem/.venv/bin/python -m pytest -c plugins/abtem/pyproject.toml --rootdir plugins/abtem plugins/abtem/tests`.
 
 ## 1. Findings
 
@@ -90,23 +101,33 @@ Backend, through the entry-point group `si_viewer.plugins`:
 
 - `manifest`: id, name, version, required core API version, frontend entry.
 - `register(ctx)`: adds a router under `/api/plugins/<id>`.
-- `ctx.add_project_type(...)`: a top-level entry in the dataset pane, with its
-  own create, open, save and close.
-- `ctx.add_item_kind(...)`: tree items that aren't HyperSpy signals.
-- `ctx.add_file_type(".cif", handler)`: file types a plugin opens.
-- `ctx.add_dataset(signal, origin, parent, settings)`: results as normal datasets.
-- `ctx.submit_external_job(...)`: a job lane for worker processes, shown in the
-  existing jobs flap with progress and cancel.
-- `Dataset.plugin`: plugin-owned settings, saved in analysis files.
-- `GET /api/plugins`: what is installed, and its status.
-- A plugin that fails to load is logged and skipped. The base app still starts.
+- Built in Phase 0:
+  - `ctx.add_router(router)`, served under `/api/plugins/<id>`.
+  - `ctx.add_dataset(parent, signal, title, settings)`: results as normal
+    datasets.
+  - `ctx.submit_process(...)`: a job lane for worker processes, shown in the
+    existing jobs flap with progress and cancel.
+  - `Dataset.plugin`: plugin-owned settings, saved in analysis files.
+  - `GET /api/plugins`: what is installed, and its status.
+  - A plugin that fails to load is logged and skipped. The base app still starts.
+  - `SI_VIEWER_PLUGINS`: extra plugin modules, for development.
+- Built in Phase 1:
+  - `ctx.add_project(path, type, label)`: a top-level entry in the dataset pane
+    for a folder, saved and reopened by the normal analysis code.
+  - `ctx.add_item(entry, item, label, title, ...)`: tree items that aren't data
+    (`DatasetKind.ITEM`, with a 1×1 placeholder signal so the base app keeps them).
+  - `ctx.save_project(entry)`: writes `<folder>/<folder>.hspy`, keeping its views.
 
 Frontend:
 
-- The plugin's ES module is loaded with a dynamic `import()`.
-- React and Zustand are shared through an import map, so there is one copy.
-- It registers contributions: a *New simulation project* command, views for its
-  item kinds, bottom tabs and processes.
+- The plugin's ES module is loaded with a dynamic `import()`, and its
+  `activate(host)` receives the app's React and the plugin API, so there is one
+  copy of React.
+- Built in Phase 0: processes and bottom tabs.
+- Built in Phase 1: top-bar commands, a project's Process panel, item views, and
+  picking a file or new folder in the file browser.
+- The plugin's frontend is one plain ES module so far. Phase 2 adds a build step
+  for Three.js.
 - It reuses exported viewer parts and CSS classes, per the UI conventions.
 
 ## 3. Simulation projects
@@ -120,6 +141,7 @@ like any other data in the app: same three panes, nothing separate.
 STO simulation/
   STO simulation.hspy       # the normal analysis file: tree, views, results
   structures/SrTiO3.cif     # as loaded
+  models/*.extxyz           # oriented supercells
   runs/<id>/
     settings.json           # everything needed to repeat the run
     manifest.json           # outputs, axes, abTEM and library versions
@@ -224,41 +246,176 @@ split, drag and focus behaviour.
 
 Each phase ends with something usable.
 
-### Phase 0: feasibility and plugin host
+### Phase 0: feasibility and plugin host (built)
 
-- Install abTEM in a throwaway env. **Check:** a small run on this Mac, Dask
-  progress reporting, kill-based cancel, thread and memory settings, Metal.
-- Build the plugin host, then a minimal test plugin (one item kind, one process,
-  one bottom tab, one worker job).
-- **Done when:** the full test suite passes with no plugin installed, and the
-  test plugin's job reports progress, cancels and returns a dataset.
+- Plugin host, and a test plugin in `backend/tests/plugin_fixture` with a process,
+  a bottom tab and a worker job.
+- abTEM 1.0.11 tested in a throwaway env on the M3 Max, with SrTiO3 (3×3×5,
+  235² grid, 16² probe positions, 4 threads): 4.4 s, 0.44 GB peak.
+- What the test showed, for Phase 3 onwards:
+  - Detector angles beyond the simulated maximum fail only after the run starts,
+    so the app must check them first.
+  - Progress is too coarse by default (4 tasks). `max_batch=8` gave 99.
+  - A hard kill of the process group stopped a run in about 4 ms.
+  - `.npy` output reads correctly in the main env.
+  - abTEM's axes are (x, y). SI Viewer's images are (y, x), so results need
+    transposing.
+- **Check:** the Metal path was not tested (it needs PyTorch).
 
-### Phase 1: simulation projects
+### Phase 1: simulation projects (built)
 
-- *New simulation project*, the folder format, the entry in the dataset pane.
-- Save, reopen, close, and opening without the plugin.
-- Load a structure as a tree item.
-- **Done when:** a project with a structure survives a restart, and a save from
-  the base app loses nothing.
+- *New simulation…* in the top bar makes the project folder and its entry.
+- *Load structure…* reads a `.cif` with ASE, copies it into `structures/`, adds it
+  to the tree and saves. The Structure tab shows its formula, space group, cell
+  and composition, including mixed sites. XYZ and POSCAR are not read yet.
+- Save analysis writes into the project's folder without asking.
+- Checked in the app: a restart, opening and saving in the base app (structures
+  show "Needs the abtem plugin"), and reopening with the plugin.
+- A moved project folder still opens.
 
 ### Phase 2: structure viewer
 
-- 2a: the Structure tab, orthographic 3D view, cell, legend, hover.
-- 2b: zone-axis buttons, [uvw] and [uvtw], tilt and shortcuts.
-- 2c: repeats, bonds, mixed sites, PNG export.
-- 2d: *Create model* with the oriented supercell.
-- **Done when:** zone axes are checked against known projections on a cubic, a
-  hexagonal and a low-symmetry CIF.
+- 2a (built): the Structure tab, orthographic 3D view (Three.js, built with
+  `npm --prefix plugins/abtem/frontend run build`), cell, a/b/c axes, element
+  legend with show/hide, hover readout, reset.
+- 2b (built): zone-axis buttons, typed [uvw] and [uvtw], nearest zone axis and
+  its angle, tilt, in-plane rotation and shortcuts while the view has focus: `A`,
+  `B`, `C`, `Z`, `R`, arrows (1°, Shift 5°), `Q`/`E` (rotate). Checked on STO [001],
+  [110] and [111]. The [uvtw] maths is checked numerically, not yet on a real
+  hexagonal CIF.
+- 2c (built): repeats up to 20 per axis (50,000 atoms), atom size, bonds (closer
+  than a tolerance × the sum of covalent radii, default 1.05; no metal–metal bonds
+  when a non-metal is present), mixed sites as viewer-facing wedges with vacancies
+  in grey and clashing colours separated, transparent PNG export.
+- 2d (built): *Create model* in the Process tab. The form doesn't follow the view.
+  z is [uvw]; x and y are the shortest perpendicular lattice directions, with y
+  nearest the viewer's up. Built with ASE in the plugin's environment, because
+  abTEM's `orthogonalize_cell` isn't available there. Up to 1% strain, reported.
+  Mixed sites are filled at random from a seed with exact counts per site, and
+  vacancies removed. Models are stored as `models/*.extxyz`, up to 50,000 atoms.
+  STO [001], [110] and [111] models ran through abTEM 1.0.11 multislice.
+  *From view*, beside the zone axis field, imports only the view's zone axis.
+  Repeats default to 1 × 1 × 1 of
+  the orthogonal cell (for STO [112]: 5.52 × 6.76 × 9.57 Å, 6 unit cells, 30 atoms).
+- Built one change at a time, each left running at localhost:8767 for the user
+  to try before the next.
+- **Done when:** zone axes are checked against known projections on STO. Low
+  symmetry is set aside. [uvtw] needs a hexagonal CIF to check.
 
 ### Phase 3: worker and potential
 
-- Worker env setup from the app, potential settings, projected potential
-  preview, cost estimate, runs written to the project.
+- 3a (built): an *abTEM* process on models shows the install's status and
+  installs abTEM 1.0.11 into its own environment (`~/.si-viewer/abtem-env`, about
+  600 MB; `SI_VIEWER_ABTEM_ENV` overrides it) as a cancellable job. An interrupted
+  install doesn't count, and a folder the app didn't make is never replaced. The
+  worker (`worker/main.py`) runs in that environment.
+- 3b (built): a *Potential* process on models: sampling, slice thickness,
+  Lobato or Kirkland, infinite or finite projection, with the grid and slice
+  count. *Build potential* runs in the worker and adds a **Potential** object
+  under the model: a stack of slices along z (each integrated through its slice,
+  V·Å), oriented as the beam view (x right, y up; the image's y axis counts from
+  the top). It opens on *Projected*, the stack's Sum, which equals abTEM's
+  projected potential exactly; there is no separate projected object. Masks and
+  kemstem need a single image, so they aren't offered on a Potential.
+  New settings add a Potential; the same settings reuse it. Limits: 4096 pixels
+  per side, 2 GB of slices.
+- Frozen phonons (built): a Potential setting (abTEM `FrozenPhonons`: 0 or 1
+  configurations is off, up to 64; σ in Å per direction, default 0.1; seed). The
+  Potential stack is the mean over configurations (built one at a time). Runs on
+  it keep one wave per configuration, never an averaged wave: `exit_wave.npy` is
+  [config, x, y] (and `wave.npy` [config, plane, x, y]); without phonons they stay
+  [x, y] and [plane, x, y]. Intensities are averaged: the worker's `image` forms an
+  image per leading-axis configuration and averages them (inside each, a focal
+  series averages over defocus). The exit wave's Amplitude and Phase datasets are
+  the first configuration's (titled "(config 1)"), a Wavefunction's Intensity the
+  mean over configurations and its Phase the first's. A tiled wavefunction tiles
+  the displaced atoms, so every tile moves independently.
+- Object hierarchy: Structure → Model → Potential → run (HRTEM) → its images.
+  Objects have their own type (badge) and keep their data kind's processes, except
+  those they hide (a Potential hides *Align frames* and *Rebin*). Potentials and
+  HRTEM runs made before this change stay in their old place as plain images.
+- 3c (deferred, decided 2026-11-23): cost estimate of memory, result size and
+  time, shown before a run. To be built after the simulation modes, with the time
+  calibrated by a short benchmark on the machine.
+- 3d: runs written to the project (built with HRTEM, Phase 4).
 
 ### Phase 4: HRTEM
 
-- Plane wave, exit wave, CTF, image. Defocus and thickness series as stacks.
-- First validation against a published or abTEM tutorial result.
+- 4a (built): an *HRTEM* process on Potentials: energy, defocus (positive is
+  underfocus, abTEM's convention), Cs, a Scherzer button and an optional objective
+  aperture. A run appears under its Potential with the image (Intensity) and the
+  exit wave's Amplitude and Phase. Runs are written to
+  `runs/<id>/` (`exit_wave.npy`, `image.npy`, `settings.json`, `manifest.json`)
+  only when finished. The lens was checked against an independent Fourier
+  calculation (difference under 1e-5) and the exit phase against σV.
+- 4b (built): CTFs applied to runs, following the HRTEM quickstart and the
+  CTF and partial coherence walkthroughs. An *HRTEM* run takes one of the
+  project's CTFs (and so its energy) or none; it keeps the exit wave
+  (Amplitude, Phase) and adds the **Image** the CTF forms
+  (`exit_wave.apply_ctf(ctf).intensity()`). *Apply CTF* on a run adds the
+  image of another CTF at the same energy without repeating multislice; each
+  image keeps a snapshot of its CTF. The CTF form gained *Crossover* (aperture
+  at the first zero) and *From Cc, ΔE* (focal spread √2·Cc·ΔE/E, Cc 1.2 mm and
+  ΔE 0.35 eV by default). Runs made before keep their lens in the run.
+- 4c (built for HRTEM): focal spread as abTEM's quasi-coherent envelope, or as
+  an incoherent focal series (Gaussian, σ = δ/√2, 7 defocus values within
+  ±1.5σ, `reduce_ensemble`), from the partial coherence tutorial. The angular
+  spread stays an envelope. Checked on Si [110] at Scherzer with the aperture
+  at the crossover: dark dumbbells; mean intensity 0.977 (envelope) and 0.998
+  (focal series). Still to do: probes, and source size for STEM.
+- 4d (built): *Thickness series* on a Potential (job): a plane wave kept every
+  *n* slices (`exit_planes`; plane 0 the incident wave), `runs/<id>/exit_waves.npy`,
+  and a **Thickness series** item with stacks through thickness (axis t, Å):
+  Image (with a CTF), exit-wave Amplitude and Phase. *Defocus series* on an
+  HRTEM run (long-running worker, no multislice): one CTF at a range of
+  defocus values, a **Defocus series** stack (axis Δf, Å), up to 100 images.
+  Both handle frozen-phonon configurations (intensities averaged). Code in
+  `series.py`, `worker/series.py`, `frontend/src/series.js`. Checked: last
+  plane = plain HRTEM exit wave (diff 0); the defocus-series image at the CTF's
+  own defocus = Apply CTF (≤ 2.4e-7).
+- Validation against a published or abTEM tutorial result.
+- Wavefunction (built): a *Wavefunction* process on Potentials sends a plane wave
+  or probe (convergence, defocus, Cs, position) through the potential, tiled
+  laterally with `CrystalPotential`, with `exit_planes=1`. The result is a
+  **Wavefunction** under the Potential with Intensity and Phase stacks of
+  slices + 1 planes (plane 1 is the incident wave) and the complex wave in
+  `runs/<id>/wave.npy`. A plane wave's incident pixels are 1; a probe's incident
+  total is 1. Phase has no Mean or Sum. Probes default to a cell of at least 20 Å.
+- CTF (built: creation and visualisation): **CTF** items in the project (*New
+  CTF* on any simulation object, or with nothing selected; *Copy as new CTF*).
+  Settings: energy, defocus (Scherzer), Cs, C5, astigmatism C12 and angle,
+  aperture, focal spread and angular spread (abTEM's quasi-coherent envelopes,
+  1/e widths), range and, with astigmatism, the profiles' direction. A CTF is
+  an image dataset at the project's top level: the 2D CTF (256², kx right and
+  ky down in 1/Å from the centre, so readouts are exact; red–blue colormap)
+  shown in the viewer like any image, with processes that mean nothing for it
+  hidden. Its *CTF profile* bottom tab shows abTEM's profiles (CTF with its
+  envelopes and aperture, and each of those) in 1/Å or mrad, with point
+  resolution and information limit (envelopes at exp(-2)) marked, and Scherzer
+  defocus, crossover angle, point resolution and information limit. Edits
+  redraw the profile at once, the image after 0.2 s (`PUT …?save=false`,
+  same revision so contrast stays), and are saved 1.5 s after the last. The
+  core gained plugin datasets with no parent and a plugin-chosen first
+  colormap. Computed by a long-running worker (`main.py serve`,
+  `engine.Service`): abTEM imports once (~2 s), then each CTF takes ~10 ms; it
+  restarts if it stops. Works round abTEM 1.0.11's `to_diffraction_patterns`
+  ignoring `gpts` by setting the grid first. Checked: the profile equals
+  −sin χ to 1e-4. Next: apply a CTF to HRTEM runs and exit waves.
+- Cross-section (built): a *Cross-section* bottom tab on the plugin's stacks
+  (Potential, wave Intensity and Phase) cuts every plane along the selected
+  profile line (`POST /stacks/{id}/section`, linear interpolation that wraps
+  at the cell edges, the line's width averaged, the stack's filter applied).
+  While the tab is shown, the image has an x–z and a y–z line (fixed profile
+  lines: through the centre at first, full length, moving only across, never
+  deleted; hidden when the tab is left, kept with their position). *x–z* and
+  *y–z* pick which one the section follows; another drawn line can be picked
+  from the list. Depth runs down from the entrance surface; shown at true
+  aspect or stretched (*Fill*), in the view's colormap (a phase in the
+  circular one). The wheel zooms (up to ×64), dragging pans, a double-click
+  resets. The line tool stays on a plugin tab while lines are dragged. The core
+  gained fixed profile lines (`ProfileLine.fixed`) and, in the plugin host,
+  `useLines`, `getLines`, `addLine`, `updateLine`, `selectLine`,
+  `useColormap` and `colormapLut`.
 
 ### Phase 5: diffraction
 
@@ -266,10 +423,22 @@ Each phase ends with something usable.
 
 ### Phase 6: STEM imaging and quantification
 
-- Probe, grid scan, annular detectors (BF, ABF, ADF, HAADF), frozen phonons,
-  source size and noise as post-processing.
-- Run the existing kemstem processes on the results, and check them against the
-  model's known atom positions.
+- Built (following the STEM quickstart and the scan and detect walkthrough):
+  *STEM* on a Potential (job): probe (energy, convergence, defocus, Cs),
+  lateral tiling (cell ≥ 20 Å by default, scan stays over the model's cell),
+  scan region as fractions of the cell, scan sampling (Nyquist by default),
+  radial bin, detectors (BF 0–α, ABF α/2–α, MAADF 50–120, HAADF 90–200 mrad,
+  clipped to the simulated maximum and refused before running if beyond it).
+  A `FlexibleAnnularDetector` keeps the polar data (`runs/<id>/polar.npy`);
+  the **STEM** run holds one image per detector. *Add detector* integrates
+  another annulus from the saved data (`integrate_radial`), *Source size and
+  noise* on an image interpolates, blurs (Gaussian σ, Å) and adds Poisson
+  noise (dose e⁻/Å²) as a new image. Frozen phonons averaged. Code in
+  `stem.py`, `worker/stem.py`, `frontend/src/stem.js`. Checked: integration
+  from the polar data = `AnnularDetector` (≤ 2.4e-7); Si [110] HAADF peaks
+  within 0.11 Å of the projected columns.
+- Still to do: run kemstem on simulated STEM images and check against the
+  model's atom positions in the app.
 
 ### Phase 7: 4D-STEM and DPC
 
@@ -304,5 +473,5 @@ Each phase ends with something usable.
    touching the files the plugin host edits (`app.py`, `ProcessPanel.tsx`), so
    it should be committed first.
 7. **Licence:** still open, and it now also covers the plugin.
-8. **Test structures:** `examples/` has no `.cif` yet. Phase 2 needs a cubic, a
-   hexagonal and a low-symmetry file, ideally including BTFMO or STO.
+8. **Test structures (decided 2026-11-23):** STO in `examples/abtem`. Low-symmetry
+   structures are set aside.

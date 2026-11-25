@@ -2388,13 +2388,17 @@ projects.
     vectors (`aggregate_points`), calibration from a typed field of view.
 - **M22f: Periodic lattice displacements** (built; two display bugs open).
   - The "Lattice displacements" process (kemstem section).
-  - Superlattice peaks labelled automatically: the FFT's peaks found
-    (prominence over the blurred log |F|, a MAD noise floor), the lattice
-    found from the strongest (the smallest cell indexing them all) and each
-    peak indexed; off-lattice peaks grouped into families by their offset q
-    (q₁, q₂ … by strength), ticked to damp (the strongest to start). By
-    hand: on the FFT, a click adds a peak (and its conjugate) or toggles
-    one, a right-click removes one.
+  - Superlattice peaks picked by hand: on the FFT, a click adds a peak (and
+    its conjugate) or toggles whether it is damped, a right-click removes
+    one. They are listed (d, angle, Damp, refined) and *Refine* fits a 2D
+    Gaussian to each on the blurred |F| (`refine_peaks_gf`, window and blur:
+    the same fit damping uses), so the positions are checked before damping.
+  - Automatic labelling is hidden from the UI (2026-11-24) until it works
+    better; `detectPeaks` and `/atomic/pld/detect` stay. It found the FFT's
+    peaks (prominence over the blurred log |F|, a MAD noise floor), the
+    lattice from the strongest (the smallest cell indexing them all), indexed
+    each peak and grouped the off-lattice ones into families by their offset
+    q (q₁, q₂ … by strength).
   - Damp them (`refine_peaks_gf` on |F| for the backgrounds,
     `damp_peaks_circle`, radius): "PLD reference" and "PLD difference" under
     the image.

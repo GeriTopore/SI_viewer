@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { DatasetSummary } from "../api/client";
-import { useDatasets } from "../state/datasets";
+import { allDatasets, useDatasets } from "../state/datasets";
+import type { Disk as FoundDisk } from "../state/disks";
 import {
-  defaultDetector, defaultLattice, detectorForRequest, newGroup, type Detector, type DetectorGroup, type Lattice,
+  defaultDetector, defaultLattice, imageRequest, mergeDetectors, mergeable, newGroup, sizeApertures,
+  type Detector, type DetectorGroup, type Lattice,
 } from "../state/fourd";
+import { formatValue } from "../format";
 import { RESPONSES, SHAPES, detectorText, segmented, useFourDState } from "../views/FourDView";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { EyeIcon, EyeOffIcon } from "./LayersPanel";
@@ -26,6 +29,11 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   const cal = patternG.calX;
   const [w, h] = [patternG.width, patternG.height];
   const setDetector = (detector: Detector) => patchGroup(group.id, { detector });
+  const vectorsOf = (files: ReturnType<typeof useDatasets.getState>["files"]) =>
+    allDatasets(files).find((x) => x.origin === "disks" && x.parent_id === d.id) ?? null;
+  const hasVectors = useDatasets((s) => !!vectorsOf(s.files));
+  // A digital dark field only once the disks have been found.
+  const ddf = group.source === "vectors" && hasVectors;
   const [disk, setDisk] = useState<Disk | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -58,6 +66,45 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   };
   const setLattice = (p: Partial<Lattice>) => det.lattice && setDetector({ ...det, lattice: { ...det.lattice, ...p } });
 
+  // ---------- apertures from the disks found (the Bragg vectors) ----------
+  // Those at the cursor shown (or the last one used): only once the disks
+  // have been found (Disk detection), as is a digital dark field.
+  const files = useDatasets((s) => s.files);
+  const vectorsDs = vectorsOf(files);
+  const NO_VECTORS = "Find the disks first (Disk detection)";
+  const [brightest, setBrightest] = useState(0);
+  const [withBeam, setWithBeam] = useState(false);
+  const [finding, setFinding] = useState(false);
+  const disksShown = async (): Promise<{ disks: FoundDisk[]; r: number }> => {
+    if (!vectorsDs?.disks) throw new Error(NO_VECTORS);
+    const cursor = st.cursors.find((c) => c.id === st.source) ?? st.cursors.find((c) => c.id === st.lastCursor) ?? st.cursors[0];
+    const res = await fetch(`/api/datasets/${d.id}/4d/disks?x=${cursor.x}&y=${cursor.y}`);
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.detail ?? res.statusText);
+    return { disks: body.disks, r: vectorsDs.disks.template.r };
+  };
+  const fromDisks = async () => {
+    setFinding(true);
+    setError(null);
+    try {
+      const found = await disksShown();
+      let rows = [...found.disks].sort((a, b) => b[2] - a[2]);
+      // The direct beam: the disk on the bright-field disk of the mean pattern.
+      if (!withBeam) {
+        const bfDisk = await findDisk();
+        if (bfDisk) rows = rows.filter(([ky, kx]) => Math.hypot(kx - bfDisk.cx, ky - bfDisk.cy) > bfDisk.r);
+      }
+      if (brightest > 0) rows = rows.slice(0, brightest);
+      if (!rows.length) throw new Error("No disks in the pattern shown");
+      // A digital dark field keeps its match radius; a pixel image takes the disks' size.
+      setDetector({ ...det, apertures: rows.map(([ky, kx]) => ({ x: kx, y: ky })), r: group.source === "vectors" ? det.r : found.r });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setFinding(false);
+    }
+  };
+
   // ---------- the groups ----------
   const add = (made: (groups: DetectorGroup[]) => DetectorGroup[]) => {
     const groups = [...st.groups];
@@ -73,15 +120,10 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
     // Out to the nearest edge of the pattern.
     r: Math.max(found.r + 1, Math.min(found.cx, found.cy, w - found.cx, h - found.cy)),
   });
-  const preset = async (kind: "bf" | "adf" | "both") => {
+  const preset = async (kind: "bf" | "adf") => {
     const found = await findDisk();
     if (!found) return;
-    add((gs) => {
-      const out: DetectorGroup[] = [];
-      if (kind !== "adf") out.push(newGroup(gs, bf(found), "BF"));
-      if (kind !== "bf") out.push(newGroup([...gs, ...out], adf(found), "ADF"));
-      return out;
-    });
+    add((gs) => [kind === "bf" ? newGroup(gs, bf(found), "BF") : newGroup(gs, adf(found), "ADF")]);
   };
   const addItems: MenuItem[] = [
     ...SHAPES.map((s) => ({
@@ -92,22 +134,145 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
     })),
     { label: "BF", title: "A disc on the bright-field disk of the mean pattern", onSelect: () => void preset("bf") },
     { label: "ADF", title: "An annulus from the bright-field disk to the pattern's edge", onSelect: () => void preset("adf") },
-    { label: "BF + ADF", onSelect: () => void preset("both") },
-    {
-      label: `Duplicate ${group.name}`,
-      onSelect: () => add((gs) => [{ ...newGroup(gs, det, `${group.name} copy`, group.response) }]),
-    },
+    { label: `Duplicate ${group.name}`, onSelect: () => duplicate(group) },
   ];
   const remove = (id: string) => {
     const groups = st.groups.filter((g) => g.id !== id);
     if (!groups.length) return;
     patch({ groups, ...(st.selectedGroup === id && { selectedGroup: groups[groups.length - 1].id }) });
   };
+  const duplicate = (g: DetectorGroup) =>
+    add((gs) => [{ ...newGroup(gs, g.detector, `${g.name} copy`, g.response), source: g.source, weight: g.weight }]);
+
+  // ---------- merging: one group's apertures added to another's ----------
+  // Apertures and circles (a circle: one aperture); each keeps its size.
+  const MERGE_ONLY = "Only aperture and circle groups can be merged";
+  const merge = (sourceId: string, targetId: string) => {
+    const src = st.groups.find((g) => g.id === sourceId);
+    const tgt = st.groups.find((g) => g.id === targetId);
+    if (!src || !tgt || src.id === tgt.id) return;
+    const detector = mergeDetectors(tgt.detector, src.detector, w, h);
+    if (!detector) return setError(`${MERGE_ONLY} (${src.name}: ${src.detector.shape}, ${tgt.name}: ${tgt.detector.shape})`);
+    setError(null);
+    const groups = st.groups.filter((g) => g.id !== src.id).map((g) => (g.id === tgt.id ? { ...g, detector } : g));
+    patch({ groups, selectedGroup: tgt.id, shown: "live" });
+  };
+  const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const groupItems = (g: DetectorGroup): MenuItem[] => {
+    const others = st.groups.filter((o) => o.id !== g.id);
+    return [
+      { label: "Rename", onSelect: () => setRenaming(g.id) },
+      ...(others.length
+        ? [
+            { label: `Merge ${g.name} into`, disabled: true },
+            ...others.map((o) => {
+              const ok = mergeable(g.detector) && mergeable(o.detector);
+              return {
+                label: o.name, color: o.color, indent: true, disabled: !ok,
+                title: ok ? `${g.name}'s apertures join ${o.name}'s (each keeps its size); ${g.name} goes` : MERGE_ONLY,
+                onSelect: () => merge(g.id, o.id),
+              };
+            }),
+          ]
+        : []),
+      { label: "Duplicate", onSelect: () => duplicate(g) },
+      { label: `Delete ${g.name}`, danger: true, disabled: st.groups.length < 2, onSelect: () => remove(g.id) },
+    ];
+  };
+  // Drag a group onto another: merged into it.
+  const GROUP_MIME = "application/x-si-viewer-group";
+  const [dropOn, setDropOn] = useState<string | null>(null);
+
+  // ---------- sizes: the radii (or a rectangle's sides), slider and box ----------
+  // The box in the pattern's calibrated units, the slider in pixels. The
+  // slider spans a narrow range for its shape; a size beyond it (typed, or
+  // dragged on the pattern) widens it to a round number past the size. Per
+  // group and control, it only widens (no jump while dragging back down).
+  const ranges = useRef<Record<string, number>>({});
+  const roundUp = (v: number) => {
+    const p = 10 ** Math.floor(Math.log10(v));
+    return ([1, 2, 5, 10].find((m) => m * p >= v) ?? 10) * p;
+  };
+  const sizeControl = (label: string, title: string, px: number, max: number, set: (px: number) => void) => {
+    const key = `${group.id}:${label}`;
+    let top = Math.max(max, ranges.current[key] ?? 0);
+    if (px > top) top = ranges.current[key] = roundUp(px * 1.5);
+    return (
+    <label key={label} title={title}>
+      <span>{label}</span>
+      <span className="size-control">
+        <input
+          type="range"
+          min={0.5}
+          max={top}
+          step={top > 50 ? 1 : 0.5}
+          value={Math.min(px, top)}
+          onChange={(e) => set(Number(e.target.value))}
+        />
+        <input
+          key={px}
+          type="number"
+          className="cell-input"
+          step="any"
+          min={0}
+          defaultValue={formatValue(px * cal.scale)}
+          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+          onBlur={(e) => {
+            const v = Number(e.target.value) / cal.scale;
+            if (Number.isFinite(v) && v > 0 && Math.abs(v - px) > 1e-9) set(v);
+          }}
+        />
+        <span className="muted small">{cal.units || "px"}</span>
+      </span>
+    </label>
+    );
+  };
+  // The sliders' starting ranges (pattern px): apertures sit on single
+  // disks; a disc or annulus reaches a quarter of the pattern; a rectangle half.
+  const small = Math.min(w, h);
+  const apertureMax = roundUp(Math.max(4, small / 16));
+  const discMax = roundUp(small / 4);
+  const sideMax = roundUp(small / 2);
+  const sizeControls = (() => {
+    switch (det.shape) {
+      case "circle":
+        return [sizeControl("Radius", "The disc's radius", det.r, discMax, (r) => setDetector({ ...det, r: Math.max(0.5, r) }))];
+      case "annulus":
+        return [
+          sizeControl("Inner", "The annulus's inner radius", det.r_inner, discMax, (r) =>
+            setDetector({ ...det, r_inner: Math.max(0, Math.min(r, det.r - 0.5)) })),
+          sizeControl("Outer", "The annulus's outer radius", det.r, discMax, (r) =>
+            setDetector({ ...det, r: Math.max(r, det.r_inner + 0.5) })),
+        ];
+      case "apertures":
+        return [sizeControl(
+          "Radius",
+          ddf ? "Every aperture's radius: the match tolerance of the digital dark field" : "Every aperture's radius (merged ones too)",
+          det.r, apertureMax, (r) => setDetector(sizeApertures(det, Math.max(0.5, r))),
+        )];
+      case "rectangle": {
+        const [cx, cy] = [(det.x0 + det.x1) / 2, (det.y0 + det.y1) / 2];
+        return [
+          sizeControl("Width", "The rectangle's width (about its centre)", Math.abs(det.x1 - det.x0), sideMax, (v) =>
+            setDetector({ ...det, x0: cx - Math.max(0.5, v) / 2, x1: cx + Math.max(0.5, v) / 2 })),
+          sizeControl("Height", "The rectangle's height (about its centre)", Math.abs(det.y1 - det.y0), sideMax, (v) =>
+            setDetector({ ...det, y0: cy - Math.max(0.5, v) / 2, y1: cy + Math.max(0.5, v) / 2 })),
+        ];
+      }
+      default:
+        return [];
+    }
+  })();
 
   // ---------- saving ----------
   // A named group ("BF") keeps its name in the image's title.
   const titleOf = (g: DetectorGroup) =>
-    /^Group \d+$/.test(g.name) ? undefined : `${g.name}: ${detectorText(g.detector, cal.scale, cal.units)}${g.response === "sum" ? "" : `, ${g.response}`}`;
+    /^Group \d+$/.test(g.name)
+      ? undefined
+      : `${isDdf(g) ? "DDF " : ""}${g.name}: ${detectorText(g.detector, cal.scale, cal.units)}${g.response === "sum" ? "" : `, ${g.response}`}${isDdf(g) && g.weight === "count" ? " (count)" : ""}`;
+  function isDdf(g: DetectorGroup) {
+    return g.source === "vectors" && hasVectors;
+  }
   const saveGroups = async (groups: DetectorGroup[]) => {
     setSaving(true);
     setError(null);
@@ -117,7 +282,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
         const res = await fetch(`/api/datasets/${d.id}/4d/virtual/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ detector: detectorForRequest(g.detector, w, h), response: g.response, title: titleOf(g) }),
+          body: JSON.stringify({ ...imageRequest(g, w, h, hasVectors), title: titleOf(g) }),
         });
         const body = await res.json();
         if (!res.ok) throw new Error(`${g.name}: ${body.detail ?? res.statusText}`);
@@ -139,9 +304,30 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
         {st.groups.map((g) => (
           <li
             key={g.id}
-            className={`layer-row no-opacity${g.id === group.id ? " active" : ""}${g.visible ? "" : " hidden"}`}
+            className={`layer-row no-opacity${g.id === group.id ? " active" : ""}${g.visible ? "" : " hidden"}${dropOn === g.id ? " drop-target" : ""}`}
             onClick={() => g.id !== group.id && patch({ selectedGroup: g.id, shown: "live" })}
-            title="Click to edit this group; double-click its name to rename it"
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setGroupMenu({ x: e.clientX, y: e.clientY, id: g.id });
+            }}
+            draggable={renaming !== g.id}
+            onDragStart={(e) => {
+              e.dataTransfer.setData(GROUP_MIME, g.id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => {
+              if (!e.dataTransfer.types.includes(GROUP_MIME)) return;
+              e.preventDefault();
+              if (dropOn !== g.id) setDropOn(g.id);
+            }}
+            onDragLeave={() => dropOn === g.id && setDropOn(null)}
+            onDragEnd={() => setDropOn(null)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDropOn(null);
+              merge(e.dataTransfer.getData(GROUP_MIME), g.id);
+            }}
+            title="Click to edit this group; double-click its name (or right-click) to rename it; drag it onto another group to merge them"
           >
             <button
               className="layer-eye"
@@ -162,6 +348,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
                 className="cell-input"
                 autoFocus
                 defaultValue={g.name}
+                onFocus={(e) => e.target.select()}
                 onClick={(e) => e.stopPropagation()}
                 onBlur={(e) => {
                   const name = e.target.value.trim();
@@ -191,6 +378,10 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
           </li>
         ))}
       </ul>
+      {groupMenu && (() => {
+        const g = st.groups.find((x) => x.id === groupMenu.id);
+        return g ? <ContextMenu x={groupMenu.x} y={groupMenu.y} onClose={() => setGroupMenu(null)} items={groupItems(g)} /> : null;
+      })()}
       <div className="virtual-row">
         <button
           className="secondary"
@@ -208,11 +399,55 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
       </div>
 
       <div className="virtual-row">
+        {segmented("Image from", [
+          { id: "pixels", label: "Pixels", title: "The patterns' pixels inside the detector" },
+          {
+            id: "vectors",
+            label: "Bragg vectors",
+            disabled: !vectorsDs,
+            title: vectorsDs
+              ? "Digital dark field: the disks found inside the detector, centred per position when the Centring is on; an aperture's radius is the match tolerance"
+              : `Digital dark field: ${NO_VECTORS}`,
+          },
+        ], ddf ? "vectors" : "pixels", (v) => patchGroup(group.id, { source: v }))}
+      </div>
+      <div className="virtual-row">
         {segmented("Response", RESPONSES, group.response, (v) => patchGroup(group.id, { response: v }))}
+        {ddf && segmented("Of", [
+          { id: "intensity", label: "Intensity", title: "The disks' intensity (their correlation score)" },
+          { id: "count", label: "Count", title: "The number of disks" },
+        ], group.weight ?? "intensity", (v) => patchGroup(group.id, { weight: v }))}
         <span className="muted small fourd-readout">{detectorText(det, cal.scale, cal.units)}</span>
       </div>
+      {sizeControls}
       {det.shape === "apertures" && (
         <>
+          <div className="virtual-row">
+            <button
+              className="secondary"
+              onClick={() => void fromDisks()}
+              disabled={finding || !vectorsDs}
+              title={vectorsDs ? "Place an aperture on each disk found at the cursor shown (or the last one used)" : NO_VECTORS}
+            >
+              {finding ? "Finding…" : "From the disks"}
+            </button>
+            <label className="field" title="Only the brightest disks (0: all)">
+              Brightest
+              <input
+                type="number"
+                className="cell-input"
+                min={0}
+                max={200}
+                step={1}
+                value={brightest}
+                onChange={(e) => setBrightest(Math.max(0, Math.min(200, Math.round(Number(e.target.value) || 0))))}
+              />
+            </label>
+            <label className="q-check-line small" title="Also an aperture on the direct beam">
+              <input type="checkbox" checked={withBeam} onChange={(e) => setWithBeam(e.target.checked)} />
+              Direct beam
+            </label>
+          </div>
           <div className="virtual-row">
             <button className="secondary" onClick={bfRadius} title="Size the apertures as the bright-field disk of the mean pattern">
               BF radius

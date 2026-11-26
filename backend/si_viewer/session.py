@@ -2151,9 +2151,11 @@ class Session:
 
     # ---------- 4D-STEM ----------
 
-    def add_virtual_image(self, cube: Dataset, data: np.ndarray, detector: dict, response: str, title: str) -> Dataset:
+    def add_virtual_image(self, cube: Dataset, data: np.ndarray, detector: dict, response: str, title: str,
+                          made: dict | None = None) -> Dataset:
         """A virtual image of 4D-STEM data (``data``: [y, x]) under it, with
-        the scan's calibration and the detector it was made with; titled
+        the scan's calibration and the detector it was made with (and
+        ``made``: e.g. a digital dark field's source and weight); titled
         ``title`` ("… 2", … if taken). Returns it."""
         import hyperspy.api as hs
 
@@ -2172,7 +2174,7 @@ class Session:
         signal.metadata.General.title = title
         ds = Dataset(
             id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE, origin="virtual",
-            parent_id=cube.id, virtual={"source_id": cube.id, "detector": detector, "response": response},
+            parent_id=cube.id, virtual={"source_id": cube.id, "detector": detector, "response": response, **(made or {})},
         )
         with self._lock:
             self.datasets[ds.id] = ds
@@ -2402,9 +2404,9 @@ class Session:
         cube.calibration = cal
         self.remake_bragg_map(cube)
 
-    def remake_bragg_map(self, cube: Dataset) -> Dataset | None:
-        """Make 4D-STEM data's Bragg vector map again from its disks and its
-        calibration (the parts switched on, or raw when its view is "raw").
+    def vectors_table(self, cube: Dataset) -> np.ndarray | None:
+        """4D-STEM data's Bragg vectors as a table (``processing.disks``'
+        rows of scan y, x, ky, kx, score in pixels), kept until they change;
         None if its disks haven't been found."""
         from .processing import disks
 
@@ -2417,13 +2419,32 @@ class Session:
             table = disks.table_of(vectors.signal)
             vectors.cache.clear()
             vectors.cache[key] = table
+        return table
+
+    def centring_origins(self, cube: Dataset) -> np.ndarray | None:
+        """Each scan position's origin ([y, x, 2] of x, y pattern px; fitted
+        if it was) when the centring is switched on (Info tab), else None."""
+        if not (cube.calibration or {}).get("enabled", {}).get("origin"):
+            return None
+        maps = self.origin_maps_of(cube)
+        origins = maps.get("fitted", maps.get("measured"))
+        if origins is None or origins.shape[:2] != tuple(cube.signal.data.shape[:2]):
+            return None
+        return origins
+
+    def remake_bragg_map(self, cube: Dataset) -> Dataset | None:
+        """Make 4D-STEM data's Bragg vector map again from its disks and its
+        calibration (the parts switched on, or raw when its view is "raw").
+        None if its disks haven't been found."""
+        from .processing import disks
+
+        table = self.vectors_table(cube)
+        if table is None:
+            return None
         cal = cube.calibration or {}
         on = cal.get("enabled", {})
         calibrated = cal.get("bvm", "calibrated") == "calibrated"
-        maps = self.origin_maps_of(cube) if calibrated and on.get("origin") else {}
-        origins = maps.get("fitted", maps.get("measured"))
-        if origins is not None and origins.shape[:2] != tuple(cube.signal.data.shape[:2]):
-            origins = None
+        origins = self.centring_origins(cube) if calibrated else None
         ring = cal.get("ring") if calibrated and on.get("ellipse") else None
         scale = cal.get("scale") if calibrated and on.get("scale") else None
         shape = tuple(cube.signal.data.shape[2:])

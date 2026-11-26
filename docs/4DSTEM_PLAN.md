@@ -540,6 +540,22 @@ grid's *Merged* mode with each group's colour), and presets.
   ones at the cursors.
   No GPU: CUDA (cupy) isn't available on Apple silicon; the correlation step
   could later get an optional Apple-GPU (PyTorch MPS / MLX) backend.
+- **Built (2026-11-26): digital dark field** (py4DSTEM's `DDFimage`,
+  `disks.ddf_image`). Any detector group can image from its *Bragg vectors*
+  instead of its pixels: a disk counts where its position lies inside the
+  detector (an aperture's radius is py4DSTEM's `tol`; a disk in several
+  apertures counts once, unlike py4DSTEM), per position the sum, mean or
+  maximum of the disks' intensity (correlation), or their count. With the
+  Centring switched on, each position's disks are moved by its origin's
+  offset from the mean origin first, so apertures drawn on any pattern match
+  (the ellipse isn't applied: apertures are drawn on the raw pattern). Live
+  in every layout; saved images are titled "DDF …" and record source and
+  weight. *From the disks* (Apertures groups) places an aperture on each disk
+  of the pattern shown (stored at a cursor, else found now with the Disk
+  detection settings), the N brightest, the direct beam left out unless
+  asked. pyxem, by contrast, uses vectors only to place apertures
+  (`get_unique_vectors` → `to_roi` → `get_virtual_image`, integrating the
+  pixels), as the Pixels source does.
 - Still to do: use pyxem's tools on the vectors (clustering, strain,
   indexing); calibrations applied to stored vectors (keep raw positions,
   py4DSTEM-style); Bragg vectors from py4DSTEM files.

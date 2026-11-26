@@ -287,6 +287,57 @@ def calibrated(table: np.ndarray, origins: np.ndarray | None, centre: tuple[floa
     return q * scale
 
 
+def ddf_image(table: np.ndarray, scan_shape: tuple[int, int], detector, response: str = "sum",
+              weight: str = "intensity", origins: np.ndarray | None = None) -> np.ndarray:
+    """A digital dark-field image (py4DSTEM's ``DDFimage``): made from the
+    disks found, not the patterns. A disk counts where its position lies
+    inside ``detector`` (``fourd.Detector``, pattern px; apertures: within
+    an aperture's radius, the match tolerance, of its centre; once, however
+    many apertures it is in). With ``origins`` ([y, x, 2] of x, y px, the
+    centring), each position's disks are moved by its origin's offset from
+    the mean origin first (descan), so apertures drawn on any pattern match.
+    Per scan position: the sum, mean or maximum of the matched disks'
+    intensity (their correlation score), or with ``weight`` "count" their
+    number. float32 [y, x]."""
+    ny, nx = scan_shape
+    out = np.zeros(ny * nx, np.float64)
+    if not len(table):
+        return out.reshape(ny, nx).astype(np.float32)
+    x, y = table[:, 3].astype(float), table[:, 2].astype(float)
+    iy, ix = np.floor(table[:, 0]).astype(int), np.floor(table[:, 1]).astype(int)
+    if origins is not None:
+        ref = np.nanmean(origins.reshape(-1, 2), axis=0)
+        x = x - origins[iy, ix, 0] + ref[0]
+        y = y - origins[iy, ix, 1] + ref[1]
+    d = detector
+    if d.shape == "apertures":
+        inside = np.zeros(len(x), bool)
+        for a in d.apertures:
+            r = d.r if a.r is None else a.r
+            inside |= (x - a.x) ** 2 + (y - a.y) ** 2 <= r**2
+    elif d.shape == "point":
+        inside = (np.floor(x) == np.floor(d.cx)) & (np.floor(y) == np.floor(d.cy))
+    elif d.shape == "rectangle":
+        x0, x1 = sorted((d.x0, d.x1))
+        y0, y1 = sorted((d.y0, d.y1))
+        inside = (x >= x0) & (x < x1) & (y >= y0) & (y < y1)
+    else:
+        r2 = (x - d.cx) ** 2 + (y - d.cy) ** 2
+        inside = (r2 <= d.r**2) & ((r2 >= d.r_inner**2) if d.shape == "annulus" else True)
+    pos = (iy * nx + ix)[inside]
+    ok = (pos >= 0) & (pos < ny * nx)
+    pos = pos[ok]
+    value = np.ones(len(pos)) if weight == "count" else table[inside, 4].astype(float)[ok]
+    if response == "max":
+        np.maximum.at(out, pos, value)
+    else:
+        np.add.at(out, pos, value)
+        if response == "mean":
+            n = np.bincount(pos, minlength=ny * nx)
+            out = np.divide(out, n, out=np.zeros_like(out), where=n > 0)
+    return out.reshape(ny, nx).astype(np.float32)
+
+
 def vector_map_of(q: np.ndarray, weights: np.ndarray, half: float, bins: int) -> np.ndarray:
     """A Bragg vector map of calibrated positions ``q`` ([n, 2] of kx, ky):
     ``bins`` × ``bins`` over −``half`` … ``half`` on both axes, each disk

@@ -27,7 +27,7 @@ import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import {
-  ROW_HEIGHTS, SCAN_MAX, SCAN_MEAN, cursorName, detectorForRequest, groupOf, initialState, latticePoints, moveDetector, newCursor, useFourD,
+  ROW_HEIGHTS, SCAN_MAX, SCAN_MEAN, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, sizeApertures, initialState, latticePoints, moveDetector, newCursor, useFourD,
   type Detector, type DetectorGroup, type FourDState, type Lattice, type OverlayLayer, type PatternSource, type Response, type ScanCursor,
 } from "../state/fourd";
 import { containsPoint, shapeToRegion, useSi, useSiState } from "../state/si";
@@ -234,7 +234,7 @@ function handles(d: Detector): Handle[] {
 /** The clicked aperture under ``p``, if any (its index). */
 function apertureAt(d: Detector, p: Pt): number {
   const list = d.apertures ?? [];
-  for (let i = list.length - 1; i >= 0; i--) if (Math.hypot(p.x - list[i].x, p.y - list[i].y) <= d.r) return i;
+  for (let i = list.length - 1; i >= 0; i--) if (Math.hypot(p.x - list[i].x, p.y - list[i].y) <= apertureR(d, list[i])) return i;
   return -1;
 }
 
@@ -310,7 +310,7 @@ function outline(t: Transform, d: Detector, color: string, width: number): React
     case "apertures":
       return (d.apertures ?? []).map((a, i) => {
         const [x, y] = t.toScreen(a.x, a.y);
-        return <circle key={i} cx={x} cy={y} r={d.r * z} {...stroke} />;
+        return <circle key={i} cx={x} cy={y} r={apertureR(d, a) * z} {...stroke} />;
       });
     default: {
       const [ax, ay] = t.toScreen(Math.floor(d.cx), Math.floor(d.cy));
@@ -330,7 +330,7 @@ function onOutline(d: Detector, p: Pt, tol: number): boolean {
     case "annulus":
       return ring(d.cx, d.cy, d.r) || ring(d.cx, d.cy, d.r_inner);
     case "apertures":
-      return (d.apertures ?? []).some((a) => ring(a.x, a.y, d.r));
+      return (d.apertures ?? []).some((a) => ring(a.x, a.y, apertureR(d, a)));
     case "rectangle": {
       const [x0, x1] = [Math.min(d.x0, d.x1), Math.max(d.x0, d.x1)];
       const [y0, y1] = [Math.min(d.y0, d.y1), Math.max(d.y0, d.y1)];
@@ -397,7 +397,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const overlays = useFourD((s) => s.overlays[ds.id]);
   const setOverlay = useFourD((s) => s.setOverlay);
   const ovOf = (key: string): OverlayLayer => overlays?.[key] ?? {};
-  const detShown = (g: DetectorGroup) => ovOf(`det:${g.id}`).visible ?? true;
+  // A group's detector shows with the group (one eye, in the process and the Layers tab).
+  const detShown = (g: DetectorGroup) => g.visible;
   const detOpacity = (g: DetectorGroup) => ovOf(`det:${g.id}`).opacity ?? 1;
   const cursorShown = (c: ScanCursor) => ovOf(`cursor:${c.id}`).visible ?? true;
 
@@ -408,10 +409,19 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     [files, ds.id],
   );
   const shownSaved = saved.find((d) => d.id === st.shown) ?? null;
-  const sent = detectorForRequest(det, patternG.width, patternG.height);
-  const virtualKey = shownSaved
-    ? `saved|${shownSaved.id}|${dataVersion(shownSaved)}`
-    : `${version}|${JSON.stringify(sent)}|${group.response}`;
+  // A digital dark field is made again when the disks or the centring change.
+  const ddfVersion = useMemo(() => {
+    const all = allDatasets(files);
+    const v = all.find((d) => d.origin === "disks" && d.parent_id === ds.id);
+    const maps = all.filter((d) => d.origin === "origin-map" && d.origin_map?.source_id === ds.id);
+    const centred = ds.calibration?.enabled?.origin ? maps.map((m) => `${m.id}@${dataVersion(m)}`).join() : "off";
+    return `${v ? `${v.id}@${dataVersion(v)}` : "none"}|${centred}`;
+  }, [files, ds]);
+  const keyOf = (req: ReturnType<typeof imageRequest>) =>
+    `${version}|${JSON.stringify(req)}${req.source === "vectors" ? `|${ddfVersion}` : ""}`;
+  const hasVectors = !ddfVersion.startsWith("none|");
+  const sent = imageRequest(group, patternG.width, patternG.height, hasVectors);
+  const virtualKey = shownSaved ? `saved|${shownSaved.id}|${dataVersion(shownSaved)}` : keyOf(sent);
   const grid = st.layout === "grid";
   const list = st.layout === "list";
   // Merge: the visible groups' images as one colour composite, each in its colour.
@@ -421,7 +431,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const virtual = useLatest(virtualKey, () =>
     shownSaved
       ? fetchFrame(shownSaved.id)
-      : post(`/api/datasets/${ds.id}/4d/virtual`, { detector: sent, response: group.response }).then(asFrame),
+      : post(`/api/datasets/${ds.id}/4d/virtual`, sent).then(asFrame),
   !multi);
   const bad = useFourD((s) => s.bad[ds.id]) ?? null;
 
@@ -455,13 +465,13 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // ---------- the grid: a virtual image per visible group, a pattern per cursor and region ----------
   const visibleGroups = st.groups.filter((g) => g.visible);
   const viItems = visibleGroups.map((g) => {
-    const detector = detectorForRequest(g.detector, patternG.width, patternG.height);
-    return { id: g.id, key: `${version}|${JSON.stringify(detector)}|${g.response}`, detector, response: g.response };
+    const req = imageRequest(g, patternG.width, patternG.height, hasVectors);
+    return { id: g.id, key: keyOf(req), req };
   });
   const viSet = useFrameSet(
     viItems,
     (todo) =>
-      post(`/api/datasets/${ds.id}/4d/virtuals`, { items: todo.map((i) => ({ detector: i.detector, response: i.response })) }).then(({ data, shape }) => {
+      post(`/api/datasets/${ds.id}/4d/virtuals`, { items: todo.map((i) => i.req) }).then(({ data, shape }) => {
         const [, h, w] = shape;
         return todo.map((_, k) => ({ data: data.subarray(k * h * w, (k + 1) * h * w), height: h, width: w, bin: 1 }));
       }),
@@ -885,7 +895,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     const marker = d.lattice && latticeMarkers(d.lattice).find((h) => Math.hypot(p.x - h.x, p.y - h.y) <= tol);
     if (marker) return { kind: "marker" as const, id: marker.id };
     const sized = sizedAperture(d);
-    if (sized && Math.hypot(p.x - (sized.x + d.r), p.y - sized.y) <= tol) return { kind: "radius" as const };
+    if (sized && Math.hypot(p.x - (sized.x + apertureR(d, sized)), p.y - sized.y) <= tol) return { kind: "radius" as const };
     const i = apertureAt(d, p);
     return i >= 0 ? { kind: "aperture" as const, i } : null;
   };
@@ -930,7 +940,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         setApertures(aperturesOf(d).map((a, i) => (i === g.i ? { x: g.orig.x + p.x - g.start.x, y: g.orig.y + p.y - g.start.y } : a)));
       } else if (g.kind === "radius") {
         const sized = sizedAperture(d);
-        if (sized) setDetector({ ...d, r: Math.max(0.5, Math.hypot(p.x - sized.x, p.y - sized.y)) });
+        // The handle sizes them all (merged apertures lose their own sizes).
+        if (sized) setDetector(sizeApertures(d, Math.max(0.5, Math.hypot(p.x - sized.x, p.y - sized.y))));
       } else if (d.lattice) {
         const l = d.lattice;
         const lattice = g.id === "o" ? { ...l, ox: p.x, oy: p.y } : g.id === "g1" ? { ...l, g1x: p.x - l.ox, g1y: p.y - l.oy } : { ...l, g2x: p.x - l.ox, g2y: p.y - l.oy };
@@ -1026,10 +1037,10 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         })}
         {placed.map((a, i) => {
           const [x, y] = t.toScreen(a.x, a.y);
-          return <circle key={`p${i}`} cx={x} cy={y} r={d.r * z} fill={group.color} fillOpacity={DETECTOR_FILL} stroke={group.color} strokeWidth={i === selectedAperture ? 2.5 : 1.5} />;
+          return <circle key={`p${i}`} cx={x} cy={y} r={apertureR(d, a) * z} fill={group.color} fillOpacity={DETECTOR_FILL} stroke={group.color} strokeWidth={i === selectedAperture ? 2.5 : 1.5} />;
         })}
         {sized && (() => {
-          const [hx, hy] = t.toScreen(sized.x + d.r, sized.y);
+          const [hx, hy] = t.toScreen(sized.x + apertureR(d, sized), sized.y);
           return <rect x={hx - 3.5} y={hy - 3.5} width={7} height={7} fill={group.color} stroke="#000" strokeWidth={0.75} />;
         })()}
         {d.lattice && (() => {
@@ -1053,7 +1064,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const othersOverlay = (t: Transform): ReactNode => (
     <g className="fourd-overlay" opacity={0.7}>
       {st.groups
-        .filter((g) => g.visible && g.id !== group.id && detShown(g))
+        .filter((g) => g.id !== group.id && detShown(g))
         .map((g) => <g key={g.id} opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1)}</g>)}
     </g>
   );
@@ -1095,7 +1106,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     : source === SCAN_MEAN || source === SCAN_MAX
       ? `${source === SCAN_MAX ? "Max" : "Mean"} pattern over the scan`
       : `Pattern at ${cursorText}`;
-  const liveLabel = `${group.name} · ${det.shape} · ${detectorText(det, patCal.scale, patCal.units)}${group.response === "sum" ? "" : ` · ${group.response}`}`;
+  const liveLabel = `${group.name} · ${sent.source === "vectors" ?`DDF${group.weight === "count" ? " count" : ""} · ` : ""}${det.shape} · ${detectorText(det, patCal.scale, patCal.units)}${group.response === "sum" ? "" : ` · ${group.response}`}`;
   const virtualLabel = shownSaved ? shownSaved.title : liveLabel;
   // The cursors and regions: a list to pick the pattern shown.
   const sources = [
@@ -1345,7 +1356,17 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       ...(vectorsDs || diskOpen ? [disksRow] : []),
     ],
     onActivate: (id) => id.startsWith("fd:det:") && selectGroup(id.slice("fd:det:".length)),
-    onChange: (id, p) => setOverlay(ds.id, markKey(id), p),
+    onChange: (id, p) => {
+      // A group's eye is the group's own (as in the Virtual image process); its opacity is the layer's.
+      if (id.startsWith("fd:det:") && p.visible !== undefined) {
+        const gid = id.slice("fd:det:".length);
+        setScan({ groups: latest.current.groups.map((g) => (g.id === gid ? { ...g, visible: p.visible! } : g)) });
+        const { visible: _, ...rest } = p;
+        if (Object.keys(rest).length) setOverlay(ds.id, markKey(id), rest);
+        return;
+      }
+      setOverlay(ds.id, markKey(id), p);
+    },
     onColour: (id, colour) => {
       if (!id.startsWith("fd:det:")) return setOverlay(ds.id, markKey(id), { colour });
       const gid = id.slice("fd:det:".length);

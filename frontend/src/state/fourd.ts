@@ -12,10 +12,45 @@ export interface Detector {
   y0: number;
   x1: number;
   y1: number;
-  /** Apertures placed by click (shape "apertures"; radius ``r``). */
-  apertures?: { x: number; y: number }[];
+  /** Apertures placed by click (shape "apertures"; radius ``r``, or their
+   * own when kept from a group merged in). */
+  apertures?: Aperture[];
   /** A g-vector array of apertures, added to the clicked ones. */
   lattice?: Lattice | null;
+}
+
+export interface Aperture {
+  x: number;
+  y: number;
+  /** Its own radius (from a group merged in); unset: the detector's. */
+  r?: number;
+}
+
+/** An aperture's radius: its own, else its detector's. */
+export const apertureR = (d: Detector, a: Aperture) => a.r ?? d.r;
+
+/** Every aperture of ``d`` of radius ``r`` (their own sizes dropped). */
+export const sizeApertures = (d: Detector, r: number): Detector => ({
+  ...d, r, apertures: (d.apertures ?? []).map(({ x, y }) => ({ x, y })),
+});
+
+/** Can these detectors be merged (apertures and circles: as apertures)? */
+export const mergeable = (d: Detector) => d.shape === "apertures" || d.shape === "circle";
+
+/** ``target`` with ``source`` merged in: one apertures detector, the
+ * target's radius kept, the source's apertures (its array's too, and a
+ * circle as one aperture) keeping theirs. Null if either can't merge. */
+export function mergeDetectors(target: Detector, source: Detector, w: number, h: number): Detector | null {
+  if (!mergeable(target) || !mergeable(source)) return null;
+  const asPoints = (d: Detector): Aperture[] =>
+    d.shape === "circle"
+      ? [{ x: d.cx, y: d.cy, r: d.r }]
+      : (detectorForRequest(d, w, h).apertures ?? []).map((a) => ({ ...a, r: apertureR(d, a) }));
+  const base: Detector = target.shape === "circle" ? { ...target, shape: "apertures", apertures: [], lattice: target.lattice ?? null } : target;
+  const own = target.shape === "circle" ? [{ x: target.cx, y: target.cy }] : (target.apertures ?? []);
+  // The source's apertures of the target's size need no radius of their own.
+  const added = asPoints(source).map((a) => (a.r === base.r ? { x: a.x, y: a.y } : a));
+  return { ...base, apertures: [...own, ...added] };
 }
 
 /** Apertures at O + (i + s1) g1 + (j + s2) g2, i in −n1…n1 and j in −n2…n2
@@ -93,6 +128,26 @@ export interface DetectorGroup {
   visible: boolean;
   detector: Detector;
   response: Response;
+  /** Its image from the patterns' pixels inside the detector (default), or
+   * from the Bragg vectors: a digital dark field (the disks inside it; an
+   * aperture's radius is then the match tolerance). */
+  source?: ImageSource;
+  /** Digital dark field: the disks' intensity (default), or their number. */
+  weight?: "intensity" | "count";
+}
+
+export type ImageSource = "pixels" | "vectors";
+
+/** What the backend takes to make a group's image (``api/fourd.py``
+ * ``VirtualBody``); from its pixels unless its data has Bragg vectors
+ * (``vectors``). */
+export function imageRequest(g: DetectorGroup, w: number, h: number, vectors: boolean) {
+  return {
+    detector: detectorForRequest(g.detector, w, h),
+    response: g.response,
+    source: (g.source === "vectors" && vectors ? "vectors" : "pixels") as ImageSource,
+    weight: g.weight ?? "intensity",
+  };
 }
 
 export const GROUP_COLORS = ["#ff6bd6", "#5ac8fa", "#ffd60a", "#8cff5a", "#ff9f0a", "#b18cff"];
@@ -220,7 +275,7 @@ export function moveDetector(d: Detector, dx: number, dy: number): Detector {
   return {
     ...d, cx: d.cx + dx, cy: d.cy + dy, x0: d.x0 + dx, x1: d.x1 + dx, y0: d.y0 + dy, y1: d.y1 + dy,
     ...(d.shape === "apertures" && {
-      apertures: (d.apertures ?? []).map((a) => ({ x: a.x + dx, y: a.y + dy })),
+      apertures: (d.apertures ?? []).map((a) => ({ ...a, x: a.x + dx, y: a.y + dy })),
       lattice: d.lattice ? { ...d.lattice, ox: d.lattice.ox + dx, oy: d.lattice.oy + dy } : d.lattice,
     }),
   };

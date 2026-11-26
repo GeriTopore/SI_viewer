@@ -25,6 +25,13 @@ BF_MARGIN = 1.3
 class Point(BaseModel):
     x: float
     y: float
+    # An aperture's own radius (kept from a group merged in); None: the detector's.
+    r: float | None = Field(None, ge=0)
+
+
+def aperture_r(d: "Detector", a: Point) -> float:
+    """An aperture's radius: its own, else its detector's."""
+    return d.r if a.r is None else a.r
 
 
 class Detector(BaseModel):
@@ -69,10 +76,11 @@ def detector_mask(shape: tuple[int, int], d: Detector) -> np.ndarray:
         mask = np.zeros(shape, bool)
         for a in d.apertures:
             # Only the pixels near each aperture are tested.
-            x0, x1 = max(0, int(a.x - d.r) - 1), min(w, int(a.x + d.r) + 2)
-            y0, y1 = max(0, int(a.y - d.r) - 1), min(h, int(a.y + d.r) + 2)
+            r = aperture_r(d, a)
+            x0, x1 = max(0, int(a.x - r) - 1), min(w, int(a.x + r) + 2)
+            y0, y1 = max(0, int(a.y - r) - 1), min(h, int(a.y + r) + 2)
             if x0 < x1 and y0 < y1:
-                mask[y0:y1, x0:x1] |= (xx[y0:y1, x0:x1] - a.x) ** 2 + (yy[y0:y1, x0:x1] - a.y) ** 2 <= d.r**2
+                mask[y0:y1, x0:x1] |= (xx[y0:y1, x0:x1] - a.x) ** 2 + (yy[y0:y1, x0:x1] - a.y) ** 2 <= r**2
         return mask
     if d.shape == "rectangle":
         x0, x1 = sorted((d.x0, d.x1))

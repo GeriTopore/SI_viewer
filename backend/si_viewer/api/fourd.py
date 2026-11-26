@@ -59,14 +59,39 @@ def region_pattern(dataset_id: str, body: RegionBody, request: Request) -> Respo
 class VirtualBody(BaseModel):
     detector: fourd.Detector
     response: fourd.Response = "sum"
+    # "pixels": the patterns' pixels inside the detector; "vectors": a
+    # digital dark field from the Bragg vectors (the disks inside it).
+    source: Literal["pixels", "vectors"] = "pixels"
+    # Digital dark field: the disks' intensity, or their number.
+    weight: Literal["intensity", "count"] = "intensity"
+
+
+def _ddf(request: Request, ds, body: VirtualBody) -> np.ndarray:
+    """A digital dark field (``disks.ddf_image``) from the data's Bragg
+    vectors, centred per position when its centring is switched on."""
+    from ..processing import disks
+
+    session = request.app.state.session
+    table = session.vectors_table(ds)
+    if table is None:
+        raise HTTPException(409, f"The disks of {ds.title} haven't been found (Disk detection)")
+    return disks.ddf_image(table, ds.signal.data.shape[:2], body.detector, body.response, body.weight,
+                           session.centring_origins(ds))
+
+
+def _image(request: Request, ds, body: VirtualBody) -> np.ndarray:
+    if body.source == "vectors":
+        return _ddf(request, ds, body)
+    return fourd.virtual_image(ds.signal.data, body.detector, body.response)
 
 
 @router.post("/api/datasets/{dataset_id}/4d/virtual")
 def virtual(dataset_id: str, body: VirtualBody, request: Request) -> Response:
     """The virtual image through ``detector``: per scan position, the sum,
-    mean or maximum of the pattern pixels inside it."""
+    mean or maximum of the pattern pixels inside it (or, ``source``
+    "vectors", of the disks found inside it: a digital dark field)."""
     ds = _cube(request, dataset_id)
-    image = fourd.virtual_image(ds.signal.data, body.detector, body.response)
+    image = _image(request, ds, body)
     pixels = int(fourd.detector_mask(ds.signal.data.shape[2:], body.detector).sum())
     return array_response(image, pixels=pixels)
 
@@ -78,9 +103,16 @@ class VirtualsBody(BaseModel):
 @router.post("/api/datasets/{dataset_id}/4d/virtuals")
 def virtuals(dataset_id: str, body: VirtualsBody, request: Request) -> Response:
     """The virtual images through several detectors at once, [n, y, x] (in
-    the order given)."""
+    the order given); the pixel ones in one pass over the data."""
     ds = _cube(request, dataset_id)
-    return array_response(fourd.virtual_images(ds.signal.data, [(i.detector, i.response) for i in body.items]))
+    out = np.empty((len(body.items), *ds.signal.data.shape[:2]), np.float32)
+    pixel = [k for k, i in enumerate(body.items) if i.source == "pixels"]
+    if pixel:
+        out[pixel] = fourd.virtual_images(ds.signal.data, [(body.items[k].detector, body.items[k].response) for k in pixel])
+    for k, item in enumerate(body.items):
+        if item.source == "vectors":
+            out[k] = _ddf(request, ds, item)
+    return array_response(out)
 
 
 class SaveBody(VirtualBody):
@@ -93,11 +125,15 @@ def save_virtual(dataset_id: str, body: SaveBody, request: Request) -> dict:
     4D-STEM data. Returns its ``file`` and ``id``."""
     session = request.app.state.session
     ds = _cube(request, dataset_id)
-    image = fourd.virtual_image(ds.signal.data, body.detector, body.response)
+    image = _image(request, ds, body)
     axis = ds.signal.axes_manager.signal_axes[0]
     title = (body.title or "").strip() or fourd.describe(body.detector, body.response, axis.scale, axis.units or "px")
+    ddf = body.source == "vectors"
+    if ddf and not (body.title or "").strip():
+        title = f"DDF {title}" + (" (count)" if body.weight == "count" else "")
     try:
-        made = session.add_virtual_image(ds, image, body.detector.model_dump(), body.response, title)
+        made = session.add_virtual_image(ds, image, body.detector.model_dump(), body.response, title,
+                                         {"source": "vectors", "weight": body.weight} if ddf else None)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"file": session.files[ds.file_id].summary(session), "id": made.id}

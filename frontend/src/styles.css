@@ -29,6 +29,7 @@
   --badge-model: #059669;
   --badge-atomic: #b45309;
   --badge-mask: #6d28d9;
+  --badge-4dstem: #3a0f57;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -519,6 +520,72 @@ button.primary:disabled {
 .badge-model { background: var(--badge-model); }
 .badge-atomic { background: var(--badge-atomic); }
 .badge-mask { background: var(--badge-mask); }
+.badge-4dstem { background: var(--badge-4dstem); }
+
+/* 4D-STEM: the scan and the diffraction pattern side by side. */
+.view.fourd-view { flex-direction: column; gap: 6px; }
+.fourd-topbar { display: flex; align-items: center; gap: 8px; flex: none; }
+.fourd-panes { flex: 1; display: flex; flex-direction: row; gap: 8px; min-height: 0; }
+.fourd-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.fourd-bar { gap: 8px; flex-wrap: wrap; }
+.fourd-footer { display: flex; flex-direction: column; gap: 4px; }
+.fourd-readout { font-variant-numeric: tabular-nums; }
+.fourd-overlay { pointer-events: none; }
+/* List layout: rows of pattern + virtual image, scrolling, the scroll bar always shown. */
+.fourd-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: scroll;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 4px 8px 8px;
+}
+.fourd-list::-webkit-scrollbar { width: 12px; }
+.fourd-list::-webkit-scrollbar-track { background: var(--bg); border-radius: 6px; }
+.fourd-list::-webkit-scrollbar-thumb { background: var(--border); border: 3px solid var(--bg); border-radius: 6px; min-height: 40px; }
+.fourd-list::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.fourd-row {
+  flex: none;
+  height: var(--row-h);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 6px 6px;
+  border: 1px solid var(--border);
+  border-left: 3px solid;
+  border-radius: var(--radius);
+}
+.fourd-row.selected { background: var(--selected); }
+.fourd-row-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fourd-row-name { font-weight: 600; white-space: nowrap; }
+.fourd-row-views { flex: 1; display: flex; gap: 6px; min-height: 0; }
+.fourd-cell { flex: 1 1 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; min-height: 0; }
+.fourd-cell > .contrast-controls { flex: none; min-height: 28px; }
+.fourd-list-bar { padding: 6px 8px; border-top: 1px solid var(--border); }
+.fourd-list-bar input[type="range"] { width: 110px; }
+/* The pattern pane is always on the left, the virtual images on the right. */
+.fourd-pane.fourd-pattern { order: -1; }
+.fourd-source { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; }
+.fourd-source .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fourd-source.muted .label { color: var(--muted); }
+.fourd-swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.group-list { list-style: none; margin: 0; padding: 0; }
+.group-list .cell-input { min-width: 0; }
+.virtual-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.virtual-row .segmented {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
+  flex: 1 1 100%;
+}
+/* Right and bottom borders spill under the clipped container edge, so wrapped rows stay joined. */
+.virtual-row .segmented button,
+.virtual-row .segmented button + button {
+  border-left: none;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 0 -1px -1px 0;
+}
 
 .empty-list {
   margin: 0;
@@ -2832,6 +2899,20 @@ button.primary:disabled {
 
 .context-menu button.indent {
   padding-left: 20px;
+}
+
+.context-menu button.checked {
+  color: var(--accent);
+  background: var(--selected);
+}
+
+.menu-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+  vertical-align: 0;
 }
 
 /* Chain glyph on an EELS spectrum image linked with others */

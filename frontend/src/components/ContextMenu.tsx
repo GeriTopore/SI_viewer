@@ -9,6 +9,10 @@ export interface MenuItem {
   /** An entry under a heading item. */
   indent?: boolean;
   title?: string;
+  /** A colour dot before the label (e.g. a cursor's or region's colour). */
+  color?: string;
+  /** The entry chosen now (a list of choices). */
+  checked?: boolean;
 }
 
 interface Props {
@@ -59,12 +63,14 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
           role="menuitem"
           disabled={item.disabled}
           title={item.title}
-          className={[item.danger && "danger", item.indent && "indent"].filter(Boolean).join(" ") || undefined}
+          aria-checked={item.checked}
+          className={[item.danger && "danger", item.indent && "indent", item.checked && "checked"].filter(Boolean).join(" ") || undefined}
           onClick={() => {
             onClose();
             item.onSelect?.();
           }}
         >
+          {item.color && <span className="menu-swatch" style={{ background: item.color }} />}
           {item.label}
         </button>
       ))}

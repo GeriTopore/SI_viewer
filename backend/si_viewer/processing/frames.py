@@ -45,7 +45,12 @@ def get_frame(
     - spectrum image: the total-counts map
     - line scan: the line-scan image itself, positions (rows) × energy
       channels (columns), spectrally smoothed if asked; ``bin`` is ignored
+    - 4D-STEM: ``"scan"`` (default) the total intensity at every scan
+      position; ``"mean-pattern"`` and ``"max-pattern"`` the mean and
+      maximum diffraction pattern over the scan
     """
+    if ds.kind is DatasetKind.DIFFRACTION4D:
+        return bin2d(_frame_4d(ds, projection or "scan"), bin).astype(np.float32, copy=False)
     f = ds.filter_spec
     if ds.kind is DatasetKind.IMAGE:
         frame = _cached(ds, "image", lambda: _numpy(ds.signal.data))
@@ -79,6 +84,23 @@ def get_frame(
     else:
         raise NotApplicable(f"{ds.kind.value} datasets have no 2D frame")
     return bin2d(frame, bin).astype(np.float32, copy=False)
+
+
+FOUR_D_FRAMES = {
+    # Array axes summed or reduced: the data is [y, x, ky, kx].
+    "scan": lambda data: data.sum(axis=(-2, -1), dtype=np.float64),
+    "mean-pattern": lambda data: data.mean(axis=(0, 1), dtype=np.float64),
+    "max-pattern": lambda data: data.max(axis=(0, 1)),
+}
+
+
+def _frame_4d(ds: Dataset, projection: str) -> np.ndarray:
+    """A 4D-STEM image: the scan's total intensity or the mean or maximum
+    pattern (lazy data is read in full, once: the results are cached)."""
+    reduce = FOUR_D_FRAMES.get(projection)
+    if reduce is None:
+        raise NotApplicable(f"4D-STEM data has no {projection!r} view (one of {', '.join(FOUR_D_FRAMES)})")
+    return _cached(ds, f"4d-{projection}", lambda: _numpy(reduce(ds.signal.data)))
 
 
 def get_spectrum(ds: Dataset) -> np.ndarray:

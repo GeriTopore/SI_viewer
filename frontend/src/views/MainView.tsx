@@ -4,6 +4,7 @@ import { allDatasets, isColumnItem, planeSize, useDatasets } from "../state/data
 import { useAlignment } from "../state/alignment";
 import { isLineScan } from "../format";
 import { AlignmentWorkspace } from "./AlignmentWorkspace";
+import { FourDView } from "./FourDView";
 import { ImagesView } from "./ImagesView";
 import { LineScanView } from "./LineScanView";
 import { SpectrumImageView } from "./SpectrumImageView";
@@ -66,6 +67,8 @@ export function MainView() {
       );
     case "spectrum":
       return <SpectrumView key={key} ds={primary} />;
+    case "4dstem":
+      return <FourDView key={key} ds={primary} />;
     case undefined: {
       const shown = [...images, ...implied];
       if (!shown.length) return <div className="placeholder"><p className="muted">Its image is gone.</p></div>;

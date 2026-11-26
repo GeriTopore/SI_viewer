@@ -5,6 +5,7 @@ export const KIND_LABEL: Record<DatasetKind, string> = {
   stack: "Stack",
   spectrum: "Spectrum",
   spectrum_image: "SI",
+  "4dstem": "4D-STEM",
   other: "Data",
 };
 
@@ -90,7 +91,7 @@ export function kindName(d: DatasetSummary): string {
     ? "LineScan"
     : isInsituView(d)
       ? "in-situ spectrum image"
-      : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", other: "data" } as const)[
+      : ({ image: "image", stack: "stack", spectrum: "spectrum", spectrum_image: "spectrum image", "4dstem": "4D-STEM data", other: "data" } as const)[
           d.kind
         ];
   return t ? t + name : name[0].toUpperCase() + name.slice(1);

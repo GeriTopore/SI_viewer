@@ -186,14 +186,14 @@ export function LayersPanel({
   );
 }
 
-const EyeIcon = () => (
+export const EyeIcon = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
     <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" fill="none" stroke="currentColor" strokeWidth="1.4" />
     <circle cx="8" cy="8" r="2.2" fill="currentColor" />
   </svg>
 );
 
-const EyeOffIcon = () => (
+export const EyeOffIcon = () => (
   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
     <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" fill="none" stroke="currentColor" strokeWidth="1.4" opacity="0.5" />
     <path d="M2 14L14 2" stroke="currentColor" strokeWidth="1.4" />

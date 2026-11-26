@@ -82,6 +82,14 @@ export const SHORTCUTS: { group: string; keys: [string, string][] }[] = [
     ],
   },
   {
+    group: "4D-STEM",
+    keys: [
+      ["W / A / S / D", "Move the virtual detector (Shift: 5 pixels)"],
+      ["← → ↑ ↓", "Scan focused: move the cursor; pattern focused: move the detector (Shift: 5 pixels)"],
+      ["Drag", "Pattern: a handle resizes the detector, inside it moves it, elsewhere puts it there"],
+    ],
+  },
+  {
     group: "Below the image",
     keys: [
       ["T", "Switch between the Spectrum and Line profile tabs"],

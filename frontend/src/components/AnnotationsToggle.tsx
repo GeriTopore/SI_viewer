@@ -1,15 +1,17 @@
 import { useUi } from "../state/ui";
 
 /** Shows or hides the annotations of image view ``view`` (regions, profile
- * lines, FFT boxes; or ``what`` they are); hidden ones are kept. */
-export function AnnotationsToggle({ view, what = "regions, lines and FFT boxes" }: { view: string; what?: string }) {
-  const hidden = useUi((s) => !!s.annotationsHidden[view]);
+ * lines, FFT boxes; or ``what`` they are); hidden ones are kept. Several
+ * views (e.g. a list's patterns and images) are hidden and shown together. */
+export function AnnotationsToggle({ view, what = "regions, lines and FFT boxes" }: { view: string | string[]; what?: string }) {
+  const views = Array.isArray(view) ? view : [view];
+  const hidden = useUi((s) => views.every((v) => !!s.annotationsHidden[v]));
   const setHidden = useUi((s) => s.setAnnotationsHidden);
   return (
     <button
       className={`icon-toggle${hidden ? " active" : ""}`}
       aria-pressed={hidden}
-      onClick={() => setHidden(view, !hidden)}
+      onClick={() => views.forEach((v) => setHidden(v, !hidden))}
       title={hidden ? `Show ${what}` : `Hide ${what}`}
     >
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>

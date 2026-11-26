@@ -321,7 +321,7 @@ export function FileBrowser() {
         ) : (
         <footer className="fb-footer">
           <span className="muted small">
-            .emd, .tif/.tiff, .hspy, .dm3/.dm4, .bcf · ⌘/Ctrl- or Shift-click to select several
+            .emd, .tif/.tiff, .hspy, .dm3/.dm4, .bcf, .h5 (py4DSTEM), .mib, .blo · ⌘/Ctrl- or Shift-click to select several
           </span>
           <div className="fb-actions">
             <button

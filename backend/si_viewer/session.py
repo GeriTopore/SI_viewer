@@ -24,6 +24,8 @@ class DatasetKind(str, Enum):
     STACK = "stack"
     SPECTRUM = "spectrum"
     SPECTRUM_IMAGE = "spectrum_image"
+    # A diffraction pattern at every scan position (two scan, two pattern axes).
+    DIFFRACTION4D = "4dstem"
     OTHER = "other"
 
 
@@ -43,6 +45,8 @@ def classify(signal) -> DatasetKind:
     # A line scan (one navigation axis) is a spectrum image of a single row.
     if sig == 1 and nav in (1, 2):
         return DatasetKind.SPECTRUM_IMAGE
+    if sig == 2 and nav == 2:
+        return DatasetKind.DIFFRACTION4D
     return DatasetKind.OTHER
 
 
@@ -58,6 +62,9 @@ def _is_element_map(signal, kind: DatasetKind) -> bool:
 # Spectrum images up to this size are loaded into RAM when their file opens
 # (raw maps are computed from them straight away); larger ones stay lazy.
 SI_IN_MEMORY_LIMIT = 4 << 30
+# 4D-STEM data up to this size is loaded into RAM when its file opens (every
+# view of it reads the whole cube); larger data stays lazy.
+DIFFRACTION4D_IN_MEMORY_LIMIT = 4 << 30
 
 # What a map made by fitting every pixel can show: the fitted intensity, and
 # the at% composition made from the maps of the fit.
@@ -253,6 +260,9 @@ class Dataset:
     # data; {"source_id", the MaskOptions it was made with, "fraction" of
     # the pixels in it}.
     mask: dict | None = None
+    # A virtual image of 4D-STEM data (origin "virtual", processing/fourd.py):
+    # {"source_id", "detector" (Detector fields, pattern pixels), "response"}.
+    virtual: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -453,6 +463,7 @@ class Dataset:
             "curve_model": self.curve_model,
             "atomic": self.atomic,
             "mask": self.mask,
+            "virtual": self.virtual,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -754,6 +765,9 @@ class Session:
                     if kind is DatasetKind.IMAGE and is_survey(signal) else None,
                 )
             )
+        for d in datasets:
+            if d.kind is DatasetKind.DIFFRACTION4D and d.lazy and d.signal.data.nbytes <= DIFFRACTION4D_IN_MEMORY_LIMIT:
+                d.materialise()
         # Element maps stored by Velox are processed (quantified, often
         # filtered). When the file has an EDS spectrum image, raw net-count maps
         # are computed from its spectrum stream instead.
@@ -2109,6 +2123,55 @@ class Session:
             ids.insert(ids.index(after[-1] if after else image.id) + 1, ds.id)
         return ds
 
+    # ---------- 4D-STEM ----------
+
+    def add_virtual_image(self, cube: Dataset, data: np.ndarray, detector: dict, response: str, title: str) -> Dataset:
+        """A virtual image of 4D-STEM data (``data``: [y, x]) under it, with
+        the scan's calibration and the detector it was made with; titled
+        ``title`` ("… 2", … if taken). Returns it."""
+        import hyperspy.api as hs
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if data.shape != tuple(cube.signal.data.shape[:2]):
+            raise ValueError("The image's shape is not the scan's")
+        signal = hs.signals.Signal2D(np.asarray(data, dtype=np.float32))
+        for axis, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.navigation_axes):
+            axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
+        signal.metadata.set_item("Signal.quantity", "Intensity")
+        with self._lock:
+            taken = {d.title for d in self.datasets.values() if d.parent_id == cube.id}
+        if title in taken:
+            title = next(f"{title} {i}" for i in range(2, 10000) if f"{title} {i}" not in taken)
+        signal.metadata.General.title = title
+        ds = Dataset(
+            id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE, origin="virtual",
+            parent_id=cube.id, virtual={"source_id": cube.id, "detector": detector, "response": response},
+        )
+        with self._lock:
+            self.datasets[ds.id] = ds
+            ids = self.files[cube.file_id].dataset_ids
+            after = [i for i in ids if self.datasets[i].parent_id == cube.id]
+            ids.insert(ids.index(after[-1] if after else cube.id) + 1, ds.id)
+        return ds
+
+    def repair_pixels(self, cube: Dataset, mask: np.ndarray, in_place: bool = True) -> Dataset:
+        """Replace the detector pixels of ``mask`` in every pattern of 4D-STEM
+        data by the mean of the 8 around them: in place (a new revision; the
+        file is unchanged), or as a copy under it (origin "repaired"). Returns
+        the dataset repaired. ValueError for data too big to hold in memory."""
+        from .processing.fourd import repair
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if cube.lazy:
+            if cube.signal.data.nbytes > DIFFRACTION4D_IN_MEMORY_LIMIT:
+                raise ValueError(f"{cube.title} is too big to repair in memory: bin it first")
+            cube.materialise()
+        target = cube if in_place else self.copy_as(cube, "repaired", f"{cube.title} (pixels repaired)")
+        target.replace_signal(repair(target.signal, mask))
+        return target
+
     # ---------- neighbourhoods and bonds (M22e) ----------
 
     def column_positions(self, ds: Dataset) -> tuple[np.ndarray, np.ndarray]:
@@ -3080,8 +3143,8 @@ class Session:
         if not in_place:
             if si.insitu is not None:
                 raise ValueError(f"{si.title} is an in-situ series: it can only be rebinned in place")
-            if si.kind not in (DatasetKind.SPECTRUM_IMAGE, DatasetKind.STACK):
-                raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images and stacks can")
+            if si.kind not in (DatasetKind.SPECTRUM_IMAGE, DatasetKind.STACK, DatasetKind.DIFFRACTION4D):
+                raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images, stacks and 4D-STEM data can")
             sources = [si] + (self._same_scan_linked(si) if with_linked and si.kind is DatasetKind.SPECTRUM_IMAGE else [])
             for d in sources:
                 self._check_factors(d, factors)
@@ -3102,6 +3165,10 @@ class Session:
             if time != 1:
                 raise ValueError(f"{si.title} has no time axis to rebin: only in-situ series do")
             return self._rebin_stack(si, factors)
+        if si.kind is DatasetKind.DIFFRACTION4D:
+            if time != 1:
+                raise ValueError(f"{si.title} has no time axis to rebin: only in-situ series do")
+            return self._rebin_4d(si, factors)
         if si.kind is not DatasetKind.SPECTRUM_IMAGE:
             raise NotRebinnable(f"{si.title} can't be rebinned: only spectrum images and stacks can")
         linked_all = self.linked_of(si) if with_linked else []
@@ -3229,6 +3296,41 @@ class Session:
         stack.materialise()
         _rebin_in_place(stack, scale)
         return [stack]
+
+    def _rebin_4d(self, ds: Dataset, factors: list[int]) -> list[Dataset]:
+        """Rebin 4D-STEM data in place: its scan (Bin R) and its patterns
+        (Bin Q) by integer factors (``factors`` in the summary's axis order:
+        y, x, ky, kx), summing; sizes that don't divide are cropped. Integer
+        data becomes the smallest integer type that holds the sums (HyperSpy
+        alone would make it 64-bit)."""
+        self._check_factors(ds, factors)
+        am = ds.loaded_signal.axes_manager
+        axes = list(am._axes)
+        natural = am._get_axes_in_natural_order()
+        scale = [factors[next(i for i, a in enumerate(axes) if a is ax)] for ax in natural]
+        dtype = ds.signal.data.dtype
+        target = None
+        if dtype.kind in "iu":
+            info = np.iinfo(dtype)
+            most = int(np.prod(factors)) * max(abs(int(info.max)), abs(int(info.min)))
+            target = next(
+                t for t in ((np.uint8, np.uint16, np.uint32, np.uint64) if dtype.kind == "u"
+                            else (np.int8, np.int16, np.int32, np.int64))
+                if np.iinfo(t).max >= most or t in (np.uint64, np.int64)
+            )
+            target = np.dtype(target) if np.dtype(target).itemsize >= dtype.itemsize else dtype
+        # Cropped to whole bins first: HyperSpy interpolates otherwise.
+        signal = ds.signal
+        sizes = [ax.size // f * f for ax, f in zip(natural, scale)]
+        if any(n != ax.size for n, ax in zip(sizes, natural)):
+            nav = len(am.navigation_axes)
+            signal = signal.inav[tuple(slice(0, n) for n in sizes[:nav])].isig[tuple(slice(0, n) for n in sizes[nav:])]
+        rebinned = signal.rebin(scale=scale, dtype=target)
+        if not getattr(rebinned, "_lazy", False) or rebinned.data.nbytes <= DIFFRACTION4D_IN_MEMORY_LIMIT:
+            if getattr(rebinned, "_lazy", False):
+                rebinned.compute(show_progressbar=False)
+        ds.replace_signal(rebinned)
+        return [ds]
 
     @staticmethod
     def _rebin_series(ds: Dataset, scale: list[int], time: int) -> None:

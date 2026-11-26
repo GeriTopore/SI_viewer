@@ -10,6 +10,8 @@ import { followProcess } from "./ProcessLink";
 import { filterLabel, isInsituView, isLineScan } from "../format";
 import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
+import { BadPixelSection } from "./BadPixelSection";
+import { VirtualImageSection } from "./VirtualImageSection";
 import { AlignSection } from "./AlignSection";
 import { BackgroundSection } from "./BackgroundSection";
 import { canRemoveBackground } from "../state/background";
@@ -514,6 +516,16 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       id: "dpc", title: "DPC / iDPC",
       tip: "Differential phase contrast from the four quadrants of a segmented detector, and its integral",
       body: <DpcSection d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "virtual-image", title: "Virtual image",
+      tip: "The virtual detector drawn on the pattern: its shape, response, apertures; keep the image as a dataset",
+      body: <VirtualImageSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "bad-pixels", title: "Bad pixels",
+      tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
+      body: <BadPixelSection key={d.id} d={d} />,
     },
     canRebin(d) && d.origin !== "pca" && {
       id: "rebin", title: "Rebin", tip: "Sum neighbouring pixels or channels; overwrites the loaded data",

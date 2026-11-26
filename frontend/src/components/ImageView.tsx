@@ -117,6 +117,27 @@ interface Props {
   scanFactor?: number;
   /** Receives Fit and 1:1 for this view (null on unmount). */
   controlRef?: { current: ViewControls | null };
+  /** "modifier" (views in a scrolling list, inside an element marked
+   * ``data-wheel-scroll``): the wheel zooms, and with ⌘ (Ctrl elsewhere than
+   * macOS) it scrolls the list instead; a trackpad pinch (Ctrl + wheel on
+   * macOS) zooms. Default "always" (the wheel always zooms). */
+  wheelZoom?: "always" | "modifier";
+}
+
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+
+/** Whether the current wheel gesture scrolls the list (views with
+ * ``wheelZoom`` "modifier"): decided when it starts, from ⌘ (Ctrl off macOS),
+ * and kept until the wheel rests for ``WHEEL_LATCH_MS``, so momentum, or a
+ * key let go partway, doesn't switch a scroll into a zoom or back. Shared by
+ * all views, as a gesture passes from one to the next. */
+const WHEEL_LATCH_MS = 400;
+const wheelLatch = { scrolling: false, last: -Infinity };
+function wheelScrolls(e: WheelEvent): boolean {
+  const now = performance.now();
+  if (now - wheelLatch.last > WHEEL_LATCH_MS) wheelLatch.scrolling = IS_MAC ? e.metaKey : e.ctrlKey;
+  wheelLatch.last = now;
+  return wheelLatch.scrolling;
 }
 
 export interface ViewControls {
@@ -147,7 +168,7 @@ let hoveredView: string | null = null;
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
   interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true, fftView, loupeGroup,
-  readout = true, follow = false, hoverChip = false, onSave, controlRef, scanFactor = 1,
+  readout = true, follow = false, hoverChip = false, onSave, controlRef, scanFactor = 1, wheelZoom = "always",
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -305,6 +326,13 @@ export function ImageView({
     const onWheel = (e: WheelEvent) => {
       if (!view) return;
       e.preventDefault();
+      // In a scrolling list: ⌘ + wheel scrolls it (browsers don't, reliably).
+      if (wheelZoom === "modifier" && wheelScrolls(e)) {
+        const list = el.closest<HTMLElement>("[data-wheel-scroll]");
+        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? (list?.clientHeight ?? 400) : 1;
+        list?.scrollBy({ left: e.deltaX * unit, top: e.deltaY * unit });
+        return;
+      }
       const factor = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0015));
       const zoom = Math.min(MAX_ZOOM, Math.max(fitZoom / 4, view.zoom * factor));
       const p = toData(e.clientX, e.clientY, view);

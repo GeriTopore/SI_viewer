@@ -97,12 +97,18 @@ interface Props {
   empty?: string;
   /** Pointer tool and SVG overlay passed to the image view. */
   interaction?: Interaction;
-  renderOverlay?: (t: Transform) => ReactNode;
+  /** ``key``: the layer of the grid panel drawn on (undefined when merged). */
+  renderOverlay?: (t: Transform, key?: string) => ReactNode;
+  /** Always a grid (no merged choice), e.g. the 4D view's panels. */
+  gridOnly?: boolean;
   /** The line (profile) tool is active. Without this prop the viewer offers
    * its own Pan / Line / FFT tool buttons. */
   lineTool?: boolean;
   /** The FFT box tool is active (with ``lineTool``: the view's own tool bar). */
   fftTool?: boolean;
+  /** Show the viewer's tool buttons (default true). False when another viewer
+   * beside it shows them: the tool chosen there (shared) works here too. */
+  toolButtons?: boolean;
   /** Points picked on the profile plot (spectrum images: their spectrum). */
   profilePick?: boolean;
   /** Cuts a line scan along a profile line (spectrum images). */
@@ -154,6 +160,9 @@ export interface StackLayer {
   version?: string;
   /** Its panel can be closed (deselecting the dataset); default true. */
   removable?: boolean;
+  /** The panel's size and calibration (default: the dataset's image plane),
+   * e.g. a 4D-STEM dataset's virtual image on its scan. */
+  geometry?: ImageGeometry;
 }
 
 /** One layer of the view besides the base: a stack's frame or a map. */
@@ -165,6 +174,7 @@ interface Entry {
   displayKey: string;
   stack: boolean;
   removable: boolean;
+  geometry?: ImageGeometry;
 }
 
 const BASE = "base";
@@ -180,13 +190,36 @@ const TOOL_TITLES = {
   polygon: "Polygon region: click vertices; click the first, double-click or Enter to close",
 } as const;
 
+/** The viewer's image tools (line, FFT box, rectangle, ellipse, polygon):
+ * one is switched on and off; with none on, dragging pans. The tool is
+ * shared by every viewer (e.g. shown once over the 4D view's two panes). */
+export function ImageToolButtons() {
+  const imageTool = useProfiles((s) => s.imageTool);
+  const setImageTool = useProfiles((s) => s.setImageTool);
+  return (
+    <div className="segmented tool-buttons" role="group" aria-label="Image tool">
+      {(["line", "fft", "rect", "ellipse", "polygon"] as const).map((t) => (
+        <button
+          key={t}
+          className={imageTool === t ? "active" : undefined}
+          aria-pressed={imageTool === t}
+          onClick={() => setImageTool(imageTool === t ? "pan" : t)}
+          title={`${TOOL_TITLES[t]} · click again to pan`}
+        >
+          {TOOL_LABELS[t]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** Contrast toolbar + image view composing a base image and highlighted maps. */
 /** Narrowest the navigator's flap gets in focus mode (room for its toolbar). */
 export const FLAP_MIN_W = 220;
 
 export function LayeredViewer({
   viewKey, base, images: maps, items = [], implied = [], stacks = [], geometry, loading, error, children, empty, interaction, renderOverlay,
-  lineTool, fftTool, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], focusCorner, overlays = true, gridContext, requestActive, onActiveChange,
+  gridOnly = false, lineTool, fftTool, toolButtons = true, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], focusCorner, overlays = true, gridContext, requestActive, onActiveChange,
   histogramRegions,
   scanFactor = 1,
 }: Props) {
@@ -204,7 +237,7 @@ export function LayeredViewer({
   const entries: Entry[] = [
     ...stacks.map((s) => ({
       key: s.key ?? s.dataset.id, dataset: s.dataset, label: s.label ?? s.dataset.title, frame: s.frame,
-      displayKey: s.displayKey, stack: true, removable: s.removable ?? true,
+      displayKey: s.displayKey, stack: true, removable: s.removable ?? true, geometry: s.geometry,
     })),
     ...maps.map((d) => ({
       key: d.id, dataset: d, label: d.title, frame: overlayFrames[d.id] ?? null, displayKey: d.id, stack: false,
@@ -294,6 +327,8 @@ export function LayeredViewer({
   const flapOpen = focusNav && bottomTabs.length > 0;
   const setGridMode = useUi((s) => s.setGridMode);
   const sizes = panelLayers.map((l) => {
+    const given = l.key === BASE ? undefined : entryOf(l.key)?.geometry;
+    if (given) return { geometry: given, w: given.width, h: given.height };
     const d = l.key === BASE ? undefined : resolve(l.key)?.dataset;
     if (!d) return { geometry, w: geometry.width, h: geometry.height };
     const [w0, h0] = planeSize(d);
@@ -302,8 +337,8 @@ export function LayeredViewer({
     return { geometry: own, w: own.width, h: own.height };
   });
   const sameSize = sizes.every((z) => z.w === sizes[0].w && z.h === sizes[0].h);
-  const canSwitch = !!gridContext && panelLayers.length > 1 && !(flapOpen && sameSize);
-  const mode: GridMode = canSwitch
+  const canSwitch = !gridOnly && !!gridContext && panelLayers.length > 1 && !(flapOpen && sameSize);
+  const mode: GridMode = gridOnly ? "grid" : canSwitch
     ? !sameSize
       ? "grid"
       : (gridPref ?? (gridContext === "si" ? "merged" : "grid"))
@@ -671,22 +706,7 @@ export function LayeredViewer({
     >
       <div ref={topRef} className={`viewer-top${lifted ? " focus-nav-lifted" : ""}`}>
         <div className="layer-toolbar">
-          {lineTool === undefined && (
-            <div className="segmented tool-buttons" role="group" aria-label="Image tool">
-              {/* A tool is switched on and off; with none on, dragging pans. */}
-              {(["line", "fft", "rect", "ellipse", "polygon"] as const).map((t) => (
-                <button
-                  key={t}
-                  className={imageTool === t ? "active" : undefined}
-                  aria-pressed={imageTool === t}
-                  onClick={() => setImageTool(imageTool === t ? "pan" : t)}
-                  title={`${TOOL_TITLES[t]} · click again to pan`}
-                >
-                  {TOOL_LABELS[t]}
-                </button>
-              ))}
-            </div>
-          )}
+          {lineTool === undefined && toolButtons && <ImageToolButtons />}
           {lineTool === undefined && <AnnotationsToggle view={viewKey} />}
           <LoupeToggle which="viewer" />
           {canSwitch && (
@@ -757,7 +777,7 @@ export function LayeredViewer({
               layoutKey={viewKey}
               renderOverlay={(t, p) => (
                 <>
-                  {renderOverlay?.(t)}
+                  {renderOverlay?.(t, p.layer.key)}
                   {!annotationsHidden && (
                     <>
                       <FftBoxOverlay t={t} view={viewKey} />

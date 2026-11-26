@@ -37,6 +37,10 @@ def _preview_array(dataset: Dataset, siblings: list[Dataset]) -> np.ndarray:
         return filter_image(_to_numpy(data), dataset.filter_spec)
     if dataset.kind is DatasetKind.STACK:
         return filter_image(_to_numpy(data.mean(axis=0)), dataset.filter_spec)
+    if dataset.kind is DatasetKind.DIFFRACTION4D:
+        from .processing.frames import get_frame
+
+        return get_frame(dataset, projection="scan")  # the scan's total intensity
     if dataset.insitu is not None:
         # The frame held (the first one until another is shown): one frame
         # read, never the series.

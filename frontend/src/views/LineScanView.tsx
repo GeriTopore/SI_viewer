@@ -32,7 +32,7 @@ import { normaliseSeries, useNormSettings } from "../state/normalise";
 const scaled = (data: Float32Array, k: number) => (k === 1 ? data : data.map((v) => v * k));
 
 /** log10 of the positive values; zeros and negatives take the smallest. */
-function logFrame(f: Frame): Frame {
+export function logFrame(f: Frame): Frame {
   const data = f.data.map((v) => (v > 0 ? Math.log10(v) : NaN));
   let floor = Infinity;
   for (const v of data) if (v < floor) floor = v;

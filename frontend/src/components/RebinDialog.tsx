@@ -5,9 +5,20 @@ import { formatValue, isLineScan } from "../format";
 import { InPlaceChoice, useInPlace } from "./InPlaceChoice";
 
 /** Spectrum images are rebinned (a 2D one with everything on its scan, a
- * line scan along its positions or times and energy), and stacks (along
- * their frames, y and x). */
-export const canRebin = (d: DatasetSummary) => d.kind === "spectrum_image" || d.kind === "stack";
+ * line scan along its positions or times and energy), stacks (along their
+ * frames, y and x), and 4D-STEM data (its scan: Bin R; its patterns: Bin Q). */
+export const canRebin = (d: DatasetSummary) => d.kind === "spectrum_image" || d.kind === "stack" || d.kind === "4dstem";
+
+/** Indices (in ``d.axes``) of the axes binned together when linked: a scan's
+ * y and x, a stack's frame's; 4D-STEM data also links its pattern's ky and kx. */
+function linkedGroups(d: DatasetSummary): number[][] {
+  if (d.kind === "4dstem") {
+    const of = (nav: boolean) => d.axes.map((a, i) => [a, i] as const).filter(([a]) => a.navigate === nav).map(([, i]) => i);
+    return [of(true), of(false)];
+  }
+  const plane = planeAxes(d);
+  return plane ? [plane] : [];
+}
 
 /** Indices (in ``d.axes``) of the y and x axes: a scan's, or a stack's frame. */
 function planeAxes(d: DatasetSummary): [number, number] | null {
@@ -60,10 +71,11 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
     return () => window.removeEventListener("keydown", onKey);
   }, [busy, onClose]);
 
+  const groups = linkedGroups(d);
   const setFactor = (i: number, raw: string) => {
     const f = Math.max(1, Math.min(d.axes[i].size, Math.round(Number(raw) || 1)));
     setFactors((cur) =>
-      cur.map((v, j) => (j === i || (linked && plane?.includes(i) && plane.includes(j)) ? f : v)),
+      cur.map((v, j) => (j === i || (linked && groups.some((g) => g.includes(i) && g.includes(j))) ? f : v)),
     );
   };
 
@@ -154,7 +166,7 @@ export function RebinDialog({ d, onClose }: { d: DatasetSummary; onClose: () => 
         {plane && (
           <label className="rebin-link">
             <input type="checkbox" checked={linked} onChange={(e) => setLinked(e.target.checked)} />
-            Same factor for x and y
+            {d.kind === "4dstem" ? "Same factor for x and y, and for kx and ky" : "Same factor for x and y"}
           </label>
         )}
         {!series && (

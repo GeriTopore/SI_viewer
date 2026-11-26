@@ -3,7 +3,7 @@
 export type Technique = "EDS" | "EELS";
 export type TechniqueSource = "metadata" | "dm_tag" | "energy_axis" | "user";
 
-export type DatasetKind = "image" | "stack" | "spectrum" | "spectrum_image" | "other";
+export type DatasetKind = "image" | "stack" | "spectrum" | "spectrum_image" | "4dstem" | "other";
 
 /** What an in-situ series dataset holds: one frame, or the mean/sum of frames
  * start…end (0-based, inclusive). */
@@ -466,7 +466,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -486,6 +486,8 @@ export interface DatasetSummary {
   atomic?: AtomicMapInfo | null;
   /** A mask made from an image (origin "mask"): how. */
   mask?: MaskInfo | null;
+  /** A virtual image of 4D-STEM data: the detector (pattern pixels) and response it was made with. */
+  virtual?: { source_id: string; detector: Record<string, number | string>; response: string } | null;
   /** Spectrum image a computed map was made from. */
   parent_id: string | null;
   /** Bumped when the data is recomputed or rebinned. */

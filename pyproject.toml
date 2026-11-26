@@ -12,6 +12,8 @@ dependencies = [
     "hyperspy>=2.4",
     "exspy>=0.3",
     "rosettasciio>=0.14",
+    # 4D-STEM processing (HyperSpy-native).
+    "pyxem>=0.21",
     "sparse",
     "tifffile",
     "pillow",

@@ -2308,7 +2308,8 @@ class Session:
         """Calibrate 4D-STEM data's pattern axes: ``scale`` ``units`` per
         pixel, and 0 at ``ring``'s centre if given (pattern px, pixel i
         spanning [i, i + 1)), else the axes' offsets kept in the new units.
-        The data isn't changed; the calibration is kept in ``calibration``."""
+        The data isn't changed; the calibration is kept in ``calibration``.
+        The ellipse kept (``set_ellipse``) is left as it is."""
         if cube.kind is not DatasetKind.DIFFRACTION4D:
             raise ValueError(f"{cube.title} is not 4D-STEM data")
         if not (np.isfinite(scale) and scale > 0):
@@ -2321,9 +2322,8 @@ class Session:
         ]
         # What was calibrated before (the origin, the switches) is kept.
         old = cube.calibration or {}
-        enabled = {**old.get("enabled", {}), "scale": True, **({"ellipse": True} if ring else {})}
-        cube.calibration = {**old, **info, "scale": float(scale), "units": units, "ring": ring, "zero": zeros,
-                            "enabled": enabled}
+        enabled = {**old.get("enabled", {}), "scale": True}
+        cube.calibration = {**old, **info, "scale": float(scale), "units": units, "zero": zeros, "enabled": enabled}
         self.apply_calibration_axes(cube)
         self.remake_bragg_map(cube)
         return cube
@@ -2399,6 +2399,23 @@ class Session:
         cube.calibration = {**cal, "origin": info, "enabled": {**cal.get("enabled", {}), "origin": True}}
         self.remake_bragg_map(cube)
         return out
+
+    def set_ellipse(self, cube: Dataset, ring: dict) -> None:
+        """Keep ``ring`` (an ellipse fitted: cx, cy, a, b, angle, radius,
+        ellipticity; pattern px) in 4D-STEM data's calibration, with pyxem's
+        affine making it circular, switched on: the Bragg vectors made
+        circular (after the origin, before the rotation and pixel size); the
+        Bragg vector map is made again."""
+        from .processing import calibration
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if not (ring["a"] > 0 and ring["b"] > 0):
+            raise ValueError("The ellipse's axes must be positive")
+        cal = cube.calibration or {}
+        cube.calibration = {**cal, "ring": dict(ring), "affine": calibration.affine_of(ring),
+                            "enabled": {**cal.get("enabled", {}), "ellipse": True}}
+        self.remake_bragg_map(cube)
 
     def set_qr_rotation(self, cube: Dataset, theta: float, mirror: bool, info: dict) -> None:
         """The rotation (degrees) and mirror turning 4D-STEM data's pattern
@@ -2929,73 +2946,6 @@ class Session:
                     # After the inputs in this file, then each after the one before.
                     prev = [m.id for m in made if m.id in ids]
                     at = ids.index(prev[-1]) if prev else max(ids.index(x.id) for x in q.values() if x.id in ids)
-                    ids.insert(at + 1, ds.id)
-            if output == "colour":
-                colour_id = ds.id
-            made.append(ds)
-        return made
-
-    def make_com_dpc(
-        self, cube: Dataset, gx: np.ndarray, gy: np.ndarray, theta: float, mirror: bool, settings: dict,
-    ) -> list[Dataset]:
-        """DPC from 4D-STEM data's centre of mass (``processing.com``): the
-        deflection ``gx``, ``gy`` ([y, x], pattern px) rotated by ``theta``
-        (degrees; ``mirror``: y flipped first) into the scan's frame, as a
-        "DPC (COM)" object under the data (its direction, shown in a circular
-        colour map) with "COM x" and "COM y" under it, and "iCOM" (their
-        integral) under the data, all on the scan's axes and in the pattern's
-        units. Made again in place. ``settings``: how (kept in ``dpc``, with
-        "source": "4d"). Returns them (DPC, x, y, iCOM)."""
-        import hyperspy.api as hs
-
-        from .processing.dpc import integrate, rotate
-
-        if cube.kind is not DatasetKind.DIFFRACTION4D:
-            raise ValueError(f"{cube.title} is not 4D-STEM data")
-        k_axis = cube.signal.axes_manager.signal_axes[0]
-        scale, units = float(k_axis.scale or 1.0), str(k_axis.units or "px")
-        rx, ry = rotate(gx * scale, gy * scale, theta, mirror)
-        rx, ry = rx - rx.mean(), ry - ry.mean()
-        phase = integrate(rx, ry, pad=True)
-        dpc = {**settings, "source": "4d", "cube": cube.id, "theta": float(theta), "mirror": bool(mirror)}
-        with self._lock:
-            # The process's own (not colour images saved from a detector group).
-            earlier = {
-                d.dpc["output"]: d for d in self.datasets.values()
-                if d.origin == "dpc" and d.dpc and d.dpc.get("cube") == cube.id and not d.dpc.get("saved")
-            }
-        made: list[Dataset] = []
-        colour_id = None
-        for output, title, data, quantity in (
-            ("colour", "DPC (COM)", np.degrees(np.arctan2(ry, rx)), "Direction (°)"),
-            # The centre of mass's shift (not segment differences): COM x / y.
-            ("x", "COM x", rx, f"Centre-of-mass shift ({units})"),
-            ("y", "COM y", ry, f"Centre-of-mass shift ({units})"),
-            ("idpc", "iCOM", phase, f"Integrated deflection ({units} px)"),
-        ):
-            signal = hs.signals.Signal2D(np.ascontiguousarray(data, dtype=np.float32))
-            for axis, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.navigation_axes):
-                axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
-            signal.metadata.General.title = title
-            signal.metadata.set_item("Signal.quantity", quantity)
-            parent = colour_id if output in ("x", "y") else cube.id
-            ds = earlier.get(output)
-            if ds is not None:
-                ds.replace_signal(signal)
-                ds.dpc = {**dpc, "output": output}
-                ds.parent_id = parent
-            else:
-                ds = Dataset(
-                    id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE, origin="dpc",
-                    parent_id=parent, dpc={**dpc, "output": output},
-                )
-                with self._lock:
-                    self.datasets[ds.id] = ds
-                    ids = self.files[cube.file_id].dataset_ids
-                    # Under the data (after what is there), each after the one before.
-                    prev = [m.id for m in made if m.id in ids]
-                    after = [i for i in ids if self.datasets[i].parent_id == cube.id]
-                    at = ids.index(prev[-1]) if prev else ids.index(after[-1] if after else cube.id)
                     ids.insert(at + 1, ds.id)
             if output == "colour":
                 colour_id = ds.id

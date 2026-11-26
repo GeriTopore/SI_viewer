@@ -566,6 +566,33 @@ grid's *Merged* mode with each group's colour), and presets.
   magnitude as brightness; two channels per image, `/4d/virtuals` meta
   `channels`); saved, it becomes a DPC object with COM x and COM y under it
   (`dpc.saved`: the process leaves it alone).
+- **Changed (2026-11-26): COM as in the data; the DPC / iCOM process
+  removed; the rotation in Calibration.** The COM, COM x, COM y and iCOM
+  responses are the centre of mass of the pixels inside the detector from
+  the pattern's centre, × the pixel size, with no descan or rotation (iCOM
+  integrates the field less its mean, which would only add a ramp): for the
+  deflection alone, centre the data first (Fix descan) and image it again.
+  The DPC / iCOM process (`/4d/com/run`, `ComSection`, `session.make_com_dpc`)
+  is gone; DPC objects come from saving a COM response. The QR rotation is
+  Calibration's step 2 (on the Bragg vectors): "Find (least curl)"
+  (`/4d/calibration/rotation/find`) takes the deflection step 1 measured
+  (each origin less its descan plane; a whole-scan plane when kept as
+  measured) and finds the rotation and mirror leaving the least curl
+  (`processing.com.rotation_of`); θ and the mirror can be edited, then "Set
+  rotation" keeps them (how "curl" or "entered"). A kept calibration's
+  step and its Info tab row get a green tick.
+- **Calibration steps reordered (2026-11-26)** as applied to the vectors:
+  1 Descan, 2 Ellipticity, 3 QR rotation, 4 Pixel size. The ellipse is kept
+  on its own ("Set ellipse", `/4d/calibration/ellipse`, `session.set_ellipse`,
+  with pyxem's affine); setting the pixel size no longer replaces or clears
+  it. The ring is fitted on the Bragg vector map by default (origin as step
+  1 measured). Why: on sim_Au_data_binned an ellipse fitted on the Max
+  pattern (long axis 46.6°) left the vectors' ellipse (30°, 1.9 %) half
+  corrected, whatever the rotation; fitted on the BVM around the 111 ring
+  (52–60 px) it is 30.5°, and the calibrated ring's two-fold distortion goes
+  (radius spread over 8 sectors 2.45 % → 1.1 %, the rest one-fold: the ring's
+  centre vs the origins). The rotation is rigid and changes no shape (test:
+  no cos 2θ left with origin, ellipse, rotation and pixel size on).
 - Still to do: calibrated units (mrad, E field via `calibrate_electric_shifts`);
   pyxem's phase-retrieval methods (Kottler, Arnison, Frankot) as options.
 
@@ -717,8 +744,8 @@ strain example (known field) and a backend test with a known strain.
 
 **Process tab of 4D data in sections (2026-11-26).** *Pre-processing*:
 Rebin, Remove bad pixels, Background, Fix descan (was Centring), Filters;
-*Analysis*: Virtual imaging (was Virtual image), DPC / iCOM, Disk
-detection. The Bragg vectors keep Calibration and Strain mapping (was
+*Analysis*: Virtual imaging (was Virtual image), Disk detection (DPC /
+iCOM removed later the same day: see phase 4). The Bragg vectors keep Calibration and Strain mapping (was
 Strain). Sections are ordered Pre-processing, Analysis, then the others as
 they come (`ProcessPanel` `SECTION_ORDER`, `bySection`), numbered through.
 Calibration's step 1 and the Info tab's row are now "Descan".

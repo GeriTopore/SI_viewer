@@ -12,7 +12,6 @@ import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
 import { PatternBackgroundSection } from "./PatternBackgroundSection";
-import { ComSection } from "./ComSection";
 import { StrainSection } from "./StrainSection";
 import { CalibrationSection } from "./CalibrationSection";
 import { CentringSection } from "./CentringSection";
@@ -576,18 +575,13 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       body: <CentringSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
-      id: "com", title: "DPC / iCOM", section: "Analysis",
-      tip: "Every pattern's centre of mass, less the descan, rotated into the scan's frame (the least curl): DPC (direction and magnitude) and iCOM",
-      body: <ComSection key={d.id} d={d} />,
-    },
-    d.kind === "4dstem" && {
       id: "disks", title: "Disk detection", section: "Analysis",
       tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
       body: <DiskDetectionSection key={d.id} d={d} />,
     },
     braggCube && {
       id: "calibration", title: "Calibration",
-      tip: "The Bragg vectors' calibration: each position's origin, the pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
+      tip: "The Bragg vectors' calibration: each position's origin (descan), the QR rotation (least curl), the pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
       body: <CalibrationSection key={braggCube.id} d={braggCube} />,
     },
     braggCube && {

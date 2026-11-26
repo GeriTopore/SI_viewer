@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DatasetSummary } from "../api/client";
-import { useCalibration, type FittedRing, type RingSearch } from "../state/calibration";
+import { setQrRotation, useCalibration, type FittedRing, type RingSearch } from "../state/calibration";
+import { done } from "./FourDCalibrationInfo";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { formatValue } from "../format";
 import { segmented } from "../views/FourDView";
@@ -22,14 +23,18 @@ function wavelength(kv: number): number {
   return (h / Math.sqrt(2 * m * e * v * (1 + (e * v) / (2 * m * c * c)))) * 1e10;
 }
 
-/** Calibrating 4D-STEM patterns, step by step: (1) fit a ring of the mean
- * (or max) pattern as an ellipse (the annulus searched and the ellipse drawn
- * on the pattern), (2) the pixel size from that ring and a standard's
- * reflection, from the camera length, or entered, (3) set the pattern axes
- * (the data isn't resampled; the ellipticity is kept for integration). */
+/** Calibrating 4D-STEM patterns, step by step: (1) each position's origin
+ * and the descan, (2) the ellipticity: a ring of the Bragg vector map (or
+ * the max / mean pattern) fitted as an ellipse (the annulus searched and the
+ * ellipse drawn on the pattern), then kept, (3) the QR rotation (the least
+ * curl of the deflection step 1 measured, or entered), (4) the pixel size
+ * from the ring and a standard's reflection, from the camera length, or
+ * entered, setting the pattern axes (the data isn't resampled). The order
+ * applied to the vectors: origin, ellipse, rotation, pixel size. A step's
+ * heading is ticked once its calibration is kept. */
 export function CalibrationSection({ d }: { d: DatasetSummary }) {
   const [w] = [d.signal_shape[0] ?? 128];
-  const search: RingSearch = useCalibration((s) => s.search[d.id]) ?? { r_min: Math.round(w * 0.15), r_max: Math.round(w * 0.25), source: "max" };
+  const search: RingSearch = useCalibration((s) => s.search[d.id]) ?? { r_min: Math.round(w * 0.15), r_max: Math.round(w * 0.25), source: "bvm" };
   const ring = useCalibration((s) => s.ring[d.id] ?? null);
   const { setSearch, setGuess, setRing } = useCalibration.getState();
   const [standards, setStandards] = useState<Record<string, Record<string, number>>>({});
@@ -40,10 +45,15 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
   const [entered, setEntered] = useState<number | "">("");
   const [units, setUnits] = useState<Units>(d.axes.some((a) => a.units === "1/Å" || a.units === "1/A") ? "1/Å" : "1/nm");
   const [centre, setCentre] = useState(true);
-  const [busy, setBusy] = useState<"fit" | "apply" | null>(null);
+  const [busy, setBusy] = useState<"fit" | "ellipse" | "apply" | null>(null);
   const files = useDatasets((s) => s.files);
   const hasVectors = allDatasets(files).some((x) => x.origin === "disks" && x.parent_id === d.id);
   const beamFound = allDatasets(files).some((x) => x.origin === "beam-shift" && x.parent_id === d.id);
+  // The map's origin per position: as step 1 measured it, else the beam found, else the direct beam.
+  const origin = search.origin ?? (d.calibration?.origin ? (d.calibration.origin.source === "beam" ? "beam" : "direct") : beamFound ? "beam" : "direct");
+  const kept = d.calibration?.ring ?? null;
+  // The pixel size from a standard: the ring kept (step 2), else the one just fitted.
+  const sized = kept ?? ring;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -57,7 +67,7 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
     try {
       const r: FittedRing = await post(`/api/datasets/${d.id}/4d/calibration/ring`, {
         options: { r_min: search.r_min, r_max: search.r_max }, source: search.source,
-        origin: { origin: search.origin ?? (beamFound ? "beam" : "direct"), plane: { mode: "plane" } },
+        origin: { origin, plane: { mode: "plane" } },
       });
       setRing(d.id, r);
     } catch (e) {
@@ -68,10 +78,25 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
     }
   };
 
+  const setEllipse = async () => {
+    if (!ring) return;
+    setBusy("ellipse");
+    setError(null);
+    try {
+      const out = await post(`/api/datasets/${d.id}/4d/calibration/ellipse`, { ring });
+      useDatasets.getState().replaceFile(out.file);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const ellipseKept = !!ring && !!kept && (["cx", "cy", "a", "b", "angle"] as const).every((k) => Math.abs(ring[k] - kept[k]) < 1e-6);
+
   const d_spacing = standards[standard]?.[hkl];
   const per = units === "1/nm" ? 10 : 1; // 1/Å → the units chosen
   const scale =
-    how === "ring" ? (ring && d_spacing ? (per / d_spacing) / ring.radius : null)
+    how === "ring" ? (sized && d_spacing ? (per / d_spacing) / sized.radius : null)
       : how === "camera" ? ((camera.pixel * 1e-3) / camera.length / wavelength(camera.kv)) * per
         : entered === "" ? null : entered;
 
@@ -80,7 +105,7 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
     setError(null);
     try {
       const out = await post(`/api/datasets/${d.id}/4d/calibration`, {
-        how, ring, units, centre: centre && !!ring,
+        how, ring: sized, units, centre: centre && !!sized,
         ...(how === "ring" && { d: d_spacing, standard, hkl }),
         ...(how === "camera" && { camera_length: camera.length, pixel: camera.pixel, kv: camera.kv }),
         ...(how === "entered" && { scale: entered }),
@@ -104,7 +129,7 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
   return (
     <section className="q-form virtual-form">
       <OriginStep d={d} hasVectors={hasVectors} beamFound={beamFound} />
-      <h4 className="process-heading">Step 2 · Fit a ring</h4>
+      <h4 className="process-heading">Step 2 · Ellipticity{done(!!kept)}</h4>
       <div className="virtual-row">
         {segmented("Pattern", [
           { id: "max", label: "Max", title: "The maximum over the scan: sparse spots (single crystals)" },
@@ -120,7 +145,7 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
           {segmented("Origin", [
             { id: "beam", label: "Beam", title: "Each position's beam found by Fix descan (step 1), descan plane", disabled: !beamFound },
             { id: "direct", label: "Direct beam", title: "Each position's own direct-beam disk, descan plane" },
-          ], search.origin ?? (beamFound ? "beam" : "direct"), (v) => setSearch(d.id, { ...search, origin: v }))}
+          ], origin, (v) => setSearch(d.id, { ...search, origin: v }))}
         </div>
       )}
       {num("Inner radius (px)", "The annulus searched for the ring, from the bright-field disk's centre", search.r_min, (v) => setSearch(d.id, { ...search, r_min: v }))}
@@ -130,14 +155,20 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
           title="Fit the ring in the annulus as an ellipse: its centre, radius and ellipticity, drawn on the pattern">
           {busy === "fit" ? "Fitting…" : ring ? "Fit again" : "Fit ring"}
         </button>
+        <button className={ellipseKept ? "secondary" : "primary"} disabled={!ring || !!busy || ellipseKept} onClick={() => void setEllipse()}
+          title="Keep the ellipse: the Bragg vectors made circular (before the rotation and pixel size)">
+          {busy === "ellipse" ? "Setting…" : ellipseKept ? "Set" : "Set ellipse"}
+        </button>
       </div>
       {ring && (
         <p className="muted small">
-          r {formatValue(ring.radius)} px · ellipticity {formatValue(ring.ellipticity * 100)} % · fit {formatValue(ring.rms)} px RMS
+          r {formatValue(ring.radius)} px · ellipticity {formatValue(ring.ellipticity * 100)} % · θ {formatValue(Math.round((ring.angle * 180) / Math.PI * 10) / 10)}° · fit {formatValue(ring.rms)} px RMS
         </p>
       )}
 
-      <h4 className="process-heading">Step 3 · Pixel size</h4>
+      <RotationStep d={d} />
+
+      <h4 className="process-heading">Step 4 · Pixel size{done(!!d.calibration?.scale)}</h4>
       <div className="virtual-row">
         {segmented("From", [
           { id: "ring", label: "Standard", title: "The ring is a standard's known reflection" },
@@ -179,12 +210,10 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
       )}
       <div className="virtual-row">
         {segmented("Units", [{ id: "1/nm", label: "1/nm" }, { id: "1/Å", label: "1/Å" }], units, setUnits)}
-        <span className="muted small fourd-readout">{scale ? `${formatValue(scale)} ${units} per px` : how === "ring" ? "Fit a ring first" : ""}</span>
+        <span className="muted small fourd-readout">{scale ? `${formatValue(scale)} ${units} per px` : how === "ring" ? "Fit a ring first (step 2)" : ""}</span>
       </div>
-
-      <h4 className="process-heading">Step 4 · Apply</h4>
       <label className="q-check-line small" title="The pattern axes read 0 at the ring's centre">
-        <input type="checkbox" checked={centre} disabled={!ring} onChange={(e) => setCentre(e.target.checked)} />
+        <input type="checkbox" checked={centre} disabled={!sized} onChange={(e) => setCentre(e.target.checked)} />
         0 at the ring's centre
       </label>
       {d.calibration?.scale && (
@@ -237,7 +266,7 @@ function OriginStep({ d, hasVectors, beamFound }: { d: DatasetSummary; hasVector
 
   return (
     <>
-      <h4 className="process-heading">Step 1 · Descan</h4>
+      <h4 className="process-heading">Step 1 · Descan{done(!!made)}</h4>
       <div className="virtual-row">
         {segmented("Measured from", [
           {
@@ -277,6 +306,86 @@ function OriginStep({ d, hasVectors, beamFound }: { d: DatasetSummary; hasVector
         </p>
       )}
       {error && <p className="field-error">{error}</p>}
+    </>
+  );
+}
+
+interface FoundRotation {
+  theta: number;
+  mirror: boolean;
+  curl_ratio: number;
+}
+
+/** Step 3: the QR rotation (the pattern's axes into the scan's) and
+ * mirror: the ones leaving the least curl in the deflection step 1 measured
+ * (each origin less the descan plane), or entered; kept in the calibration
+ * (switched on), turning the Bragg vectors into the scan's frame. */
+function RotationStep({ d }: { d: DatasetSummary }) {
+  const made = d.calibration?.rotation;
+  const measured = !!d.calibration?.origin;
+  const [theta, setTheta] = useState<number>(made?.theta ?? 0);
+  const [mirror, setMirror] = useState<boolean>(made?.mirror ?? false);
+  const [found, setFound] = useState<FoundRotation | null>(null);
+  const [busy, setBusy] = useState<"find" | "set" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const asFound = !!found && Math.abs(found.theta - theta) < 1e-6 && found.mirror === mirror;
+  const kept = !!made && Math.abs(made.theta - (((theta % 360) + 360) % 360)) < 1e-6 && made.mirror === mirror;
+
+  const find = async () => {
+    setBusy("find");
+    setError(null);
+    try {
+      const r: FoundRotation = await post(`/api/datasets/${d.id}/4d/calibration/rotation/find`, {});
+      setFound(r);
+      setTheta(r.theta);
+      setMirror(r.mirror);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const keep = async () => {
+    setBusy("set");
+    setError(null);
+    try {
+      await setQrRotation(d.id, { theta, mirror, how: asFound ? "curl" : "entered", ...(asFound ? { curl_ratio: found!.curl_ratio } : {}) });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <>
+      <h4 className="process-heading">Step 3 · QR rotation{done(!!made)}</h4>
+      <label title="The rotation of the pattern's axes into the scan's (degrees, counter-clockwise)">
+        <span>θ (°)</span>
+        <input type="number" min={-360} max={360} step={0.5} value={Math.round(theta * 100) / 100}
+          onChange={(e) => e.target.value !== "" && setTheta(Number(e.target.value))} />
+      </label>
+      <label className="q-check-line small" title="The pattern's y axis flipped first">
+        <input type="checkbox" checked={mirror} onChange={(e) => setMirror(e.target.checked)} />
+        Mirror
+      </label>
+      {found && (
+        <p className="muted small">
+          Least curl at {formatValue(Math.round(found.theta * 100) / 100)}°{found.mirror ? ", mirrored" : ""} · curl left {formatValue(found.curl_ratio * 100)} %
+        </p>
+      )}
+      {error && <p className="field-error">{error}</p>}
+      <div className="process-actions">
+        <button className="secondary" disabled={!measured || !!busy} onClick={() => void find()}
+          title={measured ? "The rotation and mirror leaving the least curl in the deflection: each origin less the descan plane (step 1)" : "Measure the origin first (step 1)"}>
+          {busy === "find" ? "Finding…" : "Find"}
+        </button>
+        <button className={kept ? "secondary" : "primary"} disabled={!!busy || kept} onClick={() => void keep()}
+          title="Keep θ and the mirror as the QR rotation: the Bragg vectors turned into the scan's frame">
+          {busy === "set" ? "Setting…" : kept ? "Set" : "Set rotation"}
+        </button>
+      </div>
     </>
   );
 }

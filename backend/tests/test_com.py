@@ -1,4 +1,5 @@
-"""DPC and iCOM from 4D-STEM data's centre of mass."""
+"""Centre-of-mass virtual images of 4D-STEM data (as in the data), and the QR
+rotation from the least curl of the Calibration's descan step."""
 
 import math
 import time
@@ -6,7 +7,7 @@ import time
 import numpy as np
 
 from si_viewer.processing import com
-from si_viewer.processing.centring import PlaneOptions
+from si_viewer.processing.centring import PlaneOptions, plane
 
 NY, NX, K = 32, 32, 32
 THETA = 30.0  # the detector's rotation from the scan (degrees)
@@ -33,6 +34,18 @@ def _corr(a, b):
     return np.corrcoef(detrend(a), detrend(b))[0, 1]
 
 
+def _beam():
+    """Where ``_cube`` draws the beam ([y, x] each, pattern px)."""
+    phi = _potential()
+    gy, gx = np.gradient(phi)
+    gx, gy = 6 * gx, 6 * gy
+    t = math.radians(-THETA)
+    iy, ix = np.mgrid[0:NY, 0:NX]
+    bx = K / 2 + math.cos(t) * gx - math.sin(t) * gy + 0.04 * ix
+    by = K / 2 + math.sin(t) * gx + math.cos(t) * gy - 0.03 * iy
+    return bx, by
+
+
 def _cube():
     """A Gaussian beam deflected by the gradient of ``_potential`` (in the
     detector's frame: the scan's field rotated by −THETA), on a descan plane."""
@@ -49,22 +62,17 @@ def _cube():
     return (1000 * cube + 1).astype(np.float32), phi
 
 
-def test_deflection_rotation_and_icom():
+def test_rotation_of_the_deflection():
+    """The beam's positions less the descan plane fitted to them, turned by
+    the rotation leaving the least curl, integrate to the potential."""
     from si_viewer.processing.dpc import integrate, rotate
 
-    cube, phi = _cube()
-    iy, ix = np.mgrid[0:NY, 0:NX]
-    # The centring's shifts (what moves the beam to the centre) of the beam drawn.
-    phi_g = np.gradient(phi)
-    t = math.radians(-THETA)
-    gx, gy = 6 * phi_g[1], 6 * phi_g[0]
-    beam_x = K / 2 + math.cos(t) * gx - math.sin(t) * gy + 0.04 * ix
-    beam_y = K / 2 + math.sin(t) * gx + math.cos(t) * gy - 0.03 * iy
-    shifts = np.stack([K / 2 - beam_x, K / 2 - beam_y], axis=-1)
-    dx, dy = com.deflection(shifts, PlaneOptions(mode="plane"))
-    found = com.rotation_of(dx, dy)
+    _, phi = _cube()
+    beam = np.stack(_beam(), axis=-1)
+    d = beam - plane(beam.astype(np.float32), PlaneOptions(mode="plane"))
+    found = com.rotation_of(d[..., 0], d[..., 1])
     assert not found["mirror"] and abs((found["theta"] - THETA + 180) % 360 - 180) < 3
-    phase = integrate(*rotate(dx, dy, found["theta"], found["mirror"]), pad=True)
+    phase = integrate(*rotate(d[..., 0], d[..., 1], found["theta"], found["mirror"]), pad=True)
     assert _corr(phase, phi) > 0.95
 
 
@@ -77,92 +85,74 @@ def _wait(client, job):
     raise AssertionError("job did not finish")
 
 
-def test_com_dpc_through_the_api(tmp_path):
+def _open(tmp_path, cube):
     from fastapi.testclient import TestClient
     from test_4dstem import _write_emdfile
 
     from si_viewer.app import create_app
     from si_viewer.session import Session
 
-    cube, phi = _cube()
     path = tmp_path / "com.h5"
     _write_emdfile(path, cube, extra_2d=False)
     session = Session()
     client = TestClient(create_app(session))
     cube_id = client.post("/api/files", json={"path": str(path)}).json()["datasets"][0]["id"]
-    url = f"/api/datasets/{cube_id}/4d/com/run"
-
-    opts = {"beam": {"method": "center_of_mass", "threshold": 0}, "plane": {"mode": "plane"}}
-    job = _wait(client, client.post(url, json={"options": opts}).json())
-    assert job["status"] == "done", job["error"]
-    r = job["result"]
-    assert abs((r["theta"] - THETA + 180) % 360 - 180) < 3 and r["mirror"] is False
-    made = {session.get_dataset(i).dpc["output"]: session.get_dataset(i) for i in r["ids"]}
-    assert set(made) == {"colour", "x", "y", "idpc"}
-    colour = made["colour"]
-    assert colour.parent_id == cube_id and made["idpc"].parent_id == cube_id
-    assert made["x"].parent_id == colour.id and made["y"].parent_id == colour.id
-    assert made["idpc"].title == "iCOM" and colour.dpc["source"] == "4d"
-    assert (made["x"].title, made["y"].title) == ("COM x", "COM y")
-    icom = np.asarray(made["idpc"].signal.data)
-    assert icom.shape == (NY, NX) and _corr(icom, phi) > 0.95
-    # Shown as a DPC object: direction and magnitude.
-    frame = client.get(f"/api/datasets/{colour.id}/dpc/frame")
-    assert frame.status_code == 200 and frame.headers["X-Array-Shape"] == f"2,{NY},{NX}"
-    # The quadrant DPC process doesn't take it.
-    assert client.get(f"/api/datasets/{colour.id}/dpc").status_code == 409
-
-    # Again with a rotation given: made in place (the same objects).
-    opts["rotation"] = {"auto": False, "theta": THETA + 180, "mirror": False}
-    job = _wait(client, client.post(url, json={"options": opts}).json())
-    assert job["status"] == "done" and set(job["result"]["ids"]) == set(r["ids"])
-    flipped = np.asarray(session.get_dataset(made["idpc"].id).signal.data)
-    assert _corr(flipped, phi) < -0.95  # 180° off: the potential inverted
-    # The blurred maximum is not a centre of mass.
-    assert client.post(url, json={"options": {"beam": {"method": "blur"}}}).status_code == 422
+    return session, client, cube_id
 
 
-def test_live_com_through_a_detector(tmp_path):
-    """COM x / y and iCOM as a virtual detector's responses: the centre of
-    mass of the pixels inside it, as the DPC / iCOM process."""
-    from fastapi.testclient import TestClient
-    from test_4dstem import _write_emdfile
+def test_qr_rotation_from_the_calibration(tmp_path):
+    """Calibration step 2: the rotation leaving the least curl in the descan
+    step's deflection (origins less their plane), then kept as the QR rotation."""
+    cube, _ = _cube()
+    session, client, cube_id = _open(tmp_path, cube)
+    url = f"/api/datasets/{cube_id}/4d"
+    # Nothing measured yet.
+    assert client.post(f"{url}/calibration/rotation/find").status_code == 409
+    job = client.post(f"{url}/beam/find", json={"options": {"method": "center_of_mass", "threshold": 0}}).json()
+    assert _wait(client, job)["status"] == "done"
+    r = client.post(f"{url}/calibration/origin", json={"source": "beam", "plane": {"mode": "plane"}})
+    assert r.status_code == 200, r.text
+    found = client.post(f"{url}/calibration/rotation/find")
+    assert found.status_code == 200, found.text
+    f = found.json()
+    assert abs((f["theta"] - THETA + 180) % 360 - 180) < 3 and f["mirror"] is False and 0 <= f["curl_ratio"] < 0.5
+    kept = client.post(f"{url}/calibration/rotation", json={"theta": f["theta"], "mirror": f["mirror"], "how": "curl", "curl_ratio": f["curl_ratio"]})
+    assert kept.status_code == 200
+    rotation = session.get_dataset(cube_id).calibration["rotation"]
+    assert rotation["how"] == "curl" and abs(rotation["theta"] - f["theta"]) < 1e-9
+    # The DPC / iCOM process is gone.
+    assert client.post(f"{url}/com/run", json={}).status_code in (404, 405)
 
-    from si_viewer.app import create_app
+
+def test_live_com_as_in_the_data(tmp_path):
+    """COM x / y and iCOM through a detector: the centre of mass of the
+    pixels inside it from the pattern's centre, with no descan or rotation."""
     from si_viewer.processing import fourd
-    from si_viewer.session import Session
+    from si_viewer.processing.dpc import integrate
 
-    cube, phi = _cube()
+    cube, _ = _cube()
+    bx, by = _beam()
     # A disc around the beam's path (it moves less than 3 px), for the whole pattern.
     disc = fourd.Detector(shape="circle", cx=K / 2, cy=K / 2, r=12)
-    live = com.ComLive(plane=PlaneOptions(mode="plane"))
-    x, y, icom = fourd.virtual_images(cube, [(disc, "com_x", live), (disc, "com_y", live), (disc, "icom", live)])
-    assert _corr(icom, phi) > 0.95
-    # Rotated into the scan's frame: x and y are the potential's gradient.
-    gy, gx = np.gradient(phi)
-    assert np.corrcoef(x.ravel(), gx.ravel())[0, 1] > 0.9 and np.corrcoef(y.ravel(), gy.ravel())[0, 1] > 0.9
-    # A rotation given: 180° off inverts it.
-    turned = com.ComLive(plane=PlaneOptions(mode="plane"), rotation=com.Rotation(auto=False, theta=THETA + 180))
-    assert _corr(fourd.virtual_image(cube, disc, "icom", turned), phi) < -0.95
+    x, y, icom = fourd.virtual_images(cube, [(disc, "com_x"), (disc, "com_y"), (disc, "icom")])
+    # The beam where it is drawn (the flat background pulls it ~2 % toward the centre).
+    assert np.abs(x - (bx - K / 2)).max() < 0.1 and np.abs(y - (by - K / 2)).max() < 0.1
+    np.testing.assert_allclose(icom, integrate(x - x.mean(), y - y.mean(), pad=True), rtol=1e-4, atol=1e-5)
 
-    path = tmp_path / "live.h5"
-    _write_emdfile(path, cube, extra_2d=False)
-    session = Session()
-    client = TestClient(create_app(session))
-    cube_id = client.post("/api/files", json={"path": str(path)}).json()["datasets"][0]["id"]
+    session, client, cube_id = _open(tmp_path, cube)
     url = f"/api/datasets/{cube_id}/4d"
     detector = {"shape": "circle", "cx": K / 2, "cy": K / 2, "r": 12}
-    r = client.post(f"{url}/virtual", json={"detector": detector, "response": "icom", "com": {"plane": {"mode": "plane"}}})
+    r = client.post(f"{url}/virtual", json={"detector": detector, "response": "com_x"})
     assert r.status_code == 200
     got = np.frombuffer(r.content, np.float32).reshape(NY, NX)
     # In the pattern's units: its pixel size × the pixels.
     scale = session.get_dataset(cube_id).signal.axes_manager.signal_axes[0].scale
-    np.testing.assert_allclose(got, icom * scale, rtol=1e-3, atol=1e-5)
+    np.testing.assert_allclose(got, x * scale, rtol=1e-3, atol=1e-5)
     two = client.post(f"{url}/virtuals", json={"items": [{"detector": detector, "response": "com_x"}, {"detector": detector}]})
     assert two.status_code == 200 and two.headers["X-Array-Shape"] == f"2,{NY},{NX}"
     saved = client.post(f"{url}/virtual/save", json={"detector": detector, "response": "icom"}).json()
     made = session.get_dataset(saved["id"])
-    assert made.title.endswith("iCOM") and made.virtual["com"]["plane"]["mode"] == "plane"
+    assert made.title.endswith("iCOM")
 
 
 def test_live_com_colour(tmp_path):
@@ -179,8 +169,7 @@ def test_live_com_colour(tmp_path):
 
     cube, _ = _cube()
     disc = fourd.Detector(shape="circle", cx=K / 2, cy=K / 2, r=12)
-    live = com.ComLive(plane=PlaneOptions(mode="plane"))
-    colour, x, y = fourd.virtual_images(cube, [(disc, "com", live), (disc, "com_x", live), (disc, "com_y", live)])
+    colour, x, y = fourd.virtual_images(cube, [(disc, "com"), (disc, "com_x"), (disc, "com_y")])
     assert colour.shape == (2, NY, NX)
     np.testing.assert_allclose(colour[1], np.hypot(x, y), rtol=1e-4, atol=1e-6)
     np.testing.assert_allclose(colour[0], np.degrees(np.arctan2(y, x)), atol=1e-3)

@@ -17,6 +17,9 @@ export function fourDOf(d: DatasetSummary, all: DatasetSummary[]): DatasetSummar
   return null;
 }
 
+/** A green tick after a calibration's name, once it is done. */
+export const done = (yes: boolean) => (yes ? <span className="calibration-done" title="Done" aria-label="done"> ✓</span> : null);
+
 const deg = (rad: number) => formatValue((rad * 180) / Math.PI);
 
 /** 4D-STEM data's calibration, as py4DSTEM keeps it: the Q (pattern) and R
@@ -60,7 +63,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
     <section className="calibration-info">
       <h4 className="process-heading">Calibration</h4>
       <dl className="props">
-        <dt>Q pixel size</dt>
+        <dt>Q pixel size{done(!!cal.scale)}</dt>
         <dd>
           {sw("scale", !!cal.scale, "The pattern's pixel size applied to the Bragg vectors")}
           {cal.scale ? (
@@ -76,7 +79,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
           {scan.length ? `${formatValue(scan[0].scale)} ${scan[0].units || "px"}` : "–"}
           <span className="muted"> · the scan's axes</span>
         </dd>
-        <dt>Descan</dt>
+        <dt>Descan{done(!!cal.origin)}</dt>
         <dd>
           {sw("origin", !!cal.origin, "Subtract each scan position's fitted origin from its Bragg vectors (descan)")}
           {cal.origin ? (
@@ -87,7 +90,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
             </>
           ) : <span className="muted">not measured (Bragg vectors: Calibration)</span>}
         </dd>
-        <dt>Ellipse</dt>
+        <dt>Ellipse{done(!!cal.ring)}</dt>
         <dd>
           {sw("ellipse", !!cal.ring, "The ring's ellipse made circular in the Bragg vectors")}
           {cal.ring ? (
@@ -97,18 +100,18 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
             </>
           ) : <span className="muted">not fitted (Bragg vectors: Calibration)</span>}
         </dd>
-        <dt>QR rotation</dt>
+        <dt>QR rotation{done(!!cal.rotation)}</dt>
         <dd>
           {sw("rotation", !!cal.rotation, "The pattern's axes turned into the scan's in the Bragg vectors")}
           {cal.rotation ? (
             <>
-              {formatValue(cal.rotation.theta)}°{cal.rotation.mirror ? ", mirrored" : ""}
+              {formatValue(Math.round(cal.rotation.theta * 100) / 100)}°{cal.rotation.mirror ? ", mirrored" : ""}
               <span className="muted">
-                {" "}· {cal.rotation.how === "com" ? "least curl (DPC / iCOM)" : "entered (DPC / iCOM)"}
+                {" "}· {cal.rotation.how === "entered" ? "entered" : "least curl"}
                 {cal.rotation.curl_ratio != null && `, curl left ${formatValue(cal.rotation.curl_ratio * 100)} %`}
               </span>
             </>
-          ) : <span className="muted">not measured (DPC / iCOM process)</span>}
+          ) : <span className="muted">not measured (Bragg vectors: Calibration)</span>}
         </dd>
       </dl>
       {error && <p className="field-error">{error}</p>}

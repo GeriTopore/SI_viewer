@@ -14,7 +14,6 @@ from ..processing import fourd
 from ..processing.pattern_background import PatternBackgroundOptions
 from ..processing.calibration import RingOptions
 from ..processing.centring import BeamOptions, PlaneOptions
-from ..processing.com import ComLive, ComOptions
 from ..processing.disks import DiskOptions
 from ..processing.strain import BvmPeakOptions, FitOptions, StrainAxes, StrainLattice
 from .. import session as _session
@@ -316,8 +315,6 @@ class VirtualBody(BaseModel):
     source: Literal["pixels", "vectors"] = "pixels"
     # Digital dark field: the disks' intensity, or their number.
     weight: Literal["intensity", "count"] = "intensity"
-    # Centre-of-mass responses: the descan and rotation.
-    com: ComLive = ComLive()
 
 
 def _scale(ds) -> float:
@@ -343,7 +340,7 @@ def _ddf(request: Request, ds, body: VirtualBody) -> np.ndarray:
 def _image(request: Request, ds, body: VirtualBody) -> np.ndarray:
     if body.source == "vectors":
         return _ddf(request, ds, body)
-    return fourd.virtual_image(ds.signal.data, body.detector, body.response, body.com, _scale(ds))
+    return fourd.virtual_image(ds.signal.data, body.detector, body.response, _scale(ds))
 
 
 @router.post("/api/datasets/{dataset_id}/4d/virtual")
@@ -372,7 +369,7 @@ def virtuals(dataset_id: str, body: VirtualsBody, request: Request) -> Response:
     pixel = [k for k, i in enumerate(body.items) if i.source == "pixels"]
     if pixel:
         made = fourd.virtual_images(
-            ds.signal.data, [(body.items[k].detector, body.items[k].response, body.items[k].com) for k in pixel], _scale(ds),
+            ds.signal.data, [(body.items[k].detector, body.items[k].response) for k in pixel], _scale(ds),
         )
         for k, image in zip(pixel, made):
             out[k] = image
@@ -397,17 +394,16 @@ def save_virtual(dataset_id: str, body: SaveBody, request: Request) -> dict:
     axis = ds.signal.axes_manager.signal_axes[0]
     if body.response == "com" and body.source == "pixels":
         # A colour image: a DPC object (direction, magnitude) with its COM x and y under it.
-        rx, ry = fourd.com_field(ds.signal.data, body.detector, body.com, _scale(ds))
+        rx, ry = fourd.com_field(ds.signal.data, body.detector, _scale(ds))
         title = (body.title or "").strip() or fourd.describe(body.detector, "com", axis.scale, axis.units or "px")
-        made = session.add_com_colour(ds, rx, ry, title, {"detector": body.detector.model_dump(), "com": body.com.model_dump()})
+        made = session.add_com_colour(ds, rx, ry, title, {"detector": body.detector.model_dump()})
         return {"file": session.files[ds.file_id].summary(session), "id": made.id}
     image = _image(request, ds, body)
     title = (body.title or "").strip() or fourd.describe(body.detector, body.response, axis.scale, axis.units or "px")
     ddf = body.source == "vectors"
     if ddf and not (body.title or "").strip():
         title = f"DDF {title}" + (" (count)" if body.weight == "count" else "")
-    how = ({"source": "vectors", "weight": body.weight} if ddf
-           else {"com": body.com.model_dump()} if body.response in fourd.COM_RESPONSES else None)
+    how = {"source": "vectors", "weight": body.weight} if ddf else None
     try:
         made = session.add_virtual_image(ds, image, body.detector.model_dump(), body.response, title, how)
     except ValueError as e:
@@ -782,59 +778,6 @@ def beam_centre(dataset_id: str, body: CentreBody, request: Request) -> dict:
     return request.app.state.jobs.submit("centre", f"Centring {ds.title}", run).summary()
 
 
-# ---------- DPC from the centre of mass ----------
-
-
-class ComBody(BaseModel):
-    options: ComOptions = ComOptions()
-
-
-@router.post("/api/datasets/{dataset_id}/4d/com/run")
-def com_run(dataset_id: str, body: ComBody, request: Request) -> dict:
-    """DPC and iCOM from every pattern's centre of mass (as a job): the
-    deflection (less the descan plane) rotated into the scan's frame (the
-    rotation found by the least curl, or as given), kept as "DPC (COM)" (DPC
-    x and y under it) and "iCOM" under the data. The centres of mass are kept
-    for the same data and beam settings, so changing the descan or rotation
-    is quick. The job's result is ``{file, ids, theta, mirror, curl_ratio}``."""
-    import json
-
-    from ..processing import centring, com
-    from ..processing.frames import get_frame
-
-    session = request.app.state.session
-    ds = _cube(request, dataset_id)
-    opts = body.options
-    if opts.beam.method != "center_of_mass":
-        raise HTTPException(422, "DPC needs the centre of mass (sub-pixel), not the blurred maximum")
-    try:
-        bf = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
-    except ValueError as e:
-        raise HTTPException(422, str(e))
-    key = ("com", ds.revision, json.dumps(opts.beam.model_dump(), sort_keys=True))
-
-    def run(job) -> dict:
-        shifts = ds.cache.get(key)
-        if shifts is None:
-            job.report(0.05, "Finding the centre of mass of every pattern")
-            shifts = centring.find_beam(ds.signal, opts.beam, bf)
-            ds.cache[key] = shifts
-        job.report(0.8, "Removing the descan, finding the rotation")
-        gx, gy = com.deflection(shifts, opts.plane)
-        found = com.rotation_of(gx, gy)
-        theta, mirror = (found["theta"], found["mirror"]) if opts.rotation.auto else (opts.rotation.theta, opts.rotation.mirror)
-        job.report(0.9, "Making DPC and iCOM")
-        made = session.make_com_dpc(ds, gx, gy, theta, mirror, {"options": opts.model_dump()})
-        return {
-            "file": session.file_of(ds).summary(session), "ids": [d.id for d in made],
-            "theta": float(theta), "mirror": bool(mirror),
-            # How much curl is left with the rotation found (relative to the divergence).
-            "curl_ratio": found["curl_ratio"], "found": {"theta": found["theta"], "mirror": found["mirror"]},
-        }
-
-    return request.app.state.jobs.submit("com", f"DPC of {ds.title}", run).summary()
-
-
 # ---------- calibration ----------
 
 
@@ -914,6 +857,24 @@ class Ring(BaseModel):
     ellipticity: float = 0.0
 
 
+class EllipseBody(BaseModel):
+    ring: Ring
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration/ellipse")
+def calibration_ellipse(dataset_id: str, body: EllipseBody, request: Request) -> dict:
+    """Keep the ellipse fitted (Calibration step 2) in the data's
+    calibration, switched on: the Bragg vectors made circular, the Bragg
+    vector map made again. Returns the data's ``file``."""
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    try:
+        session.set_ellipse(ds, body.ring.model_dump())
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(ds).summary(session)}
+
+
 class CalibrateBody(BaseModel):
     """How the pixel size is set: from the ring and a reflection (``d``, Å;
     with ``standard`` and ``hkl`` named), from the camera length, detector
@@ -959,7 +920,7 @@ def calibrate(dataset_id: str, body: CalibrateBody, request: Request) -> dict:
             raise HTTPException(422, "The pixel size is needed")
         scale = body.scale
         how = {"entered": True}
-    info = {"how": how, "affine": calibration.affine_of(ring) if ring else None}
+    info = {"how": how}
     try:
         session.calibrate_patterns(ds, scale, body.units, ring if body.centre else None, info)
     except ValueError as e:
@@ -1051,14 +1012,37 @@ class SwitchesBody(BaseModel):
 
 
 class QrRotationBody(BaseModel):
-    """The QR rotation (degrees, counter-clockwise) and mirror, as the DPC /
-    iCOM process turns the deflection into the scan's frame: from its run
-    ("com", with the curl left) or entered."""
+    """The QR rotation (degrees, counter-clockwise) and mirror turning the
+    pattern's axes into the scan's: found by the least curl of the descan
+    step's deflection ("curl", with the curl left) or entered."""
 
     theta: float = Field(ge=-360, le=360)
     mirror: bool = False
-    how: Literal["com", "entered"] = "entered"
+    how: Literal["curl", "entered"] = "entered"
     curl_ratio: float | None = None
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration/rotation/find")
+def calibration_rotation_find(dataset_id: str, request: Request) -> dict:
+    """The QR rotation leaving the least curl (``processing.com.rotation_of``)
+    in the deflection the descan step measured: each position's origin less
+    the descan plane fitted to it (a plane over the whole scan when the
+    origins were kept as measured). Returns ``{theta, mirror, curl_ratio}``."""
+    from ..processing import centring, com
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    maps = session.origin_maps_of(ds)
+    if "measured" not in maps:
+        raise HTTPException(409, "Measure the origin first (step 1, Descan)")
+    measured = np.nan_to_num(np.asarray(maps["measured"], np.float64))
+    fitted = maps.get("fitted")
+    ref = np.asarray(fitted, np.float64) if fitted is not None else centring.plane(measured.astype(np.float32), PlaneOptions(mode="plane"))
+    d = measured - ref
+    if min(d.shape[:2]) < 4:
+        raise HTTPException(422, "The scan is too small to find a rotation")
+    found = com.rotation_of(d[..., 0], d[..., 1])
+    return {"theta": float(found["theta"]) % 360.0, "mirror": bool(found["mirror"]), "curl_ratio": float(found["curl_ratio"])}
 
 
 @router.post("/api/datasets/{dataset_id}/4d/calibration/rotation")

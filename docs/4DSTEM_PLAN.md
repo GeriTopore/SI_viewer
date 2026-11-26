@@ -524,8 +524,19 @@ grid's *Merged* mode with each group's colour), and presets.
   per data revision and beam settings, so changing the descan or rotation
   reruns quickly. A plane descan also removes the specimen's own linear
   field (a quadratic in iCOM): use Corners when there is vacuum.
-- Still to do: COM x / y and iCOM as live virtual-detector responses;
-  calibrated units (mrad, E field via `calibrate_electric_shifts`);
+- **Built (2026-11-26): COM x / COM y / iCOM responses** of any detector
+  group (circle, annulus, rectangle, apertures…): per pattern, the centre
+  of mass of the pixels inside the detector (Σ I k / Σ I, in the same pass
+  over the data as the other groups' images), less the descan and rotated
+  as the DPC / iCOM process's settings say (the least curl found per image
+  when "Find" is on), × the pattern's pixel size; iCOM integrates them.
+  Live in every layout, saved like other virtual images (with the settings).
+  Not for DDF groups (a centre of mass is of the pixels). "COM" shows the
+  shift in colour as a DPC object is (direction on the colour wheel,
+  magnitude as brightness; two channels per image, `/4d/virtuals` meta
+  `channels`); saved, it becomes a DPC object with COM x and COM y under it
+  (`dpc.saved`: the process leaves it alone).
+- Still to do: calibrated units (mrad, E field via `calibrate_electric_shifts`);
   pyxem's phase-retrieval methods (Kottler, Arnison, Frankot) as options.
 
 ### Phase 5: radial, azimuthal and variance

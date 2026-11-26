@@ -98,7 +98,22 @@ export function defaultLattice(cx: number, cy: number, w: number): Lattice {
   return { ox: cx, oy: cy, g1x: g, g1y: 0, g2x: 0, g2y: g, n1: 1, n2: 1, s1: 0, s2: 0, origin: true };
 }
 
-export type Response = "sum" | "mean" | "max";
+export type Response = "sum" | "mean" | "max" | "com" | "com_x" | "com_y" | "icom";
+
+/** The centre of mass of the pixels inside the detector: its shift in the
+ * scan's frame in colour ("com": direction and magnitude), its x and y, and
+ * that field integrated (iCOM). */
+export const isComResponse = (r: Response) => r === "com" || r === "com_x" || r === "com_y" || r === "icom";
+
+/** A response as written in labels, e.g. "COM x". */
+export const responseLabel = (r: Response) =>
+  ({ sum: "sum", mean: "mean", max: "max", com: "COM", com_x: "COM x", com_y: "COM y", icom: "iCOM" })[r];
+
+/** The descan and rotation of centre-of-mass responses (the DPC / iCOM process's). */
+export interface ComLive {
+  plane: { mode: "none" | "plane" | "corners"; corners: number };
+  rotation: { auto: boolean; theta: number; mirror: boolean };
+}
 
 /** A cursor on the scan: the scan pixel it is on. */
 export interface ScanCursor {
@@ -141,12 +156,16 @@ export type ImageSource = "pixels" | "vectors";
 /** What the backend takes to make a group's image (``api/fourd.py``
  * ``VirtualBody``); from its pixels unless its data has Bragg vectors
  * (``vectors``). */
-export function imageRequest(g: DetectorGroup, w: number, h: number, vectors: boolean) {
+export function imageRequest(g: DetectorGroup, w: number, h: number, vectors: boolean, com?: ComLive) {
+  const source = (g.source === "vectors" && vectors ? "vectors" : "pixels") as ImageSource;
+  // A centre of mass is of the pixels: a digital dark field sums instead.
+  const response: Response = source === "vectors" && isComResponse(g.response) ? "sum" : g.response;
   return {
     detector: detectorForRequest(g.detector, w, h),
-    response: g.response,
-    source: (g.source === "vectors" && vectors ? "vectors" : "pixels") as ImageSource,
+    response,
+    source,
     weight: g.weight ?? "intensity",
+    ...(isComResponse(response) && com && { com }),
   };
 }
 

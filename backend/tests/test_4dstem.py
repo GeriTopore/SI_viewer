@@ -222,10 +222,10 @@ def test_several_virtual_images_at_once():
     ]
     want = np.stack([fourd.virtual_image(data, d, r) for d, r in items])
     for cube in (data, da.from_array(data, chunks=(1, 3, 6, 5))):
-        got = fourd.virtual_images(cube, items)
+        got = np.stack(fourd.virtual_images(cube, items))
         assert got.shape == (3, *data.shape[:2]) and got.dtype == np.float32
         np.testing.assert_allclose(got, want, rtol=1e-6)
-    assert fourd.virtual_images(data, []).shape == (0, *data.shape[:2])
+    assert fourd.virtual_images(data, []) == []
 
 
 def test_virtual_images_through_the_api_and_kept(tmp_path):

@@ -63,11 +63,18 @@ export async function fetchDpcFrame(
   if (params.bin && params.bin > 1) q.set("bin", String(params.bin));
   const { data, shape } = await fetchArray(`/api/datasets/${datasetId}/dpc/frame?${q}`, signal);
   const [, height, width] = shape;
+  return colourFrame(data, height, width, params.bin ?? 1);
+}
+
+/** A direction (degrees) and magnitude, one after the other in ``data``, as
+ * a frame drawn in colour: the magnitude as brightness (full at its 99.5th
+ * percentile). */
+export function colourFrame(data: Float32Array, height: number, width: number, bin = 1): Frame {
   const n = height * width;
   const shade = data.subarray(n, 2 * n);
   const sorted = Float32Array.from(shade).sort();
   const shadeHi = sorted[Math.min(n - 1, Math.floor(n * 0.995))] || 1;
-  return { data: data.subarray(0, n), height, width, bin: params.bin ?? 1, shade, shadeHi };
+  return { data: data.subarray(0, n), height, width, bin, shade, shadeHi };
 }
 
 /** The spectrum of component ``index`` (0-based) of a PCA, with its energy axis. */

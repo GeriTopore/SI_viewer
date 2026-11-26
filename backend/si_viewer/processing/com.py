@@ -28,6 +28,24 @@ class ComOptions(BaseModel):
     rotation: Rotation = Rotation()
 
 
+class ComLive(BaseModel):
+    """A virtual detector's centre-of-mass responses (``fourd.COM_RESPONSES``):
+    the descan and rotation, as the DPC / iCOM process."""
+
+    plane: PlaneOptions = PlaneOptions()
+    rotation: Rotation = Rotation()
+
+    def deflection(self, cx: np.ndarray, cy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The centre of mass ([y, x] each, pattern px) less the descan: the
+        plane fitted to it (mode "none": its mean)."""
+        from .centring import plane as descan
+
+        c = np.stack([np.asarray(cx, np.float64), np.asarray(cy, np.float64)], axis=-1)
+        ref = c.mean(axis=(0, 1), keepdims=True) if self.plane.mode == "none" else descan(c, self.plane)
+        d = c - ref
+        return d[..., 0], d[..., 1]
+
+
 def deflection(shifts: np.ndarray, plane: PlaneOptions) -> tuple[np.ndarray, np.ndarray]:
     """The beam's deflection by the specimen ([y, x] each, pattern px) from
     pyxem's centring shifts (``centring.find_beam``: what moves the beam to

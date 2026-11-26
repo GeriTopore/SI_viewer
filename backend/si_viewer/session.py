@@ -2839,9 +2839,10 @@ class Session:
         phase = integrate(rx, ry, pad=True)
         dpc = {**settings, "source": "4d", "cube": cube.id, "theta": float(theta), "mirror": bool(mirror)}
         with self._lock:
+            # The process's own (not colour images saved from a detector group).
             earlier = {
                 d.dpc["output"]: d for d in self.datasets.values()
-                if d.origin == "dpc" and d.dpc and d.dpc.get("cube") == cube.id
+                if d.origin == "dpc" and d.dpc and d.dpc.get("cube") == cube.id and not d.dpc.get("saved")
             }
         made: list[Dataset] = []
         colour_id = None
@@ -2880,6 +2881,49 @@ class Session:
                 colour_id = ds.id
             made.append(ds)
         return made
+
+    def add_com_colour(self, cube: Dataset, rx: np.ndarray, ry: np.ndarray, title: str, settings: dict) -> Dataset:
+        """A detector group's centre of mass kept as a colour image: a DPC
+        object ``title`` under 4D-STEM data (its direction in a circular
+        colour map, magnitude as brightness) with "COM x" and "COM y" (``rx``,
+        ``ry``: [y, x], in the pattern's units) under it. A new one each time
+        ("… 2", … if the title is taken). Returns the DPC object."""
+        import hyperspy.api as hs
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        units = str(cube.signal.axes_manager.signal_axes[0].units or "px")
+        with self._lock:
+            taken = {d.title for d in self.datasets.values() if d.parent_id == cube.id}
+        if title in taken:
+            title = next(f"{title} {i}" for i in range(2, 10000) if f"{title} {i}" not in taken)
+        dpc = {**settings, "source": "4d", "cube": cube.id, "saved": True}
+        made: list[Dataset] = []
+        for output, name, data, quantity in (
+            ("colour", title, np.degrees(np.arctan2(ry, rx)), "Direction (°)"),
+            ("x", "COM x", rx, f"Centre-of-mass shift ({units})"),
+            ("y", "COM y", ry, f"Centre-of-mass shift ({units})"),
+        ):
+            signal = hs.signals.Signal2D(np.ascontiguousarray(data, dtype=np.float32))
+            for axis, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.navigation_axes):
+                axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
+            signal.metadata.General.title = name
+            signal.metadata.set_item("Signal.quantity", quantity)
+            ds = Dataset(
+                id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE, origin="dpc",
+                parent_id=made[0].id if made else cube.id, dpc={**dpc, "output": output},
+            )
+            with self._lock:
+                self.datasets[ds.id] = ds
+                ids = self.files[cube.file_id].dataset_ids
+                if made:
+                    at = ids.index(made[-1].id)
+                else:
+                    after = [i for i in ids if self.datasets[i].parent_id == cube.id]
+                    at = ids.index(after[-1] if after else cube.id)
+                ids.insert(at + 1, ds.id)
+            made.append(ds)
+        return made[0]
 
     # ---------- cropping ----------
 

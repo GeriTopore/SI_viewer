@@ -2,8 +2,9 @@ import { useRef, useState } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import type { Disk as FoundDisk } from "../state/disks";
+import { comOptionsOf, useCom } from "../state/com";
 import {
-  defaultDetector, defaultLattice, imageRequest, mergeDetectors, mergeable, newGroup, sizeApertures,
+  defaultDetector, defaultLattice, imageRequest, isComResponse, mergeDetectors, mergeable, newGroup, responseLabel, sizeApertures,
   type Detector, type DetectorGroup, type Lattice,
 } from "../state/fourd";
 import { formatValue } from "../format";
@@ -34,6 +35,9 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   const hasVectors = useDatasets((s) => !!vectorsOf(s.files));
   // A digital dark field only once the disks have been found.
   const ddf = group.source === "vectors" && hasVectors;
+  // Centre-of-mass responses: the descan and rotation of the DPC / iCOM process.
+  const comOpts = useCom((s) => comOptionsOf(s, d.id));
+  const comLive = { plane: comOpts.plane, rotation: comOpts.rotation };
   const [disk, setDisk] = useState<Disk | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -269,7 +273,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   const titleOf = (g: DetectorGroup) =>
     /^Group \d+$/.test(g.name)
       ? undefined
-      : `${isDdf(g) ? "DDF " : ""}${g.name}: ${detectorText(g.detector, cal.scale, cal.units)}${g.response === "sum" ? "" : `, ${g.response}`}${isDdf(g) && g.weight === "count" ? " (count)" : ""}`;
+      : `${isDdf(g) ? "DDF " : ""}${g.name}: ${detectorText(g.detector, cal.scale, cal.units)}${g.response === "sum" ? "" : `, ${responseLabel(g.response)}`}${isDdf(g) && g.weight === "count" ? " (count)" : ""}`;
   function isDdf(g: DetectorGroup) {
     return g.source === "vectors" && hasVectors;
   }
@@ -282,7 +286,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
         const res = await fetch(`/api/datasets/${d.id}/4d/virtual/save`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...imageRequest(g, w, h, hasVectors), title: titleOf(g) }),
+          body: JSON.stringify({ ...imageRequest(g, w, h, hasVectors, comLive), title: titleOf(g) }),
         });
         const body = await res.json();
         if (!res.ok) throw new Error(`${g.name}: ${body.detail ?? res.statusText}`);
@@ -412,7 +416,13 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
         ], ddf ? "vectors" : "pixels", (v) => patchGroup(group.id, { source: v }))}
       </div>
       <div className="virtual-row">
-        {segmented("Response", RESPONSES, group.response, (v) => patchGroup(group.id, { response: v }))}
+        {segmented(
+          "Response",
+          // A centre of mass is of the pixels, not of the disks found.
+          RESPONSES.map((r) => (ddf && isComResponse(r.id) ? { ...r, disabled: true, title: `${r.title} (not with Bragg vectors)` } : r)),
+          ddf && isComResponse(group.response) ? "sum" : group.response,
+          (v) => patchGroup(group.id, { response: v }),
+        )}
         {ddf && segmented("Of", [
           { id: "intensity", label: "Intensity", title: "The disks' intensity (their correlation score)" },
           { id: "count", label: "Count", title: "The number of disks" },

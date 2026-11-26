@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { fetchArray, fetchFrame, type Frame } from "../api/arrays";
+import { colourFrame, fetchArray, fetchFrame, type Frame } from "../api/arrays";
 import { dataVersion, type DatasetSummary } from "../api/client";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { ImageView, type AxisCal, type Interaction, type Pt, type Transform } from "../components/ImageView";
@@ -23,12 +23,13 @@ import type { ImageGeometry } from "./geometry";
 import { ImageToolButtons, LayeredViewer, type ExtraLayers, type StackLayer } from "../components/LayeredViewer";
 import { useLayersTab } from "../state/layersTab";
 import { backgroundOptionsOf, usePatternBackground } from "../state/patternBackground";
+import { comOptionsOf, useCom } from "../state/com";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import {
-  ROW_HEIGHTS, SCAN_MAX, SCAN_MEAN, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, sizeApertures, initialState, latticePoints, moveDetector, newCursor, useFourD,
+  ROW_HEIGHTS, SCAN_MAX, SCAN_MEAN, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, responseLabel, sizeApertures, initialState, latticePoints, moveDetector, newCursor, useFourD,
   type Detector, type DetectorGroup, type FourDState, type Lattice, type OverlayLayer, type PatternSource, type Response, type ScanCursor,
 } from "../state/fourd";
 import { containsPoint, shapeToRegion, useSi, useSiState } from "../state/si";
@@ -69,9 +70,16 @@ export const RESPONSES: { id: Response; label: string; title: string }[] = [
   { id: "sum", label: "Sum", title: "The total intensity inside the detector" },
   { id: "mean", label: "Mean", title: "The mean intensity inside the detector" },
   { id: "max", label: "Max", title: "The brightest pixel inside the detector" },
+  { id: "com", label: "COM", title: "The centre of mass of the pixels inside the detector, its shift in colour: the direction round the colour wheel, the magnitude as brightness (descan and rotation as in the DPC / iCOM process)" },
+  { id: "com_x", label: "COM x", title: "The centre of mass of the pixels inside the detector: its shift along the scan's x (descan and rotation as in the DPC / iCOM process)" },
+  { id: "com_y", label: "COM y", title: "The centre of mass of the pixels inside the detector: its shift along the scan's y" },
+  { id: "icom", label: "iCOM", title: "The centre of mass's shift of the pixels inside the detector, integrated (the projected potential, up to scale)" },
 ];
 
 const asFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame => ({ data, height: shape[0], width: shape[1], bin: 1 });
+/** A virtual image: a colour one ("com": direction and magnitude, [2, h, w]) drawn as a DPC object is. */
+const asVirtualFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame =>
+  shape.length === 3 ? colourFrame(data, shape[1], shape[2]) : asFrame({ data, shape });
 const post = (url: string, body: unknown, signal?: AbortSignal) =>
   fetchArray(url, signal, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
@@ -421,7 +429,10 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const keyOf = (req: ReturnType<typeof imageRequest>) =>
     `${version}|${JSON.stringify(req)}${req.source === "vectors" ? `|${ddfVersion}` : ""}`;
   const hasVectors = !ddfVersion.startsWith("none|");
-  const sent = imageRequest(group, patternG.width, patternG.height, hasVectors);
+  // Centre-of-mass responses: the descan and rotation of the DPC / iCOM process.
+  const comOpts = useCom((s) => comOptionsOf(s, ds.id));
+  const comLive = useMemo(() => ({ plane: comOpts.plane, rotation: comOpts.rotation }), [comOpts]);
+  const sent = imageRequest(group, patternG.width, patternG.height, hasVectors, comLive);
   const virtualKey = shownSaved ? `saved|${shownSaved.id}|${dataVersion(shownSaved)}` : keyOf(sent);
   const grid = st.layout === "grid";
   const list = st.layout === "list";
@@ -432,7 +443,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const virtual = useLatest(virtualKey, () =>
     shownSaved
       ? fetchFrame(shownSaved.id)
-      : post(`/api/datasets/${ds.id}/4d/virtual`, sent).then(asFrame),
+      : post(`/api/datasets/${ds.id}/4d/virtual`, sent).then(asVirtualFrame),
   !multi);
   const bad = useFourD((s) => s.bad[ds.id]) ?? null;
 
@@ -481,15 +492,22 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // ---------- the grid: a virtual image per visible group, a pattern per cursor and region ----------
   const visibleGroups = st.groups.filter((g) => g.visible);
   const viItems = visibleGroups.map((g) => {
-    const req = imageRequest(g, patternG.width, patternG.height, hasVectors);
+    const req = imageRequest(g, patternG.width, patternG.height, hasVectors, comLive);
     return { id: g.id, key: keyOf(req), req };
   });
   const viSet = useFrameSet(
     viItems,
     (todo) =>
-      post(`/api/datasets/${ds.id}/4d/virtuals`, { items: todo.map((i) => i.req) }).then(({ data, shape }) => {
+      post(`/api/datasets/${ds.id}/4d/virtuals`, { items: todo.map((i) => i.req) }).then(({ data, shape, meta }) => {
+        // Each image's channels one after the other (a colour one: 2).
         const [, h, w] = shape;
-        return todo.map((_, k) => ({ data: data.subarray(k * h * w, (k + 1) * h * w), height: h, width: w, bin: 1 }));
+        const channels = (meta.channels as number[] | undefined) ?? todo.map(() => 1);
+        let at = 0;
+        return channels.map((c) => {
+          const part = data.subarray(at * h * w, (at + c) * h * w);
+          at += c;
+          return c === 2 ? colourFrame(part, h, w) : { data: part, height: h, width: w, bin: 1 };
+        });
       }),
     multi,
   );
@@ -1126,7 +1144,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     : source === SCAN_MEAN || source === SCAN_MAX
       ? `${source === SCAN_MAX ? "Max" : "Mean"} pattern over the scan`
       : `Pattern at ${cursorText}`;
-  const liveLabel = `${group.name} · ${sent.source === "vectors" ?`DDF${group.weight === "count" ? " count" : ""} · ` : ""}${det.shape} · ${detectorText(det, patCal.scale, patCal.units)}${group.response === "sum" ? "" : ` · ${group.response}`}`;
+  const liveLabel = `${group.name} · ${sent.source === "vectors" ?`DDF${group.weight === "count" ? " count" : ""} · ` : ""}${det.shape} · ${detectorText(det, patCal.scale, patCal.units)}${sent.response === "sum" ? "" : ` · ${responseLabel(sent.response)}`}`;
   const virtualLabel = shownSaved ? shownSaved.title : liveLabel;
   // The cursors and regions: a list to pick the pattern shown.
   const sources = [
@@ -1188,15 +1206,18 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     setScan({ source: id, ...(cursors.some((c) => c.id === id) && { lastCursor: id }) });
   };
   // Contrast is redone for each new frame shown (its key), not when it is asked for.
+  // A group imaged as the colour COM: its own contrast, on the colour wheel.
+  const isColourCom = (id: string) => viItems.find((i) => i.id === id)?.req.response === "com";
   const viStacks: StackLayer[] = visibleGroups.map((g) => ({
     dataset: ds,
     key: `vi:${g.id}`,
     label: g.name,
-    displayKey: `${ds.id}:vi:${g.id}`,
+    displayKey: `${ds.id}:vi:${g.id}${isColourCom(g.id) ? ":com" : ""}`,
     frame: viSet.frames[g.id]?.frame ?? null,
     version: viSet.frames[g.id]?.key,
     removable: false,
     geometry: scanG,
+    ...(isColourCom(g.id) && { colormap: "hsv" }),
   }));
   // Merge: the same images as layers of one view, each in its group's colour
   // (colours add up), under contrast keys of their own.
@@ -1288,14 +1309,14 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   });
   // Every image of the list has its own contrast (each row's pattern too).
   const listDpKey = (id: string) => `${ds.id}:list:dp:${id}${log ? ":log" : ""}`;
-  const listViKey = (id: string) => `${ds.id}:list:vi:${id}`;
+  const listViKey = (id: string) => `${ds.id}:list:vi:${id}${isColourCom(id) ? ":com" : ""}`;
   // Each image's contrast, redone for each new frame shown.
   useEffect(() => {
     if (!list) return;
     for (const g of visibleGroups) {
       if (drawnPattern) autoContrast(listDpKey(g.id), drawnPattern, `${pattern.shownKey}|${log}`);
       const v = viSet.frames[g.id];
-      if (v) autoContrast(listViKey(g.id), v.frame, v.key);
+      if (v) autoContrast(listViKey(g.id), v.frame, v.key, isColourCom(g.id) ? () => "hsv" : undefined);
     }
   });
   // The tools on the list's images: kept under the same keys as Single's panes.
@@ -1459,7 +1480,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
                 <header className="fourd-row-head">
                   <span className="fourd-swatch" style={{ background: g.color }} />
                   <span className="fourd-row-name">{g.name}</span>
-                  <span className="muted small">{detectorText(g.detector, patCal.scale, patCal.units)}{g.response === "sum" ? "" : ` · ${g.response}`}</span>
+                  <span className="muted small">{detectorText(g.detector, patCal.scale, patCal.units)}{g.response === "sum" ? "" : ` · ${responseLabel(g.response)}`}</span>
                 </header>
                 <div className="fourd-row-views">
                   <div className="fourd-cell">
@@ -1574,11 +1595,13 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           viewKey={`${ds.id}:virtual`}
           toolButtons={false}
           base={grid || merge ? null : {
-            key: shownSaved ? shownSaved.id : `${ds.id}:virtual`,
+            // A colour COM image keeps its own contrast, on the colour wheel.
+            key: shownSaved ? shownSaved.id : `${ds.id}:virtual${sent.response === "com" ? ":com" : ""}`,
             label: virtualLabel,
             frame: virtual.frame,
             version: virtual.shownKey,
             source: shownSaved ?? ds,
+            ...(!shownSaved && sent.response === "com" && { colormap: () => "hsv" }),
           }}
           images={[]}
           stacks={grid ? viStacks : merge ? mergeStacks : undefined}

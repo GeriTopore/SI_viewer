@@ -120,3 +120,90 @@ def test_com_dpc_through_the_api(tmp_path):
     assert _corr(flipped, phi) < -0.95  # 180° off: the potential inverted
     # The blurred maximum is not a centre of mass.
     assert client.post(url, json={"options": {"beam": {"method": "blur"}}}).status_code == 422
+
+
+def test_live_com_through_a_detector(tmp_path):
+    """COM x / y and iCOM as a virtual detector's responses: the centre of
+    mass of the pixels inside it, as the DPC / iCOM process."""
+    from fastapi.testclient import TestClient
+    from test_4dstem import _write_emdfile
+
+    from si_viewer.app import create_app
+    from si_viewer.processing import fourd
+    from si_viewer.session import Session
+
+    cube, phi = _cube()
+    # A disc around the beam's path (it moves less than 3 px), for the whole pattern.
+    disc = fourd.Detector(shape="circle", cx=K / 2, cy=K / 2, r=12)
+    live = com.ComLive(plane=PlaneOptions(mode="plane"))
+    x, y, icom = fourd.virtual_images(cube, [(disc, "com_x", live), (disc, "com_y", live), (disc, "icom", live)])
+    assert _corr(icom, phi) > 0.95
+    # Rotated into the scan's frame: x and y are the potential's gradient.
+    gy, gx = np.gradient(phi)
+    assert np.corrcoef(x.ravel(), gx.ravel())[0, 1] > 0.9 and np.corrcoef(y.ravel(), gy.ravel())[0, 1] > 0.9
+    # A rotation given: 180° off inverts it.
+    turned = com.ComLive(plane=PlaneOptions(mode="plane"), rotation=com.Rotation(auto=False, theta=THETA + 180))
+    assert _corr(fourd.virtual_image(cube, disc, "icom", turned), phi) < -0.95
+
+    path = tmp_path / "live.h5"
+    _write_emdfile(path, cube, extra_2d=False)
+    session = Session()
+    client = TestClient(create_app(session))
+    cube_id = client.post("/api/files", json={"path": str(path)}).json()["datasets"][0]["id"]
+    url = f"/api/datasets/{cube_id}/4d"
+    detector = {"shape": "circle", "cx": K / 2, "cy": K / 2, "r": 12}
+    r = client.post(f"{url}/virtual", json={"detector": detector, "response": "icom", "com": {"plane": {"mode": "plane"}}})
+    assert r.status_code == 200
+    got = np.frombuffer(r.content, np.float32).reshape(NY, NX)
+    # In the pattern's units: its pixel size × the pixels.
+    scale = session.get_dataset(cube_id).signal.axes_manager.signal_axes[0].scale
+    np.testing.assert_allclose(got, icom * scale, rtol=1e-3, atol=1e-5)
+    two = client.post(f"{url}/virtuals", json={"items": [{"detector": detector, "response": "com_x"}, {"detector": detector}]})
+    assert two.status_code == 200 and two.headers["X-Array-Shape"] == f"2,{NY},{NX}"
+    saved = client.post(f"{url}/virtual/save", json={"detector": detector, "response": "icom"}).json()
+    made = session.get_dataset(saved["id"])
+    assert made.title.endswith("iCOM") and made.virtual["com"]["plane"]["mode"] == "plane"
+
+
+def test_live_com_colour(tmp_path):
+    """The combined COM image: direction (degrees) and magnitude, as a DPC
+    object is shown; saved as one (COM x and y under it)."""
+    import json
+
+    from fastapi.testclient import TestClient
+    from test_4dstem import _write_emdfile
+
+    from si_viewer.app import create_app
+    from si_viewer.processing import fourd
+    from si_viewer.session import Session
+
+    cube, _ = _cube()
+    disc = fourd.Detector(shape="circle", cx=K / 2, cy=K / 2, r=12)
+    live = com.ComLive(plane=PlaneOptions(mode="plane"))
+    colour, x, y = fourd.virtual_images(cube, [(disc, "com", live), (disc, "com_x", live), (disc, "com_y", live)])
+    assert colour.shape == (2, NY, NX)
+    np.testing.assert_allclose(colour[1], np.hypot(x, y), rtol=1e-4, atol=1e-6)
+    np.testing.assert_allclose(colour[0], np.degrees(np.arctan2(y, x)), atol=1e-3)
+
+    path = tmp_path / "colour.h5"
+    _write_emdfile(path, cube, extra_2d=False)
+    session = Session()
+    client = TestClient(create_app(session))
+    cube_id = client.post("/api/files", json={"path": str(path)}).json()["datasets"][0]["id"]
+    url = f"/api/datasets/{cube_id}/4d"
+    detector = {"shape": "circle", "cx": K / 2, "cy": K / 2, "r": 12}
+    one = client.post(f"{url}/virtual", json={"detector": detector, "response": "com"})
+    assert one.status_code == 200 and one.headers["X-Array-Shape"] == f"2,{NY},{NX}"
+    # Several groups: each one's channels after the other's, counted in the meta.
+    many = client.post(f"{url}/virtuals", json={"items": [{"detector": detector}, {"detector": detector, "response": "com"}]})
+    assert many.headers["X-Array-Shape"] == f"3,{NY},{NX}"
+    assert json.loads(many.headers["X-Array-Meta"])["channels"] == [1, 2]
+    # Saved: a DPC object shown in colour, COM x and y under it; the process's own untouched.
+    saved = client.post(f"{url}/virtual/save", json={"detector": detector, "response": "com"}).json()
+    obj = session.get_dataset(saved["id"])
+    assert obj.origin == "dpc" and obj.dpc["output"] == "colour" and obj.dpc["saved"] and obj.parent_id == cube_id
+    kids = sorted(d.title for d in session.datasets.values() if d.parent_id == obj.id)
+    assert kids == ["COM x", "COM y"]
+    assert client.get(f"/api/datasets/{obj.id}/dpc/frame").headers["X-Array-Shape"] == f"2,{NY},{NX}"
+    again = client.post(f"{url}/virtual/save", json={"detector": detector, "response": "com"}).json()
+    assert again["id"] != saved["id"] and session.get_dataset(again["id"]).title.endswith(" 2")

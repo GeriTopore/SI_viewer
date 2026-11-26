@@ -13,7 +13,7 @@ from ..processing import fourd
 from ..processing.pattern_background import PatternBackgroundOptions
 from ..processing.calibration import RingOptions
 from ..processing.centring import BeamOptions, PlaneOptions
-from ..processing.com import ComOptions
+from ..processing.com import ComLive, ComOptions
 from ..processing.disks import DiskOptions
 from ..session import DIFFRACTION4D_IN_MEMORY_LIMIT, DatasetKind
 from .datasets import array_response
@@ -66,6 +66,13 @@ class VirtualBody(BaseModel):
     source: Literal["pixels", "vectors"] = "pixels"
     # Digital dark field: the disks' intensity, or their number.
     weight: Literal["intensity", "count"] = "intensity"
+    # Centre-of-mass responses: the descan and rotation.
+    com: ComLive = ComLive()
+
+
+def _scale(ds) -> float:
+    """The pattern's pixel size (its calibration; 1 uncalibrated)."""
+    return float(ds.signal.axes_manager.signal_axes[0].scale or 1.0)
 
 
 def _ddf(request: Request, ds, body: VirtualBody) -> np.ndarray:
@@ -73,6 +80,8 @@ def _ddf(request: Request, ds, body: VirtualBody) -> np.ndarray:
     vectors, centred per position when its centring is switched on."""
     from ..processing import disks
 
+    if body.response in fourd.COM_RESPONSES:
+        raise HTTPException(422, "A centre of mass is of the patterns' pixels, not of the disks found")
     session = request.app.state.session
     table = session.vectors_table(ds)
     if table is None:
@@ -84,7 +93,7 @@ def _ddf(request: Request, ds, body: VirtualBody) -> np.ndarray:
 def _image(request: Request, ds, body: VirtualBody) -> np.ndarray:
     if body.source == "vectors":
         return _ddf(request, ds, body)
-    return fourd.virtual_image(ds.signal.data, body.detector, body.response)
+    return fourd.virtual_image(ds.signal.data, body.detector, body.response, body.com, _scale(ds))
 
 
 @router.post("/api/datasets/{dataset_id}/4d/virtual")
@@ -104,17 +113,25 @@ class VirtualsBody(BaseModel):
 
 @router.post("/api/datasets/{dataset_id}/4d/virtuals")
 def virtuals(dataset_id: str, body: VirtualsBody, request: Request) -> Response:
-    """The virtual images through several detectors at once, [n, y, x] (in
-    the order given); the pixel ones in one pass over the data."""
+    """The virtual images through several detectors at once (in the order
+    given; the pixel ones in one pass over the data), their channels one
+    after the other: [channels, y, x], ``channels`` (meta) per item (1; a
+    "com" response 2: direction, magnitude)."""
     ds = _cube(request, dataset_id)
-    out = np.empty((len(body.items), *ds.signal.data.shape[:2]), np.float32)
+    out: list[np.ndarray | None] = [None] * len(body.items)
     pixel = [k for k, i in enumerate(body.items) if i.source == "pixels"]
     if pixel:
-        out[pixel] = fourd.virtual_images(ds.signal.data, [(body.items[k].detector, body.items[k].response) for k in pixel])
+        made = fourd.virtual_images(
+            ds.signal.data, [(body.items[k].detector, body.items[k].response, body.items[k].com) for k in pixel], _scale(ds),
+        )
+        for k, image in zip(pixel, made):
+            out[k] = image
     for k, item in enumerate(body.items):
         if item.source == "vectors":
             out[k] = _ddf(request, ds, item)
-    return array_response(out)
+    parts = [o.reshape(-1, *o.shape[-2:]) for o in out]
+    stacked = np.concatenate(parts) if parts else np.zeros((0, *ds.signal.data.shape[:2]), np.float32)
+    return array_response(stacked, channels=[len(p) for p in parts])
 
 
 class SaveBody(VirtualBody):
@@ -127,15 +144,22 @@ def save_virtual(dataset_id: str, body: SaveBody, request: Request) -> dict:
     4D-STEM data. Returns its ``file`` and ``id``."""
     session = request.app.state.session
     ds = _cube(request, dataset_id)
-    image = _image(request, ds, body)
     axis = ds.signal.axes_manager.signal_axes[0]
+    if body.response == "com" and body.source == "pixels":
+        # A colour image: a DPC object (direction, magnitude) with its COM x and y under it.
+        rx, ry = fourd.com_field(ds.signal.data, body.detector, body.com, _scale(ds))
+        title = (body.title or "").strip() or fourd.describe(body.detector, "com", axis.scale, axis.units or "px")
+        made = session.add_com_colour(ds, rx, ry, title, {"detector": body.detector.model_dump(), "com": body.com.model_dump()})
+        return {"file": session.files[ds.file_id].summary(session), "id": made.id}
+    image = _image(request, ds, body)
     title = (body.title or "").strip() or fourd.describe(body.detector, body.response, axis.scale, axis.units or "px")
     ddf = body.source == "vectors"
     if ddf and not (body.title or "").strip():
         title = f"DDF {title}" + (" (count)" if body.weight == "count" else "")
+    how = ({"source": "vectors", "weight": body.weight} if ddf
+           else {"com": body.com.model_dump()} if body.response in fourd.COM_RESPONSES else None)
     try:
-        made = session.add_virtual_image(ds, image, body.detector.model_dump(), body.response, title,
-                                         {"source": "vectors", "weight": body.weight} if ddf else None)
+        made = session.add_virtual_image(ds, image, body.detector.model_dump(), body.response, title, how)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"file": session.files[ds.file_id].summary(session), "id": made.id}

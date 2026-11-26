@@ -1,7 +1,10 @@
-"""Example datasets for trying out features (and for a future tutorial).
+"""Example datasets for trying out features (and for a future tutorial),
+grouped by what they are for.
 
-Everything here works offline: exSpy's and HyperSpy's bundled/synthetic data,
-plus a synthetic EDS spectrum image built from exSpy's FePt spectrum.
+exSpy's and HyperSpy's bundled/synthetic data, a synthetic EDS spectrum image
+built from exSpy's FePt spectrum, kemstem's images, and pyxem's 4D-STEM data:
+its simulations (offline) and its recorded datasets (downloaded from Zenodo
+by pyxem on first use, then cached).
 """
 
 from __future__ import annotations
@@ -12,6 +15,18 @@ from typing import Callable
 
 import numpy as np
 
+# The groups, in the menu's order.
+GROUPS = [
+    "EDS",
+    "Spectrum fitting",
+    "Atomic-resolution images",
+    "4D-STEM: calibration",
+    "4D-STEM: strain",
+    "4D-STEM: orientation and phase",
+    "4D-STEM: DPC and beam shift",
+    "4D-STEM: amorphous (FEM)",
+]
+
 
 @dataclass(frozen=True)
 class Example:
@@ -19,6 +34,9 @@ class Example:
     title: str
     description: str
     load: Callable[[], list]  # → HyperSpy signals
+    group: str = "EDS"
+    # pyxem's file of a recorded dataset (downloaded on first use) and its size.
+    download: tuple[str, float] | None = None
 
 
 def _fept_spectrum():
@@ -213,9 +231,117 @@ def _kemstem_examples() -> list[Example]:
     if data is None:
         return []
     return [
-        Example(i, title, desc, _kemstem_image(name, title, px))
+        Example(i, title, desc, _kemstem_image(name, title, px), "Atomic-resolution images")
         for i, name, title, desc, px in _KEMSTEM
         if (data / name).is_file()
+    ]
+
+
+def pyxem_cached(filename: str) -> bool:
+    """Whether pyxem's file of a recorded dataset is in its cache already."""
+    from pyxem.data._data import Dataset
+
+    return Dataset(filename).is_in_cache
+
+
+def _pyxem(name: str, title: str, recorded: bool = False, **kwargs):
+    """One of pyxem's datasets (``pyxem.data.<name>``): a simulation, or a
+    recorded dataset (downloaded by pyxem on first use)."""
+    def load() -> list:
+        import pyxem.data
+
+        f = getattr(pyxem.data, name)
+        s = f(allow_download=True, **kwargs) if recorded else f(**kwargs)
+        s = s[0] if isinstance(s, (list, tuple)) else s
+        if not recorded and s.data.dtype in (np.float64, np.int64):
+            s.change_dtype("float32")  # half the memory, plenty for counts
+        s.metadata.General.title = title
+        for ax in s.axes_manager.signal_axes:
+            ax.units = _PYXEM_UNITS.get(ax.units, ax.units)
+        return [s]
+
+    return load
+
+
+# pyxem's reciprocal units (LaTeX and others) as the app writes them.
+_PYXEM_UNITS = {"$\\AA^{-1}$": "1/Å", "$A^{-1}$": "1/Å", "k_A^-1": "1/Å", "A^-1": "1/Å", "nm^-1": "1/nm", "k_nm^-1": "1/nm"}
+
+
+# (id, pyxem function, title, group, description, keyword arguments)
+_PYXEM_SIMULATED = [
+    ("pyxem-strain", "simulated_strain", "Strained disks (pyxem, simulated)", "4D-STEM: strain",
+     "32×32 scan of 256×256 patterns: a disk lattice under a known strain gradient. "
+     "For disk detection, lattice vectors and strain.", {"signal_shape": (256, 256), "disk_radius": 10}),
+    ("pyxem-si-grains-simple", "si_grains_simple", "Si grains at zone axes (pyxem, simulated)",
+     "4D-STEM: orientation and phase",
+     "6×6 scan of 128×128 patterns: Si grains at low-index zone axes. For template matching.", {}),
+    ("pyxem-si-grains", "si_grains", "Si grains, random orientations (pyxem, simulated)",
+     "4D-STEM: orientation and phase",
+     "6×6 scan of 128×128 patterns: 4 Si grains in random orientations. For orientation mapping.", {}),
+    ("pyxem-fe-grains", "fe_multi_phase_grains", "Fe bcc and fcc grains (pyxem, simulated)",
+     "4D-STEM: orientation and phase",
+     "20×20 scan of 128×128 patterns: grains of bcc and fcc Fe. For phase mapping.", {}),
+    ("pyxem-overlap", "simulated_overlap", "Overlapping nanocrystals (pyxem, simulated)",
+     "4D-STEM: orientation and phase",
+     "64×64 scan of 64×64 patterns: 50 nanocrystals overlapping in projection, with noise. "
+     "For virtual dark field, disk vectors and clustering.", {"real_space_pixels": 64}),
+    ("pyxem-stripes", "simulated_stripes", "Magnetic stripes (pyxem, simulated)", "4D-STEM: DPC and beam shift",
+     "60×60 scan of 64×64 patterns: the direct beam shifted one way or the other in alternating stripes. "
+     "For centre of mass and DPC.", {}),
+    ("pyxem-pn-junction", "simulated_pn_junction", "p–n junction (pyxem, simulated)", "4D-STEM: DPC and beam shift",
+     "30×30 scan of 256×256 patterns: the beam shifted by the junction's field. For centre of mass and DPC.", {}),
+    ("pyxem-constant-shift", "simulated_constant_shift_magnitude", "Constant beam shift (pyxem, simulated)",
+     "4D-STEM: DPC and beam shift",
+     "20×20 scan of 128×128 patterns: a field everywhere, shifting the beam by a constant amount. "
+     "For descan correction when a plane fit fails.", {}),
+    ("pyxem-tilt-boundary", "tilt_boundary_data", "Tilt boundary (pyxem, simulated)", "4D-STEM: DPC and beam shift",
+     "10×10 scan of 256×256 patterns: the beam tilted across a boundary. For beam shift and its correction.", {}),
+]
+
+# (id, pyxem function, file, MB, title, group, description)
+_PYXEM_RECORDED = [
+    ("pyxem-au-grating", "au_grating", "au_xgrating_100kX.hspy", 0.1, "Au cross-grating (pyxem)",
+     "4D-STEM: calibration", "254×254 pattern of a gold cross-grating. For the ring fit and the pixel size."),
+    ("pyxem-au-grating-20cm", "au_grating_20cm", "au_xgrating_20cm.tif", 0.3, "Au cross-grating, 20 cm (pyxem)",
+     "4D-STEM: calibration", "256×256 PACBED of a gold cross-grating at 20 cm camera length. For calibration."),
+    ("pyxem-zrnb", "zrnb_precipitate", "ZrNbPercipitate.zspy", 394.2, "ZrNb precipitate (pyxem)",
+     "4D-STEM: strain", "60×40 scan of 256×256 patterns across a precipitate. For strain mapping."),
+    ("pyxem-sped-ag", "sped_ag", "SPED-Ag.zspy", 214.0, "Ag, precession (pyxem)", "4D-STEM: orientation and phase",
+     "208×64 scan of 112×112 precession patterns of Ag grains. For template matching."),
+    ("pyxem-twinned-nanowire", "twinned_nanowire", "twinned_nanowire.hdf5", 34.5, "Twinned nanowire (pyxem)",
+     "4D-STEM: orientation and phase", "30×100 scan of 144×144 patterns of a twinned GaAs nanowire. "
+     "For orientation mapping."),
+    ("pyxem-sample-with-g", "sample_with_g", "sample_with_g.zspy", 51.7, "Overlapping grains (pyxem)",
+     "4D-STEM: orientation and phase", "25×26 scan of 256×256 patterns of overlapping grains. "
+     "For orientation mapping."),
+    ("pyxem-cuag", "cuag_orientations", "cuzipProcessed.zspy", 32.9, "CuAg orientations (pyxem)",
+     "4D-STEM: orientation and phase", "CuAg with grains of Cu (fcc) in several orientations. For orientation mapping."),
+    ("pyxem-organic", "organic_semiconductor", "data_processed.zspy", 58.3, "Organic semiconductor (pyxem)",
+     "4D-STEM: orientation and phase", "75×75 scan of 128×128 patterns of a beam-sensitive organic semiconductor. "
+     "For orientation mapping."),
+    ("pyxem-mgo", "mgo_nanocrystals", "mgo_nano.zspy", 104.3, "MgO nanocrystals (pyxem)",
+     "4D-STEM: orientation and phase", "105×105 scan of 144×144 patterns of overlapping MgO nanocrystals. "
+     "For virtual imaging and disk vectors."),
+    ("pyxem-feal", "feal_stripes", "FeAl_stripes.zspy", 382.1, "FeAl magnetic stripes (pyxem)",
+     "4D-STEM: DPC and beam shift", "Magnetic stripes in FeAl. For centre of mass and DPC."),
+    ("pyxem-ptychography", "small_ptychography", "smallPtychography.hspy", 12.5, "Bilayer WS₂ (pyxem)",
+     "4D-STEM: DPC and beam shift", "Bilayer WS₂ with 8×8-pixel patterns. For centre of mass and ptychography."),
+    ("pyxem-pdnip", "pdnip_glass", "PdNiP.zspy", 304.6, "PdNiP metallic glass (pyxem)", "4D-STEM: amorphous (FEM)",
+     "128×128 scan of 128×128 patterns of a metallic glass. For radial profiles and FEM."),
+    *[(f"pyxem-zrcual-{i}", f"zrcual_{i}", f"pos{p}-1.zspy", 18.3, f"ZrCuAl metallic glass {i} (pyxem)",
+       "4D-STEM: amorphous (FEM)", "A ZrCuAl metallic glass. For FEM.") for i, p in ((1, 1), (2, 5), (3, 6))],
+]
+
+
+def _pyxem_examples() -> list[Example]:
+    try:
+        import pyxem.data  # noqa: F401
+    except ImportError:
+        return []
+    return [
+        *(Example(i, title, desc, _pyxem(f, title, **kw), group) for i, f, title, group, desc, kw in _PYXEM_SIMULATED),
+        *(Example(i, title, desc, _pyxem(f, title, recorded=True), group, (file, mb))
+          for i, f, file, mb, title, group, desc in _PYXEM_RECORDED),
     ]
 
 
@@ -226,6 +352,7 @@ EXAMPLES = [
         "64×64 core-shell FePt particles (Pt-rich cores, Fe-rich shells) on carbon, with HAADF. "
         "Built from exSpy's FePt spectrum with Poisson noise; good for maps, regions and fitting.",
         _synthetic_fept_si,
+        "EDS",
     ),
     Example(
         "fept-spectrum",
@@ -245,6 +372,7 @@ EXAMPLES = [
         "Atomic-resolution image (synthetic)",
         "HyperSpy example: 512×512 simulated atomic-column image, for image display, overlays and rebinning.",
         lambda: [_atomic_resolution_image()],
+        "Atomic-resolution images",
     ),
     Example(
         "two-gaussians",
@@ -252,6 +380,7 @@ EXAMPLES = [
         "HyperSpy example: 32×32 spectrum image of two Gaussian peaks varying across the scan "
         "(not EDS), for the cursor and regions.",
         lambda: [_two_gaussians()],
+        "Spectrum fitting",
     ),
     Example(
         "fit-two-gaussians",
@@ -259,15 +388,26 @@ EXAMPLES = [
         "HyperSpy's two-Gaussians simulation with a fixed seed: 32×32 pixels, Gaussians of σ 10 and 20 at "
         "256 ± 5 and 768 ± 10 with random areas, Poisson noise; the true centre and area maps come with it.",
         _fit_two_gaussians,
+        "Spectrum fitting",
     ),
     *_kemstem_examples(),
+    *_pyxem_examples(),
 ]
 
 _BY_ID = {e.id: e for e in EXAMPLES}
 
 
 def list_examples() -> list[dict]:
-    return [{"id": e.id, "title": e.title, "description": e.description} for e in EXAMPLES]
+    """Every example, by group (in ``GROUPS`` order); a recorded pyxem
+    dataset not in its cache yet says how much it downloads."""
+    order = {g: i for i, g in enumerate(GROUPS)}
+    out = []
+    for e in sorted(EXAMPLES, key=lambda e: order.get(e.group, len(order))):
+        info = {"id": e.id, "title": e.title, "description": e.description, "group": e.group}
+        if e.download and not pyxem_cached(e.download[0]):
+            info["download_mb"] = e.download[1]
+        out.append(info)
+    return out
 
 
 def get_example(example_id: str) -> Example:

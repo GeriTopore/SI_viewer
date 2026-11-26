@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from si_viewer import examples
 from si_viewer.app import create_app
 from si_viewer.examples import EXAMPLES
 
@@ -13,8 +14,9 @@ def client():
 
 def test_list_examples(client):
     listed = client.get("/api/examples").json()
-    assert [e["id"] for e in listed] == [e.id for e in EXAMPLES]
-    assert all(e["title"] and e["description"] for e in listed)
+    # Every example, listed by group (see test_examples_are_grouped_in_order).
+    assert sorted(e["id"] for e in listed) == sorted(e.id for e in EXAMPLES)
+    assert all(e["title"] and e["description"] and e["group"] for e in listed)
     assert client.post("/api/examples/nope").status_code == 404
 
 
@@ -68,3 +70,31 @@ def test_synthetic_si_is_reproducible():
     _synthetic_fept_si_data.cache_clear()
     b, _, _ = _synthetic_fept_si_data()
     np.testing.assert_array_equal(a, b)
+
+
+# ---------- the menu: grouped by use, pyxem's 4D-STEM data among them ----------
+def test_examples_are_grouped_in_order():
+    listed = examples.list_examples()
+    groups = [e["group"] for e in listed]
+    assert set(groups) <= set(examples.GROUPS)
+    # Each group's examples together, the groups in the menu's order.
+    firsts = list(dict.fromkeys(groups))
+    assert firsts == [g for g in examples.GROUPS if g in firsts]
+    assert len(firsts) == len([g for i, g in enumerate(groups) if i == 0 or groups[i - 1] != g])
+
+
+def test_pyxem_simulation_opens_as_4dstem():
+    pytest.importorskip("pyxem")
+    from si_viewer.session import DatasetKind, Session
+
+    ids = {e["id"]: e for e in examples.list_examples()}
+    assert ids["pyxem-stripes"]["group"] == "4D-STEM: DPC and beam shift"
+    assert "download_mb" not in ids["pyxem-stripes"]  # simulated: nothing to download
+    s = Session()
+    entry = s.open_example("pyxem-stripes")
+    d = s.datasets[entry.dataset_ids[0]]
+    assert entry.label == "Magnetic stripes (pyxem, simulated)"
+    assert d.kind is DatasetKind.DIFFRACTION4D and d.signal.data.dtype == "float32"
+    # pyxem's LaTeX units ($\AA^{-1}$), as the app writes them.
+    strain = s.datasets[s.open_example("pyxem-strain").dataset_ids[0]]
+    assert strain.signal.axes_manager.signal_axes[0].units == "1/Å"

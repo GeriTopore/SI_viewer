@@ -412,6 +412,91 @@ grid's *Merged* mode with each group's colour), and presets.
 - Groups of any detector shape (proposed), or apertures only?
 
 ### Phase 3: calibration and centring (pyxem)
+- **Built (2026-11-26): Centring process** (`processing/centring.py`,
+  `/4d/beam/*`, `CentringSection`), in three steps. (1) *Find the beam*
+  (a job): pyxem `get_direct_beam_position` (centre of mass with a
+  threshold × the mean, or blur), searched in a square around the
+  bright-field disk of the mean pattern (± 3 r by default, so bright spots
+  elsewhere don't win); kept as "Beam shift x / y" images under the data
+  (origin "beam-shift", with the data's revision). pyxem's
+  "cross_correlate" isn't offered: with a search box its shifts come out on
+  another basis. (2) *Descan*: each pattern's own, a plane fitted to the
+  whole scan, or to its corners (pyxem `BeamShift.get_linear_plane`); the
+  RMS between plane and beam shown; while the process is open each cursor's
+  pattern marks the beam found (red) and the plane (cyan). (3) *Centre the
+  patterns* (a job): pyxem `center_direct_beam` (sub-pixel; float32 so the
+  intensity is kept), in place or as a copy ("centred"); the pattern axes'
+  offsets put 0 at the centre. Shifts from before a change (revision) or on
+  another scan size are refused, so centring can't be applied twice. Au NP
+  dm4: finding 0.3 s, centring 1.4 s; after centring with the plane, a plane
+  fitted again is at the centre to 0.02 px.
+- **Built (2026-11-26): Calibration process** (`processing/calibration.py`,
+  `/4d/calibration*`, `CalibrationSection`), in three steps. (1) *Fit a
+  ring* of the max or mean pattern in an annulus (inner/outer radius around
+  the bright-field disk's centre): at each of 180 directions the
+  intensity-weighted radius, then a direct least-squares ellipse fit
+  (Halir–Flusser), twice (the second around the first fit's centre); its
+  centre, semi-axes, angle, √(ab) radius, ellipticity and RMS shown, the
+  annulus, points and ellipse drawn on the pattern. pyxem's
+  `determine_ellipse` isn't used: scikit-image 0.26's `EllipseModel` fails
+  here even on clean points (complex angle); pyxem's `_ellipse_to_affine`
+  still gives the affine. (2) *Pixel size* from the ring as a standard's
+  reflection (Au, Ag, Al, Cu, Si; d listed), from camera length, detector
+  pixel and voltage (relativistic λ), or entered; in 1/nm or 1/Å.
+  (3) *Calibrate*: the pattern axes' scale and units, 0 at the ring's centre
+  (optional); the data isn't resampled; the ring and pyxem's affine kept in
+  `calibration` (for azimuthal integration); restored on the raw file's axes
+  when an analysis is reopened. polyAu: Au 111 at r 22.92 px, 6.1 %
+  ellipticity → 0.1853 1/nm per px.
+- Overlays of a process (disks, beam, ring) are drawn while it is on screen
+  in the Process tab: open (icon view), unfolded (list view) or split off
+  (`useProcessShown`).
+- **Calibrated Bragg vectors and BVM (py4DSTEM-style; built 2026-11-26).**
+  The vectors keep their raw positions (the Bragg vectors store the pattern
+  calibration they were found with, so pattern pixels come back exactly);
+  calibrations are applied when they are read, never by resampling the data:
+  (1) an origin per scan position: the beam found by Centring (steps 1–2:
+  as found or the descan plane), or each pattern's direct-beam disk (with
+  the same plane options); (2) the ring's ellipse made circular; (3) the
+  pixel size and units. The Bragg vector map is made from the calibrated
+  vectors (rings from every position on top of each other; circles; axes in
+  1/nm or 1/Å with 0 at the centre), or raw. Calibration's ring fit can use
+  the BVM (origin-corrected, in pattern pixels), sharper than the mean
+  pattern. So centring the data is optional: the beam positions alone
+  calibrate the vectors.
+  Built as: `disks.direct_beam_origins` (each position's disk nearest the
+  BF disk's centre, within 2 r; missing ones the median), the descan plane
+  fitted to the origins with pyxem's `get_linear_plane` (as to the beam's
+  shifts), `disks.ellipse_matrix` (the ellipse to a circle of radius
+  √(ab)), `disks.calibrated` and `disks.vector_map_of`; `POST /4d/disks/map`
+  (origin none / beam / direct, plane, ellipse, scale) remakes the "Bragg
+  vector map" (its settings kept in `disks.map`, axes with 0 at the centre,
+  2 × finer than the pattern); `/4d/calibration/ring` takes `source: "bvm"`
+  (the map in pattern px with each position moved by its origin). UI: a
+  *Bragg vector map* step in Disk detection, a *BVM* source in Calibration.
+  polyAu: the first ring's FWHM in the map 13 → 4 bins (peak 6.9 → 10.5).
+  Fixed on the way: the affine kept for pyxem had its angle the wrong way
+  round (pyxem measures it the other way): it now makes the ring circular.
+- **Calibration record and switches (built 2026-11-26), as py4DSTEM's
+  Calibration.** The 4D data's `calibration` holds every part (each may be
+  missing): Q pixel size (scale, units, how), the ring's ellipse, each scan
+  position's origin (`origin`: source, fit, mean, RMS), which parts are
+  applied to the Bragg vectors (`enabled`: origin, ellipse, scale) and how
+  the map is shown (`bvm`: raw / calibrated). *Calibration* process, step 1
+  · Centring (measure_origin / fit_origin): from each position's direct-beam
+  disk among the Bragg vectors, or the beam found by Centring; fitted as a
+  plane, corner plane or kept per position → "Origin x / y" and "Origin x /
+  y (fit)" images (origin "origin-map") under the Bragg vector map (from the
+  vectors) or the data (from the beam), switched on. Steps
+  2–4: ring, pixel size, apply. The *Info* tab of the 4D data (and of what
+  was made from it) lists Q and R pixel size, centring (the switch subtracts
+  the fitted origin or not), ellipse, QR rotation,
+  each with a switch; any change (`/4d/calibration/switches`) makes the
+  "Bragg vector map" again at once (`Session.remake_bragg_map`; also after
+  finding the disks, measuring the origin or calibrating). Under the map
+  itself, *Raw / Calibrated*. The Disk detection process's earlier "Bragg
+  vector map" step is gone (this replaces it).
+- Still to do in this phase: the scan–diffraction rotation (with COM, phase 4).
 - Direct beam position and centring (methods: blur, centre of mass,
   cross-correlation), descan correction (linear plane), shown in the viewer
   before applying.

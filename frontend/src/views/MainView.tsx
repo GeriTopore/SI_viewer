@@ -1,5 +1,8 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { DatasetSummary } from "../api/client";
+import { fourDOf } from "../components/FourDCalibrationInfo";
+import { setCalibrationSwitches } from "../state/calibration";
+import { segmented } from "./FourDView";
 import { allDatasets, isColumnItem, planeSize, useDatasets } from "../state/datasets";
 import { useAlignment } from "../state/alignment";
 import { isLineScan } from "../format";
@@ -53,7 +56,7 @@ export function MainView() {
   // Bragg vectors (a table): shown on their 4D-STEM data's patterns.
   if (primary?.origin === "disks") {
     const cube = byId.get(primary.parent_id ?? "");
-    if (cube?.kind === "4dstem") return <FourDView key={`${cube.id}@${cube.revision}`} ds={cube} />;
+    if (cube?.kind === "4dstem") return <FourDView key={`${cube.id}@${cube.revision}`} ds={cube} vectors />;
   }
   switch (primary?.kind) {
     case "spectrum_image":
@@ -78,7 +81,9 @@ export function MainView() {
       const shown = [...images, ...implied];
       if (!shown.length) return <div className="placeholder"><p className="muted">Its image is gone.</p></div>;
       const [w, h] = planeSize(shown[0]);
-      return <ImagesView key={`images:${w}x${h}`} images={shown} items={items} implied={implied.map((d) => d.id)} />;
+      // A Bragg vector map on its own: shown raw or calibrated.
+      const footer = shown.length === 1 && shown[0].origin === "bragg-map" ? <BvmSwitch bvm={shown[0]} /> : undefined;
+      return <ImagesView key={`images:${w}x${h}`} images={shown} items={items} implied={implied.map((d) => d.id)} footer={footer} />;
     }
     default:
       return (
@@ -88,4 +93,30 @@ export function MainView() {
         </div>
       );
   }
+}
+
+/** Under a Bragg vector map: its view raw (pattern px, as found) or with
+ * its data's calibrations switched on (Info tab), made again at once. */
+function BvmSwitch({ bvm }: { bvm: DatasetSummary }) {
+  const files = useDatasets((s) => s.files);
+  const cube = fourDOf(bvm, allDatasets(files));
+  const [error, setError] = useState<string | null>(null);
+  if (!cube) return null;
+  const on = cube.calibration?.enabled ?? {};
+  const anyOn = !!(on.origin || on.ellipse || on.scale);
+  const shown = (bvm.disks as { map?: { view?: "raw" | "calibrated" } } | null | undefined)?.map?.view ?? "raw";
+  const set = (view: "raw" | "calibrated") =>
+    setCalibrationSwitches(cube.id, { view }).then(() => setError(null), (e: Error) => setError(e.message));
+  return (
+    <div className="stack-bar fourd-bar">
+      {segmented("Bragg vector map", [
+        { id: "raw", label: "Raw", title: "The disks as found (pattern pixels)" },
+        {
+          id: "calibrated", label: "Calibrated", disabled: !anyOn,
+          title: anyOn ? "With the calibrations switched on in the Info tab" : "Switch a calibration on first (Info tab)",
+        },
+      ], shown, (v) => void set(v))}
+      {error && <span className="field-error small">{error}</span>}
+    </div>
+  );
 }

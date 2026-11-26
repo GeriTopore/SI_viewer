@@ -466,7 +466,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map" | "beam-shift" | "centred" | "origin-map";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -490,6 +490,31 @@ export interface DatasetSummary {
   virtual?: { source_id: string; detector: Record<string, number | string>; response: string } | null;
   /** Bragg disks found in 4D-STEM data (the "Bragg vectors" table, origin
    * "disks", and its "Bragg vector map", origin "bragg-map"). */
+  /** 4D-STEM data's calibration (py4DSTEM-style): the pattern's pixel size
+   * (scale, units, how), the ring's ellipse, each scan position's origin;
+   * which are applied to the Bragg vectors (``enabled``), and whether the
+   * Bragg vector map shows them (``bvm``). Each part may be missing. */
+  calibration?: {
+    scale?: number;
+    units?: string;
+    how?: { standard?: string; hkl?: string; d?: number; camera_length?: number; pixel?: number; kv?: number; entered?: boolean };
+    ring?: { cx: number; cy: number; a: number; b: number; angle: number; radius: number; ellipticity: number; rms?: number } | null;
+    affine?: number[][] | null;
+    origin?: { source: "vectors" | "beam"; plane: { mode: "none" | "plane" | "corners"; corners: number }; mean: [number, number]; rms: number };
+    enabled?: { origin?: boolean; ellipse?: boolean; scale?: boolean };
+    bvm?: "raw" | "calibrated";
+  } | null;
+  /** An origin map of 4D-STEM data ("Origin x / y", "(fit)"; origin "origin-map"). */
+  origin_map?: { axis: "x" | "y"; kind: "measured" | "fitted"; source_id: string } | null;
+  /** The direct beam found in 4D-STEM data ("Beam shift x" / "Beam shift y", origin "beam-shift"). */
+  beam?: {
+    source_id: string;
+    axis: "x" | "y";
+    options: Record<string, unknown>;
+    range: { x: [number, number]; y: [number, number] };
+    /** The data's revision it was found on (centring it makes it stale). */
+    revision?: number;
+  } | null;
   disks?: {
     source_id: string;
     options: Record<string, unknown>;
@@ -1080,6 +1105,9 @@ export interface JobSummary {
     /** Disk detection: the Bragg vectors table's id and how many disks. */
     id?: string;
     count?: number;
+    /** Finding the beam: the shift images' ids and each shift's range (px). */
+    ids?: string[];
+    range?: { x: [number, number]; y: [number, number] };
   } | null;
 }
 
@@ -1093,11 +1121,15 @@ export interface QuantSpec {
   min_counts: number;
 }
 
-/** A bundled example dataset (offline). */
+/** An example dataset: bundled, simulated, or pyxem's (downloaded on first use). */
 export interface ExampleInfo {
   id: string;
   title: string;
   description: string;
+  /** What it is for: the menu's group. */
+  group: string;
+  /** Not downloaded yet: its size (MB). */
+  download_mb?: number;
 }
 
 export interface Health {
@@ -1461,6 +1493,15 @@ export const api = {
   alignedSum: (id: string, choice: ShiftsChoice) =>
     request<JobSummary>(`/api/datasets/${id}/insitu/aligned-sum`, { method: "POST", body: JSON.stringify(choice) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
+  /** Find the direct beam in every pattern of 4D-STEM data (a job). */
+  findBeam: (id: string, options: object) =>
+    request<JobSummary>(`/api/datasets/${id}/4d/beam/find`, { method: "POST", body: JSON.stringify({ options }) }),
+  /** Shift every pattern so the beam is at the centre (a job; not ``inPlace``: a copy). */
+  centreBeam: (id: string, plane: object, inPlace: boolean) =>
+    request<JobSummary>(`/api/datasets/${id}/4d/beam/centre`, {
+      method: "POST",
+      body: JSON.stringify({ plane, in_place: inPlace }),
+    }),
   /** Find the Bragg disks of every pattern of 4D-STEM data (a job). */
   findDisks: (id: string, options: object) =>
     request<JobSummary>(`/api/datasets/${id}/4d/disks/run`, { method: "POST", body: JSON.stringify({ options }) }),

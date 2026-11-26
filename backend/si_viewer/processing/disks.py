@@ -229,6 +229,102 @@ def table_of(vectors) -> np.ndarray:
     return np.concatenate(parts).astype(np.float32) if parts else np.empty((0, 5), np.float32)
 
 
+# ---------- calibrated vectors (py4DSTEM-style: applied when read) ----------
+
+
+def direct_beam_origins(table: np.ndarray, scan_shape: tuple[int, int], guess: dict) -> np.ndarray:
+    """Each scan position's direct beam from its own disks: the disk nearest
+    ``guess`` (the bright-field disk of the mean pattern) within 2 × its
+    radius. [y, x, 2] of (x, y) pattern px; positions without one: NaN."""
+    ny, nx = scan_shape
+    out = np.full((ny, nx, 2), np.nan)
+    if not len(table):
+        return out
+    d = np.hypot(table[:, 3] - guess["cx"], table[:, 2] - guess["cy"])
+    near = d <= 2 * guess["r"]
+    rows, dist = table[near], d[near]
+    iy, ix = np.floor(rows[:, 0]).astype(int), np.floor(rows[:, 1]).astype(int)
+    order = np.argsort(-dist)  # nearest written last: it stays
+    out[iy[order], ix[order], 0] = rows[order, 3]
+    out[iy[order], ix[order], 1] = rows[order, 2]
+    return out
+
+
+def fill_origins(origins: np.ndarray) -> np.ndarray:
+    """Origins with the missing (NaN) ones set to the median of the others."""
+    out = origins.copy()
+    for k in range(2):
+        ch = out[..., k]
+        if np.isnan(ch).all():
+            raise ValueError("No direct beam was found among the disks")
+        ch[np.isnan(ch)] = np.nanmedian(ch)
+    return out
+
+
+def ellipse_matrix(ring: dict) -> np.ndarray:
+    """The 2 × 2 matrix (on (x, y) offsets) that makes ``ring``'s ellipse a
+    circle of radius √(a b): its a axis scaled by √(b / a), b by √(a / b)."""
+    c, s = np.cos(ring["angle"]), np.sin(ring["angle"])
+    r = np.array([[c, -s], [s, c]])
+    k = np.diag([np.sqrt(ring["b"] / ring["a"]), np.sqrt(ring["a"] / ring["b"])])
+    return r @ k @ r.T
+
+
+def calibrated(table: np.ndarray, origins: np.ndarray | None, centre: tuple[float, float],
+               ellipse: dict | None = None, scale: float = 1.0) -> np.ndarray:
+    """The disks' positions calibrated: relative to their scan position's
+    origin (``origins`` [y, x, 2] of (x, y) px; None: ``centre`` for all),
+    the ellipse made circular, times ``scale``. [n, 2] of (kx, ky)."""
+    x, y = table[:, 3].astype(float), table[:, 2].astype(float)
+    if origins is not None:
+        iy, ix = np.floor(table[:, 0]).astype(int), np.floor(table[:, 1]).astype(int)
+        ox, oy = origins[iy, ix, 0], origins[iy, ix, 1]
+    else:
+        ox, oy = centre
+    q = np.column_stack([x - ox, y - oy])
+    if ellipse is not None:
+        q = q @ ellipse_matrix(ellipse).T
+    return q * scale
+
+
+def vector_map_of(q: np.ndarray, weights: np.ndarray, half: float, bins: int) -> np.ndarray:
+    """A Bragg vector map of calibrated positions ``q`` ([n, 2] of kx, ky):
+    ``bins`` × ``bins`` over −``half`` … ``half`` on both axes, each disk
+    split between the 4 bins around it. float32 [ky, kx]."""
+    out = np.zeros((bins, bins), np.float64)
+    if len(q):
+        step = 2 * half / bins
+        x = (q[:, 0] + half) / step - 0.5
+        y = (q[:, 1] + half) / step - 0.5
+        x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+        fx, fy = x - x0, y - y0
+        for dy, dx, f in ((0, 0, (1 - fy) * (1 - fx)), (0, 1, (1 - fy) * fx), (1, 0, fy * (1 - fx)), (1, 1, fy * fx)):
+            yy, xx = y0 + dy, x0 + dx
+            ok = (yy >= 0) & (yy < bins) & (xx >= 0) & (xx < bins)
+            np.add.at(out, (yy[ok], xx[ok]), (weights * f)[ok])
+    return out.astype(np.float32)
+
+
+def map_of(table: np.ndarray, shape: tuple[int, int], origins: np.ndarray | None = None,
+           centre: tuple[float, float] | None = None, ring: dict | None = None, scale: float | None = None,
+           upsample: int = 2) -> tuple[np.ndarray, float, float]:
+    """The Bragg vector map of a table on patterns of ``shape`` (h, w),
+    ``upsample`` × finer: raw (no calibration given: pattern px, from the
+    pattern's corner), or calibrated (relative to ``origins`` per position
+    or ``centre``, the ellipse made circular, × ``scale``; 0 at the centre).
+    Returns (map, step, offset) of both axes (the first bin's centre)."""
+    h, w = shape
+    if origins is None and ring is None and scale is None:
+        step = 1 / upsample
+        return vector_map(table, shape, upsample=upsample), step, step / 2
+    s = scale or 1.0
+    q = calibrated(table, origins, centre if centre is not None else (w / 2, h / 2), ring, s)
+    half = max(w, h) / 2 * s
+    bins = upsample * max(w, h)
+    step = 2 * half / bins
+    return vector_map_of(q, np.ones(len(q)), half, bins), step, -half + step / 2
+
+
 def disks_at(table: np.ndarray, x: float, y: float) -> np.ndarray:
     """The rows of a Bragg vectors table at scan pixel (x, y)."""
     sel = (np.floor(table[:, 0]) == np.floor(y)) & (np.floor(table[:, 1]) == np.floor(x))

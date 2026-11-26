@@ -9,31 +9,41 @@ import { FftBoxOverlay } from "../components/FftBoxOverlay";
 import { LoupeToggle } from "../components/Loupe";
 import { LineOverlay } from "../components/LineOverlay";
 import { RoiOverlay } from "../components/RoiOverlay";
+import { useCalibration } from "../state/calibration";
+import { planeOf, useCentring } from "../state/centring";
 import { diskOptionsOf, useDisks, type Disk } from "../state/disks";
 import { useLayers } from "../state/layers";
 import { useProfiles } from "../state/profiles";
-import { useUi } from "../state/ui";
+import { useProcessShown, useUi } from "../state/ui";
 import { useFftBoxTool } from "./useFftBoxTool";
 import { useLineTool } from "./useLineTool";
 import { useNavigatorTools } from "./si/useNavigatorTools";
 import { autoContrast } from "./useImageDisplay";
 import type { ImageGeometry } from "./geometry";
-import { ImageToolButtons, LayeredViewer, type StackLayer } from "../components/LayeredViewer";
+import { ImageToolButtons, LayeredViewer, type ExtraLayers, type StackLayer } from "../components/LayeredViewer";
+import { useLayersTab } from "../state/layersTab";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import {
   ROW_HEIGHTS, SCAN_MAX, SCAN_MEAN, cursorName, detectorForRequest, groupOf, initialState, latticePoints, moveDetector, newCursor, useFourD,
-  type Detector, type DetectorGroup, type FourDState, type Lattice, type PatternSource, type Response, type ScanCursor,
+  type Detector, type DetectorGroup, type FourDState, type Lattice, type OverlayLayer, type PatternSource, type Response, type ScanCursor,
 } from "../state/fourd";
 import { containsPoint, shapeToRegion, useSi, useSiState } from "../state/si";
 import { imageGeometry } from "./geometry";
 import { logFrame } from "./LineScanView";
 
 const HANDLE_PX = 8;
-// Bragg disks found on a pattern.
+// Bragg disks found on a pattern (their layer's default colour), and a dot's radius (screen px).
 const DISK_COLOR = "#ffffff";
+const DOT_PX = 2.5;
+// The direct beam: where it was found, and where the descan plane puts it.
+const BEAM_FOUND_COLOR = "#ff3b30";
+const BEAM_PLANE_COLOR = "#00e5ff";
+// Calibration: the annulus searched and the points found (yellow), the ellipse fitted (green).
+const RING_COLOR = "#ffd60a";
+const RING_FIT_COLOR = "#30d158";
 // The frames around the virtual image and the pattern in their group's / source's colour.
 const FRAME_WIDTH = 2;
 const FRAME_OPACITY = 0.6;
@@ -51,6 +61,8 @@ export const SHAPES: { id: Detector["shape"]; label: string; title: string }[] =
   { id: "apertures", label: "Apertures", title: "Discs placed by ⌘/Ctrl-click on the pattern, and a g-vector array: their sum" },
 ];
 const LATTICE_COLOR = "#8cff5a";
+/** Detectors' areas are filled in their group's colour, this opaque. */
+const DETECTOR_FILL = 0.25;
 const BAD_COLOR = "#ff3b30";
 export const RESPONSES: { id: Response; label: string; title: string }[] = [
   { id: "sum", label: "Sum", title: "The total intensity inside the detector" },
@@ -271,21 +283,25 @@ function ListPicker({ label, color, muted, title, items }: { label: string; colo
 }
 
 /** A detector's outline on the pattern (apertures: every disc, ``d`` as sent
- * to the backend), in ``color``. */
+ * to the backend), in ``color``, the area integrated over filled translucent. */
 function outline(t: Transform, d: Detector, color: string, width: number): ReactNode {
   const z = t.zoom;
-  const stroke = { fill: "none", stroke: color, strokeWidth: width };
+  const stroke = { fill: color, fillOpacity: DETECTOR_FILL, stroke: color, strokeWidth: width };
   const [cx, cy] = t.toScreen(d.cx, d.cy);
   switch (d.shape) {
     case "circle":
       return <circle cx={cx} cy={cy} r={d.r * z} {...stroke} />;
-    case "annulus":
+    case "annulus": {
+      // The ring between the circles filled (even-odd), each circle outlined.
+      const circle = (r: number) => `M ${cx - r} ${cy} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`;
       return (
         <>
-          <circle cx={cx} cy={cy} r={d.r * z} {...stroke} />
-          <circle cx={cx} cy={cy} r={d.r_inner * z} {...stroke} strokeDasharray="4 3" />
+          <path d={`${circle(d.r * z)} ${circle(d.r_inner * z)}`} fill={color} fillOpacity={DETECTOR_FILL} fillRule="evenodd" stroke="none" />
+          <circle cx={cx} cy={cy} r={d.r * z} fill="none" stroke={color} strokeWidth={width} />
+          <circle cx={cx} cy={cy} r={d.r_inner * z} fill="none" stroke={color} strokeWidth={width} strokeDasharray="4 3" />
         </>
       );
+    }
     case "rectangle": {
       const [ax, ay] = t.toScreen(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1));
       const [bx, by] = t.toScreen(Math.max(d.x0, d.x1), Math.max(d.y0, d.y1));
@@ -372,10 +388,18 @@ export function useFourDState(ds: DatasetSummary) {
  * drawn on the diffraction pattern (right), live. A cursor or a region on the
  * scan picks the pattern shown (or the mean or maximum over the whole scan).
  * Arrow keys move the cursor (scan focused) or the detector (pattern
- * focused); W/A/S/D move the detector; Shift moves 5 pixels. */
-export function FourDView({ ds }: { ds: DatasetSummary }) {
+ * focused); W/A/S/D move the detector; Shift moves 5 pixels. ``vectors``:
+ * its Bragg vectors are selected (in the dataset pane): their disks shown. */
+export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors?: boolean }) {
   const { scanG, patternG, st, patch, group, det } = useFourDState(ds);
   const version = dataVersion(ds);
+  // How the marks over the pattern and the scan show (Layers tab).
+  const overlays = useFourD((s) => s.overlays[ds.id]);
+  const setOverlay = useFourD((s) => s.setOverlay);
+  const ovOf = (key: string): OverlayLayer => overlays?.[key] ?? {};
+  const detShown = (g: DetectorGroup) => ovOf(`det:${g.id}`).visible ?? true;
+  const detOpacity = (g: DetectorGroup) => ovOf(`det:${g.id}`).opacity ?? 1;
+  const cursorShown = (c: ScanCursor) => ovOf(`cursor:${c.id}`).visible ?? true;
 
   // ---------- the image on the scan: live through the detector, or a saved virtual image ----------
   const files = useDatasets((s) => s.files);
@@ -467,13 +491,20 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
     return out;
   }, [dpSet.frames, log]);
   // ---------- Bragg disks on the patterns shown ----------
-  // Only while the Disk detection process is shown (the Process tab on this
-  // data's Disk detection): found live with its settings ("Show on the
-  // patterns"), else, once every pattern's are found, those at each cursor.
-  const diskProcessShown = useUi((s) => s.processOpen === "disks" && s.rightTab === "process");
+  // While the Disk detection process is shown (the Process tab on this data's
+  // Disk detection): found live with its settings ("Show on the patterns"),
+  // else, once every pattern's are found, those at each cursor. Their layer
+  // (Layers tab) shows or hides them, also outside the process; selecting the
+  // Bragg vectors shows them.
+  const diskProcessShown = useProcessShown("disks");
   const focused = useDatasets((s) => s.focusId === ds.id);
   const diskOpen = diskProcessShown && focused;
   const diskPreview = useDisks((s) => s.preview[ds.id] ?? true) && diskOpen;
+  const disksLayer = ovOf("disks");
+  const disksVisible = disksLayer.visible ?? diskOpen;
+  useEffect(() => {
+    if (vectors) setOverlay(ds.id, "disks", { visible: true });
+  }, [vectors, ds.id, setOverlay]);
   const diskOpts = useDisks((s) => diskOptionsOf(s, ds.id));
   const shownSourceIds = grid ? dpItems.map((i) => i.id) : [source];
   const specOf = (id: string): object | null => {
@@ -517,7 +548,7 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   const [storedDisks, setStoredDisks] = useState<Record<string, Disk[]>>({});
   const cursorKeys = cursors.map((c) => `${c.x},${c.y}`);
   useEffect(() => {
-    if (!vectorsKey || diskPreview || !diskOpen) return;
+    if (!vectorsKey || diskPreview || !disksVisible) return;
     for (const xy of cursorKeys) {
       const k = `${vectorsKey}|${xy}`;
       if (storedDisks[k]) continue;
@@ -527,11 +558,10 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
         .then((body) => body && setStoredDisks((s) => ({ ...s, [k]: body.disks })))
         .catch(() => undefined);
     }
-  }, [vectorsKey, diskPreview, diskOpen, cursorKeys.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [vectorsKey, diskPreview, disksVisible, cursorKeys.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
   /** The disks to draw on the pattern of source ``id`` (and their radius), if any. */
   const disksOf = (id: string): { disks: Disk[]; r: number } | null => {
-    // Only while the Disk detection process is shown.
-    if (!diskOpen) return null;
+    if (!disksVisible) return null;
     if (diskPreview) {
       const p = previewDisks;
       return p?.disks[id] ? { disks: p.disks[id], r: p.r } : null;
@@ -543,12 +573,99 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   const disksOverlay = (t: Transform, id: string): ReactNode => {
     const found = disksOf(id);
     if (!found) return null;
+    const colour = disksLayer.colour ?? DISK_COLOR;
+    // A circle of the disk's size, or a dot at its position.
+    const dot = disksLayer.style === "dot";
+    const dotR = DOT_PX * (disksLayer.size ?? 1);
     return (
-      <g className="fourd-overlay">
+      <g className="fourd-overlay" opacity={disksLayer.opacity ?? 1}>
         {found.disks.map(([ky, kx], i) => {
           const [x, y] = t.toScreen(kx, ky);
-          return <circle key={i} cx={x} cy={y} r={Math.max(3, found.r * t.zoom)} fill="none" stroke={DISK_COLOR} strokeWidth={1.25} />;
+          return dot
+            ? <circle key={i} cx={x} cy={y} r={dotR} fill={colour} stroke="#000" strokeWidth={0.5} />
+            : <circle key={i} cx={x} cy={y} r={Math.max(3, found.r * t.zoom)} fill="none" stroke={colour} strokeWidth={1.25} />;
         })}
+      </g>
+    );
+  };
+
+  // ---------- the direct beam, while the Centring process is shown ----------
+  // At each cursor's pattern: where it was found, and where the descan puts it.
+  const centringShown = useProcessShown("centring") && focused;
+  const plane = useCentring((s) => planeOf(s, ds.id));
+  const shiftDs = useMemo(
+    () => allDatasets(files).filter((d) => d.origin === "beam-shift" && d.parent_id === ds.id),
+    [files, ds.id],
+  );
+  const beamKey = shiftDs.length === 2 ? `${shiftDs.map((d) => `${d.id}@${dataVersion(d)}`).join()}|${plane.mode}|${plane.corners}` : "";
+  const [beamAt, setBeamAt] = useState<Record<string, { found: [number, number]; used: [number, number] }>>({});
+  useEffect(() => {
+    if (!beamKey || !centringShown) return;
+    for (const xy of cursorKeys) {
+      const k = `${beamKey}|${xy}`;
+      if (beamAt[k]) continue;
+      const [x, y] = xy.split(",");
+      fetch(`/api/datasets/${ds.id}/4d/beam?x=${x}&y=${y}&mode=${plane.mode}&corners=${plane.corners}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((b) => b && setBeamAt((s) => ({ ...s, [k]: { found: b.found, used: b.used } })))
+        .catch(() => undefined);
+    }
+  }, [beamKey, centringShown, cursorKeys.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  const beamOverlay = (t: Transform, id: string): ReactNode => {
+    if (!centringShown) return null;
+    const c = cursors.find((k) => k.id === id);
+    const b = c && beamAt[`${beamKey}|${c.x},${c.y}`];
+    if (!b) return null;
+    const cross = ([x, y]: [number, number], color: string, k: string) => {
+      const [sx, sy] = t.toScreen(x, y);
+      return (
+        <g key={k} stroke={color} strokeWidth={1.5}>
+          <line x1={sx - 8} x2={sx + 8} y1={sy} y2={sy} />
+          <line x1={sx} x2={sx} y1={sy - 8} y2={sy + 8} />
+        </g>
+      );
+    };
+    return (
+      <g className="fourd-overlay">
+        {cross(b.found, BEAM_FOUND_COLOR, "found")}
+        {plane.mode !== "none" && cross(b.used, BEAM_PLANE_COLOR, "used")}
+      </g>
+    );
+  };
+
+  // ---------- the ring, while the Calibration process is shown ----------
+  // The annulus searched (dashed), the ellipse fitted and the points on it.
+  const calibrationShown = useProcessShown("calibration") && focused;
+  const ringSearch = useCalibration((s) => s.search[ds.id]);
+  const ringGuess = useCalibration((s) => s.guess[ds.id]);
+  const fittedRing = useCalibration((s) => s.ring[ds.id] ?? null);
+  const ringOverlay = (t: Transform): ReactNode => {
+    if (!calibrationShown) return null;
+    const z = t.zoom;
+    const g = ringGuess ?? { cx: patternG.width / 2, cy: patternG.height / 2 };
+    const [gx, gy] = t.toScreen(g.cx, g.cy);
+    const search = ringSearch ?? { r_min: Math.round(patternG.width * 0.15), r_max: Math.round(patternG.width * 0.25) };
+    return (
+      <g className="fourd-overlay">
+        {[search.r_min, search.r_max].map((r, i) => (
+          <circle key={i} cx={gx} cy={gy} r={r * z} fill="none" stroke={RING_COLOR} strokeWidth={1} strokeDasharray="4 3" opacity={0.8} />
+        ))}
+        {fittedRing && (() => {
+          const [ex, ey] = t.toScreen(fittedRing.cx, fittedRing.cy);
+          return (
+            <>
+              {fittedRing.points.map(([x, y], i) => {
+                const [px, py] = t.toScreen(x, y);
+                return <circle key={i} cx={px} cy={py} r={1.5} fill={RING_COLOR} />;
+              })}
+              <ellipse cx={ex} cy={ey} rx={fittedRing.a * z} ry={fittedRing.b * z}
+                transform={`rotate(${(fittedRing.angle * 180) / Math.PI} ${ex} ${ey})`}
+                fill="none" stroke={RING_FIT_COLOR} strokeWidth={1.5} />
+              <line x1={ex - 6} x2={ex + 6} y1={ey} y2={ey} stroke={RING_FIT_COLOR} strokeWidth={1.5} />
+              <line x1={ex} x2={ex} y1={ey - 6} y2={ey + 6} stroke={RING_FIT_COLOR} strokeWidth={1.5} />
+            </>
+          );
+        })()}
       </g>
     );
   };
@@ -856,14 +973,14 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   const scanOverlay = (t: Transform, key?: string): ReactNode => (
     <g className="fourd-overlay">
       {frame(t, scanG.width, scanG.height, multi ? st.groups.find((g) => `vi:${g.id}` === key)?.color : shownSaved ? null : group.color)}
-      {cursors.map((c) => {
+      {cursors.filter(cursorShown).map((c) => {
         const [ax, ay] = t.toScreen(c.x, c.y);
         const [bx, by] = t.toScreen(c.x + 1, c.y + 1);
         const [cx, cy] = [(ax + bx) / 2, (ay + by) / 2];
         const on = c.id === source;
         const w = on ? 2 : 1.25;
         return (
-          <g key={c.id} opacity={on ? 1 : 0.75}>
+          <g key={c.id} opacity={(on ? 1 : 0.75) * (ovOf(`cursor:${c.id}`).opacity ?? 1)}>
             <rect x={ax} y={ay} width={bx - ax} height={by - ay} fill="none" stroke={c.color} strokeWidth={w} />
             <line x1={cx - 9} x2={cx - 4} y1={cy} y2={cy} stroke={c.color} strokeWidth={w} />
             <line x1={cx + 4} x2={cx + 9} y1={cy} y2={cy} stroke={c.color} strokeWidth={w} />
@@ -905,11 +1022,11 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
       <g className="fourd-overlay">
         {generated.map((a, i) => {
           const [x, y] = t.toScreen(a.x, a.y);
-          return <circle key={`g${i}`} cx={x} cy={y} r={d.r * z} fill="none" stroke={group.color} strokeWidth={1.25} strokeDasharray="4 3" />;
+          return <circle key={`g${i}`} cx={x} cy={y} r={d.r * z} fill={group.color} fillOpacity={DETECTOR_FILL} stroke={group.color} strokeWidth={1.25} strokeDasharray="4 3" />;
         })}
         {placed.map((a, i) => {
           const [x, y] = t.toScreen(a.x, a.y);
-          return <circle key={`p${i}`} cx={x} cy={y} r={d.r * z} fill="none" stroke={group.color} strokeWidth={i === selectedAperture ? 2.5 : 1.5} />;
+          return <circle key={`p${i}`} cx={x} cy={y} r={d.r * z} fill={group.color} fillOpacity={DETECTOR_FILL} stroke={group.color} strokeWidth={i === selectedAperture ? 2.5 : 1.5} />;
         })}
         {sized && (() => {
           const [hx, hy] = t.toScreen(sized.x + d.r, sized.y);
@@ -936,23 +1053,27 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   const othersOverlay = (t: Transform): ReactNode => (
     <g className="fourd-overlay" opacity={0.7}>
       {st.groups
-        .filter((g) => g.visible && g.id !== group.id)
-        .map((g) => <g key={g.id}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1)}</g>)}
+        .filter((g) => g.visible && g.id !== group.id && detShown(g))
+        .map((g) => <g key={g.id} opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1)}</g>)}
     </g>
   );
   const patternOverlay = (t: Transform, key?: string): ReactNode => (
     <>
       {sourceBorder(t, key)}
       {disksOverlay(t, grid && key ? key.replace(/^dp:/, "") : source)}
+      {beamOverlay(t, grid && key ? key.replace(/^dp:/, "") : source)}
+      {ringOverlay(t)}
       {othersOverlay(t)}
       {detectorOverlay(t)}
     </>
   );
   const detectorOverlay = (t: Transform): ReactNode => {
     const d = det;
-    if (d.shape === "apertures") return <>{aperturesOverlay(t)}{badRings(t)}</>;
+    // Its layer hidden: not drawn (still moved by its keys and the process).
+    if (!detShown(group)) return badRings(t);
+    if (d.shape === "apertures") return <><g opacity={detOpacity(group)}>{aperturesOverlay(t)}</g>{badRings(t)}</>;
     return (
-      <g className="fourd-overlay">
+      <g className="fourd-overlay" opacity={detOpacity(group)}>
         {outline(t, d, group.color, 1.5)}
         {handles(d).filter((h) => h.id !== "c" || d.shape !== "point").map((h) => {
           const [hx, hy] = t.toScreen(h.x, h.y);
@@ -1154,6 +1275,121 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
     selectGroup(id);
   };
   const cal = (g: ImageGeometry) => ({ calX: g.calX, calY: g.calY });
+
+  // ---------- the Layers tab: the marks drawn, per pane ----------
+  // The pattern: each group's detector, the Bragg disks; the scan: the cursors.
+  const markKey = (id: string) => id.replace(/^fd:/, "");
+  const disksStyle = disksLayer.style ?? "circle";
+  const disksRow = {
+    id: "fd:disks",
+    label: vectorsDs ? vectorsDs.title : "Bragg disks",
+    visible: disksVisible,
+    opacity: disksLayer.opacity ?? 1,
+    display: undefined,
+    removable: false,
+    colour: disksLayer.colour ?? DISK_COLOR,
+    properties: [
+      {
+        label: "Mark",
+        control: (
+          <select
+            className="layer-choice"
+            value={disksStyle}
+            title="A circle of the disk's size, or a dot at its position"
+            onChange={(e) => setOverlay(ds.id, "disks", { style: e.target.value as "circle" | "dot" })}
+          >
+            <option value="circle">Circle</option>
+            <option value="dot">Dot</option>
+          </select>
+        ),
+      },
+      ...(disksStyle === "dot"
+        ? [{
+            label: "Size",
+            control: (
+              <input
+                type="range"
+                className="layer-size"
+                min={0.5}
+                max={4}
+                step={0.25}
+                value={disksLayer.size ?? 1}
+                title={`×${disksLayer.size ?? 1}`}
+                onChange={(e) => setOverlay(ds.id, "disks", { size: Number(e.target.value) })}
+              />
+            ),
+          }]
+        : []),
+    ],
+  };
+  const removeGroup = (id: string) => {
+    const s = latest.current;
+    const groups = s.groups.filter((g) => g.id !== id);
+    if (groups.length) setScan({ groups, ...(s.selectedGroup === id && { selectedGroup: groups[groups.length - 1].id }) });
+  };
+  const dpExtra: ExtraLayers = {
+    rows: [
+      ...st.groups.map((g) => ({
+        id: `fd:det:${g.id}`,
+        label: `${g.name} · ${g.detector.shape}`,
+        visible: detShown(g),
+        opacity: detOpacity(g),
+        display: undefined,
+        removable: st.groups.length > 1,
+        colour: g.color,
+      })),
+      ...(vectorsDs || diskOpen ? [disksRow] : []),
+    ],
+    onActivate: (id) => id.startsWith("fd:det:") && selectGroup(id.slice("fd:det:".length)),
+    onChange: (id, p) => setOverlay(ds.id, markKey(id), p),
+    onColour: (id, colour) => {
+      if (!id.startsWith("fd:det:")) return setOverlay(ds.id, markKey(id), { colour });
+      const gid = id.slice("fd:det:".length);
+      setScan({ groups: latest.current.groups.map((g) => (g.id === gid ? { ...g, color: colour } : g)) });
+    },
+    onRemove: (id) => id.startsWith("fd:det:") && removeGroup(id.slice("fd:det:".length)),
+  };
+  const viExtra: ExtraLayers = {
+    rows: cursors.map((c) => ({
+      id: `fd:cursor:${c.id}`,
+      label: `${cursorName(c)} (${c.x}, ${c.y})`,
+      visible: cursorShown(c),
+      opacity: ovOf(`cursor:${c.id}`).opacity ?? 1,
+      display: undefined,
+      removable: cursors.length > 1,
+      colour: c.color,
+    })),
+    onActivate: (id) => {
+      const cid = id.slice("fd:cursor:".length);
+      setScan({ source: cid, lastCursor: cid });
+    },
+    onChange: (id, p) => setOverlay(ds.id, markKey(id), p),
+    onColour: (id, colour) => {
+      const cid = id.slice("fd:cursor:".length);
+      setScan({ cursors: latest.current.cursors.map((c) => (c.id === cid ? { ...c, color: colour } : c)) });
+    },
+    onRemove: (id) => removeCursor(id.slice("fd:cursor:".length)),
+  };
+  // The list has no layered viewers: its marks are published from here.
+  const listOwner = `fourd-list:${ds.id}`;
+  useEffect(() => {
+    if (!list) return;
+    const { publishSection } = useLayersTab.getState();
+    const panelOf = (x: ExtraLayers) => ({
+      layers: x.rows, active: `fd:det:${group.id}`, opacity: true,
+      onActivate: (id: string) => x.onActivate?.(id), onChange: x.onChange, onColour: x.onColour, onRemove: (id: string) => x.onRemove?.(id),
+    });
+    publishSection("Diffraction pattern", listOwner, panelOf(dpExtra));
+    publishSection("Virtual image", listOwner, panelOf(viExtra));
+  });
+  useEffect(() => {
+    if (!list) return;
+    return () => {
+      useLayersTab.getState().clearSection("Diffraction pattern", listOwner);
+      useLayersTab.getState().clearSection("Virtual image", listOwner);
+    };
+  }, [list, listOwner]);
+
   if (list) {
     return (
       <div className="view fourd-view">
@@ -1203,8 +1439,10 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
                         <>
                           {sourceBorder(t)}
                           {disksOverlay(t, source)}
-                          {on ? detectorOverlay(t) : (
-                            <g className="fourd-overlay">{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1.5)}</g>
+                          {beamOverlay(t, source)}
+                          {ringOverlay(t)}
+                          {on ? detectorOverlay(t) : detShown(g) && (
+                            <g className="fourd-overlay" opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1.5)}</g>
                           )}
                           {dpTools.overlay(t, patternG.calX, patternG.calY)}
                         </>
@@ -1311,6 +1549,8 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
           interaction={scanInteraction}
           imageMenu={scanMenu}
           renderOverlay={scanOverlay}
+          layersSection="Virtual image"
+          extraLayers={viExtra}
           footer={
             <div className="stack-bar fourd-bar">
               {!grid && !merge && imagePicker}
@@ -1356,6 +1596,8 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
           toolButtons={false}
           interaction={det.shape === "apertures" ? aperturesInteraction : patternInteraction}
           renderOverlay={patternOverlay}
+          layersSection="Diffraction pattern"
+          extraLayers={dpExtra}
           footer={
             <div className="fourd-footer">
               <div className="stack-bar fourd-bar">

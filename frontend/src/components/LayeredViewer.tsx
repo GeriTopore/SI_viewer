@@ -16,7 +16,7 @@ import { autoContrast, useImageDisplay } from "../views/useImageDisplay";
 import { useOverlayFrames } from "../views/useOverlayFrames";
 import { ContrastControls } from "./ContrastControls";
 import { ImageView, type Interaction, type Pt, type Transform, type ViewLayer } from "./ImageView";
-import { LayersPanel, type LayersPanelProps } from "./LayersPanel";
+import { LayersPanel, type LayersPanelProps, type PanelLayer } from "./LayersPanel";
 import { LineOverlay } from "./LineOverlay";
 import { FftBoxOverlay } from "./FftBoxOverlay";
 import { FftCompare } from "./FftCompare";
@@ -145,6 +145,21 @@ interface Props {
    * on (a sub-scan navigator): they are stretched over it, k × k image pixels
    * per map pixel (``views/si/scan.ts``). Default 1. */
   scanFactor?: number;
+  /** Publish the layers to this section of the Layers tab (a view of several
+   * panes, e.g. 4D-STEM's "Diffraction pattern"), not as its only list. */
+  layersSection?: string;
+  /** Rows the view adds to the Layers tab after its images (marks it draws
+   * itself: a detector, disks, cursors), with their own actions. */
+  extraLayers?: ExtraLayers;
+}
+
+/** Layers tab rows a view draws itself (see ``extraLayers``). */
+export interface ExtraLayers {
+  rows: PanelLayer[];
+  onActivate?: (id: string) => void;
+  onChange: (id: string, patch: { visible?: boolean; opacity?: number }) => void;
+  onColour: (id: string, colour: string) => void;
+  onRemove?: (id: string) => void;
 }
 
 /** A stack shown next to the base stack (see ``stacks``), or one frame of a
@@ -226,6 +241,8 @@ export function LayeredViewer({
   gridOnly = false, blend, lineTool, fftTool, toolButtons = true, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], focusCorner, overlays = true, gridContext, requestActive, onActiveChange,
   histogramRegions,
   scanFactor = 1,
+  layersSection,
+  extraLayers,
 }: Props) {
   const focusId = useDatasets((s) => s.focusId);
   const { setFocus, deselect, addToSelection } = useDatasets.getState();
@@ -632,20 +649,32 @@ export function LayeredViewer({
     const l = imageLayers.find((x) => x.key === activeLayer.key);
     return l ? [imageRow(l), ...foundRows(l.datasetId && foundImages.includes(l.datasetId) ? [l.datasetId] : [])] : rowsAll;
   })();
+  // The view's own rows (its marks) after the images, handled by the view.
+  const extra = extraLayers;
+  const isExtra = (id: string) => !!extra?.rows.some((r) => r.id === id);
   const tabProps: LayersPanelProps = {
     ...panelProps,
-    layers: tabRows,
+    layers: [...tabRows, ...(extra?.rows ?? [])],
     active: editBg && activeLayer ? `bg:${activeLayer.key}` : panelProps.active,
     opacity: true,
+    onActivate: (id) => (isExtra(id) ? extra!.onActivate?.(id) : panelProps.onActivate(id)),
+    onChange: (id, p) => (isExtra(id) ? extra!.onChange(id, p) : panelProps.onChange(id, p)),
+    onColour: (id, c) => (isExtra(id) ? extra!.onColour(id, c) : panelProps.onColour(id, c)),
+    onRemove: (id) => (isExtra(id) ? extra!.onRemove?.(id) : panelProps.onRemove(id)),
   };
   const panel = showPanel ? <LayersPanel {...panelProps} /> : null;
-  // The Layers tab shows this list: the first viewer mounted owns it until it goes.
+  // The Layers tab shows this list: the first viewer mounted owns it until it
+  // goes; a viewer with a section publishes there instead.
   const tabOwner = useId();
   useEffect(() => {
-    const { owner, publish } = useLayersTab.getState();
-    if (owner === null || owner === tabOwner) publish(tabOwner, tabProps);
+    const { owner, publish, publishSection } = useLayersTab.getState();
+    if (layersSection) publishSection(layersSection, tabOwner, tabProps);
+    else if (owner === null || owner === tabOwner) publish(tabOwner, tabProps);
   });
-  useEffect(() => () => useLayersTab.getState().clear(tabOwner), [tabOwner]);
+  useEffect(
+    () => () => (layersSection ? useLayersTab.getState().clearSection(layersSection, tabOwner) : useLayersTab.getState().clear(tabOwner)),
+    [tabOwner, layersSection],
+  );
 
   // Focus mode with the navigator pulled out: the image goes into the flap,
   // sized to the image's shape (no dead space around it): as tall as the

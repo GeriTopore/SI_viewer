@@ -489,3 +489,11 @@ export const useUi = create<UiState>((set, get) => ({
   },
   setBrowserOpen: (browserOpen, browserMode = "data") => set({ browserOpen, browserMode }),
 }));
+
+/** Whether process ``id`` is on screen in the Process tab: opened from the
+ * icon view, unfolded in the list view, or split off beside the others. */
+export const useProcessShown = (id: string): boolean =>
+  useUi((s) =>
+    s.rightTab === "process"
+    && (s.processSplit?.id === id || (s.processMode === "list" ? !s.processCollapsed.includes(id) : s.processOpen === id)),
+  );

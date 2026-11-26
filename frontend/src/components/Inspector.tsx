@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { CurveModelInfo } from "./CurveModelInfo";
+import { FourDCalibrationInfo } from "./FourDCalibrationInfo";
 import { api, type DatasetSummary, type EelsRole, type MicroscopeInfo, type Technique } from "../api/client";
 import { useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
@@ -104,6 +105,8 @@ export function Inspector() {
           </>
         )}
       </dl>
+      {/* 4D-STEM data, and what was made from it (Bragg vectors, maps): its calibration. */}
+      <FourDCalibrationInfo d={d} />
       {d.insitu?.view && <SeriesInfo d={d} />}
       {d.origin === "curve-model" && <CurveModelInfo key={d.id} d={d} />}
       <AxesTable key={d.id} d={d} />

@@ -5,10 +5,13 @@ from __future__ import annotations
 
 from typing import Literal
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..processing import fourd
+from ..processing.calibration import RingOptions
+from ..processing.centring import BeamOptions, PlaneOptions
 from ..processing.disks import DiskOptions
 from ..session import DatasetKind
 from .datasets import array_response
@@ -264,6 +267,8 @@ def disk_run(dataset_id: str, body: DiskBody, request: Request) -> dict:
             ds, vectors, len(table), {"options": opts.model_dump(), "template": info, "positions": int(ny * nx)},
             bvm, upsample=2,
         )
+        # The map as the data's calibration has it (raw if none).
+        session.remake_bragg_map(ds)
         return {"file": session.file_of(ds).summary(session), "id": made.id, "count": int(len(table))}
 
     return request.app.state.jobs.submit("disks", f"Disk detection of {ds.title}", run).summary()
@@ -285,3 +290,340 @@ def disks_at(dataset_id: str, x: float, y: float, request: Request) -> dict:
     except IndexError as e:
         raise HTTPException(416, str(e))
     return {"disks": rows.round(3).tolist()}
+
+
+# ---------- centring ----------
+
+
+class BeamBody(BaseModel):
+    options: BeamOptions = BeamOptions()
+
+
+@router.post("/api/datasets/{dataset_id}/4d/beam/find")
+def beam_find(dataset_id: str, body: BeamBody, request: Request) -> dict:
+    """Find the direct beam in every pattern (as a job): kept as the data's
+    "Beam shift x" / "Beam shift y" images (made again if there are). The
+    job's result is ``{file, ids, range}``."""
+    from ..processing import centring
+    from ..processing.frames import get_frame
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    try:
+        bf = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    def run(job) -> dict:
+        job.report(0.05, "Finding the beam in every pattern")
+        shifts = centring.find_beam(ds.signal, body.options, bf)
+        stats = centring.shift_stats(shifts)
+        # The data's revision: centring (or any change) makes these shifts stale.
+        made = session.set_beam_shifts(
+            ds, shifts, {"options": body.options.model_dump(), "range": stats, "revision": ds.revision},
+        )
+        return {"file": session.file_of(ds).summary(session), "ids": [d.id for d in made], "range": stats}
+
+    return request.app.state.jobs.submit("beam", f"Direct beam of {ds.title}", run).summary()
+
+
+def _shifts(request: Request, ds, plane: PlaneOptions):
+    from ..processing import centring
+
+    found = request.app.state.session.beam_shifts_of(ds)
+    if found is None:
+        raise HTTPException(404, f"The beam of {ds.title} hasn't been found")
+    if found.shape[:2] != tuple(ds.signal.data.shape[:2]):
+        raise HTTPException(409, "The beam was found on another scan (binned since?): find it again")
+    found_on = next((d.beam.get("revision") for d in request.app.state.session.siblings(ds)
+                     if d.origin == "beam-shift" and d.parent_id == ds.id and d.beam), None)
+    if found_on is not None and found_on != ds.revision:
+        raise HTTPException(409, "The data changed since the beam was found (centred?): find it again")
+    return found, centring.plane(found, plane)
+
+
+@router.get("/api/datasets/{dataset_id}/4d/beam")
+def beam_at(
+    dataset_id: str, x: float, y: float, request: Request,
+    mode: Literal["none", "plane", "corners"] = "plane", corners: float = 0.1,
+) -> dict:
+    """Where the beam was found at scan pixel (x, y), and where the descan
+    plane puts it (pattern px, pixel i spanning [i, i + 1)): {"found": [x,
+    y], "used": [x, y], "residual": rms of found − used over the scan (px)}."""
+    from ..processing import centring
+
+    ds = _cube(request, dataset_id)
+    found, used = _shifts(request, ds, PlaneOptions(mode=mode, corners=corners))
+    ny, nx = found.shape[:2]
+    ix, iy = int(x), int(y)
+    if not (0 <= ix < nx and 0 <= iy < ny):
+        raise HTTPException(416, f"({ix}, {iy}) is outside the {nx} × {ny} scan")
+    shape = tuple(ds.signal.data.shape[2:])
+    f = centring.beam_positions(found[iy, ix], shape)
+    u = centring.beam_positions(used[iy, ix], shape)
+    rms = float(((found - used) ** 2).sum(axis=-1).mean() ** 0.5)
+    return {"found": [round(float(v), 3) for v in f], "used": [round(float(v), 3) for v in u], "residual": round(rms, 3)}
+
+
+class CentreBody(BaseModel):
+    plane: PlaneOptions = PlaneOptions()
+    in_place: bool = True
+
+
+@router.post("/api/datasets/{dataset_id}/4d/beam/centre")
+def beam_centre(dataset_id: str, body: CentreBody, request: Request) -> dict:
+    """Shift every pattern so the beam (as found, or the descan plane) is at
+    the centre, in place or as a copy under the data (as a job). The job's
+    result is ``{file, id}`` (the data centred)."""
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    _, used = _shifts(request, ds, body.plane)
+
+    def run(job) -> dict:
+        try:
+            made = session.centre_patterns(ds, used, body.in_place, lambda f, m: job.report(f, m))
+        except ValueError as e:
+            raise RuntimeError(str(e))
+        return {"file": session.file_of(ds).summary(session), "id": made.id}
+
+    return request.app.state.jobs.submit("centre", f"Centring {ds.title}", run).summary()
+
+
+# ---------- calibration ----------
+
+
+class OriginBody(BaseModel):
+    """Each scan position's origin: none (the ring's centre, else the
+    pattern's, for all), the beam found by Centring, or the direct-beam disk
+    among its own disks; then as found or a descan plane."""
+
+    origin: Literal["none", "beam", "direct"] = "beam"
+    plane: PlaneOptions = PlaneOptions()
+
+
+class RingBody(BaseModel):
+    options: RingOptions
+    # What the ring is fitted on: the scan's mean or maximum pattern, or the
+    # Bragg vector map (in pattern pixels, each position moved by ``origin``).
+    source: Literal["mean", "max", "bvm"] = "mean"
+    origin: OriginBody = OriginBody()
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration/ring")
+def calibration_ring(dataset_id: str, body: RingBody, request: Request) -> dict:
+    """A ring of the mean (or max) pattern, or of the Bragg vector map,
+    fitted as an ellipse between ``r_min`` and ``r_max`` (pattern px):
+    {"cx", "cy", "a", "b", "angle", "rms", "radius", "ellipticity",
+    "affine", "points"} (pattern px, pixel i spanning [i, i + 1); "points":
+    where the ring was found, for drawing)."""
+    from ..processing import calibration
+    from ..processing.frames import get_frame
+
+    ds = _cube(request, dataset_id)
+    o = body.options
+    try:
+        guess = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
+        if body.source == "bvm":
+            # Fitted on the map (2 × finer than the pattern), in pattern px after.
+            up = 2
+            image = bvm_pixels(request, ds, body.origin, upsample=up)
+            fine = o.model_copy(update={
+                "r_min": o.r_min * up, "r_max": o.r_max * up,
+                "cx": None if o.cx is None else o.cx * up, "cy": None if o.cy is None else o.cy * up,
+            })
+            ring = calibration.fit_ring(image, fine, {"cx": guess["cx"] * up, "cy": guess["cy"] * up})
+            pts = calibration.ring_points(image, ring["cx"], ring["cy"], fine.r_min, fine.r_max, o.angles) / up
+            for k in ("cx", "cy", "a", "b", "rms", "radius"):
+                ring[k] /= up
+        else:
+            image = get_frame(ds, projection=f"{body.source}-pattern")
+            ring = calibration.fit_ring(image, o, guess)
+            pts = calibration.ring_points(image, ring["cx"], ring["cy"], o.r_min, o.r_max, o.angles)
+    except (ValueError, np.linalg.LinAlgError) as e:
+        raise HTTPException(422, str(e))
+    return {
+        **{k: round(v, 4) for k, v in ring.items()},
+        "affine": calibration.affine_of(ring),
+        "points": np.round(pts, 2).tolist(),
+    }
+
+
+@router.get("/api/datasets/{dataset_id}/4d/calibration/standards")
+def calibration_standards(dataset_id: str, request: Request) -> dict:
+    """The calibration standards offered: {material: {hkl: d (Å)}}."""
+    from ..processing.calibration import STANDARDS
+
+    _cube(request, dataset_id)
+    return STANDARDS
+
+
+class Ring(BaseModel):
+    cx: float
+    cy: float
+    a: float
+    b: float
+    angle: float
+    rms: float = 0.0
+    radius: float
+    ellipticity: float = 0.0
+
+
+class CalibrateBody(BaseModel):
+    """How the pixel size is set: from the ring and a reflection (``d``, Å;
+    with ``standard`` and ``hkl`` named), from the camera length, detector
+    pixel and voltage, or entered (``scale``, in ``units`` per px)."""
+
+    how: Literal["ring", "camera", "entered"]
+    ring: Ring | None = None
+    d: float | None = Field(None, gt=0)
+    standard: str | None = None
+    hkl: str | None = None
+    camera_length: float | None = Field(None, gt=0)  # mm
+    pixel: float | None = Field(None, gt=0)  # detector pixel, µm
+    kv: float | None = Field(None, gt=0)
+    scale: float | None = Field(None, gt=0)
+    units: Literal["1/Å", "1/nm"] = "1/nm"
+    # Put 0 at the ring's centre (when there is a ring).
+    centre: bool = True
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration")
+def calibrate(dataset_id: str, body: CalibrateBody, request: Request) -> dict:
+    """Calibrate the pattern axes (the data isn't changed): the scale, its
+    units, 0 at the ring's centre; the ring's ellipticity kept (as pyxem's
+    affine) for azimuthal integration. Returns the data's ``file``."""
+    from ..processing import calibration
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    per = 10.0 if body.units == "1/nm" else 1.0  # 1/Å → the units asked for
+    ring = body.ring.model_dump() if body.ring else None
+    if body.how == "ring":
+        if ring is None or body.d is None:
+            raise HTTPException(422, "A ring and the reflection's d-spacing are needed")
+        scale = calibration.scale_from_ring(ring["radius"], body.d) * per
+        how = {"standard": body.standard, "hkl": body.hkl, "d": body.d}
+    elif body.how == "camera":
+        if not (body.camera_length and body.pixel and body.kv):
+            raise HTTPException(422, "The camera length, detector pixel and voltage are needed")
+        scale = calibration.scale_from_camera(body.camera_length, body.pixel, body.kv) * per
+        how = {"camera_length": body.camera_length, "pixel": body.pixel, "kv": body.kv}
+    else:
+        if body.scale is None:
+            raise HTTPException(422, "The pixel size is needed")
+        scale = body.scale
+        how = {"entered": True}
+    info = {"how": how, "affine": calibration.affine_of(ring) if ring else None}
+    try:
+        session.calibrate_patterns(ds, scale, body.units, ring if body.centre else None, info)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(ds).summary(session), "scale": scale}
+
+
+# ---------- calibrated Bragg vectors and their map ----------
+
+
+def _table(request: Request, ds):
+    from ..processing import disks
+
+    vectors = request.app.state.session.bragg_vectors_of(ds)
+    if vectors is None:
+        raise HTTPException(404, f"The disks of {ds.title} haven't been found")
+    return disks.table_of(vectors.signal)
+
+
+def _origins(request: Request, ds, table, body: OriginBody):
+    """[y, x, 2] origins (x, y pattern px) for ``body``, or None (origin "none")."""
+    from ..processing import centring, disks
+    from ..processing.frames import get_frame
+
+    if body.origin == "none":
+        return None
+    scan = tuple(ds.signal.data.shape[:2])
+    if body.origin == "beam":
+        found = request.app.state.session.beam_shifts_of(ds)
+        if found is None or found.shape[:2] != scan:
+            raise HTTPException(409, "Find the beam first (Centring, step 1), or take the origin from the direct-beam disks")
+        return centring.beam_positions(centring.plane(found, body.plane), tuple(ds.signal.data.shape[2:]))
+    guess = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
+    try:
+        origins = disks.fill_origins(disks.direct_beam_origins(table, scan, guess))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    if body.plane.mode == "none":
+        return origins
+    # The plane fitted to the origins (as it is to the beam's shifts: linear in each).
+    return centring.plane(origins.astype(np.float32), body.plane)
+
+
+class MeasureOriginBody(BaseModel):
+    """Measure each scan position's origin from the direct-beam disk among
+    its Bragg vectors ("vectors"), or take the beam found by Centring
+    ("beam"); then fit a descan plane (or keep each position's)."""
+
+    source: Literal["vectors", "beam"] = "vectors"
+    plane: PlaneOptions = PlaneOptions()
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration/origin")
+def calibration_origin(dataset_id: str, body: MeasureOriginBody, request: Request) -> dict:
+    """The origin per scan position (py4DSTEM's measure_origin / fit_origin):
+    kept as "Origin x / y" (measured) and "Origin x / y (fit)" images under
+    the Bragg vector map (from the vectors) or the data (from the beam), and
+    in its calibration (switched on); the Bragg vector map is
+    made again. Returns ``{file, mean, rms}`` (mean origin, and measured −
+    fitted RMS, px)."""
+    from ..processing import centring
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    if body.source == "vectors":
+        measured = _origins(request, ds, _table(request, ds), OriginBody(origin="direct", plane=PlaneOptions(mode="none")))
+    else:
+        found = session.beam_shifts_of(ds)
+        if found is None or found.shape[:2] != tuple(ds.signal.data.shape[:2]):
+            raise HTTPException(409, "Find the beam first (Centring, step 1), or measure from the Bragg vectors")
+        measured = centring.beam_positions(found, tuple(ds.signal.data.shape[2:]))
+    measured = np.asarray(measured, dtype=np.float32)
+    fitted = None if body.plane.mode == "none" else centring.plane(measured, body.plane)
+    rms = float(np.sqrt(((measured - fitted) ** 2).sum(axis=-1).mean())) if fitted is not None else 0.0
+    mean = [float(v) for v in np.nanmean((fitted if fitted is not None else measured).reshape(-1, 2), axis=0)]
+    info = {**body.model_dump(), "mean": mean, "rms": rms}
+    # Centring done on the Bragg vectors: its maps go under the Bragg vector map.
+    parent = session.bragg_map_of(ds) if body.source == "vectors" else None
+    session.set_origin(ds, measured, fitted, info, parent=parent)
+    return {"file": session.file_of(ds).summary(session), "mean": mean, "rms": rms}
+
+
+class SwitchesBody(BaseModel):
+    """Parts of the calibration applied to the Bragg vectors, and whether
+    the Bragg vector map shows them ("calibrated") or not ("raw")."""
+
+    enabled: dict[Literal["origin", "ellipse", "scale"], bool] | None = None
+    view: Literal["raw", "calibrated"] | None = None
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration/switches")
+def calibration_switches(dataset_id: str, body: SwitchesBody, request: Request) -> dict:
+    """Switch calibrations on or off (the Bragg vector map made again at
+    once). Returns the data's ``file``."""
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    session.set_calibration_switches(ds, body.enabled, body.view)
+    return {"file": session.file_of(ds).summary(session)}
+
+
+def bvm_pixels(request: Request, ds, origin: OriginBody, upsample: int = 2) -> np.ndarray:
+    """The Bragg vector map in pattern pixels (``upsample`` × finer), each
+    position's disks moved by its origin's offset from the mean origin: the
+    rings sharp, where they are on the pattern. For fitting a ring."""
+    from ..processing import disks
+
+    table = _table(request, ds)
+    origins = _origins(request, ds, table, origin)
+    if origins is not None:
+        mean = np.nanmean(origins.reshape(-1, 2), axis=0)
+        q = disks.calibrated(table, origins, (0, 0)) + mean
+        table = np.column_stack([table[:, :2], q[:, 1], q[:, 0], table[:, 4]]).astype(np.float32)
+    return disks.vector_map(table, tuple(ds.signal.data.shape[2:]), upsample=upsample)

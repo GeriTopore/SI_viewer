@@ -269,6 +269,22 @@ class Dataset:
     # (DiskOptions), "template" ({"kind", "cx", "cy", "r"} pattern px),
     # "count", "positions" (scan positions)}.
     disks: dict | None = None
+    # The direct beam found in 4D-STEM data (processing/centring.py): on its
+    # "Beam shift x" / "Beam shift y" images (origin "beam-shift": pyxem's
+    # shifts that centre each pattern, px): {"source_id", "axis" ("x"/"y"),
+    # "options" (BeamOptions), "range" (each shift's min, max)}.
+    beam: dict | None = None
+    # 4D-STEM patterns calibrated (processing/calibration.py): {"scale" (per
+    # px), "units", "ring" (the ellipse fitted: cx, cy, a, b, angle, rms,
+    # radius, ellipticity; pattern px) or None, "affine" (pyxem's, making the
+    # ring circular) or None, "how" ({"standard", "hkl", "d"} / {"camera_length",
+    # "pixel", "kv"} / {"entered"})}. The pattern axes carry the scale, and 0
+    # at the ring's centre when there is one; the data isn't resampled.
+    calibration: dict | None = None
+    # Each scan position's origin ("Origin x / y", "Origin x / y (fit)" of
+    # 4D-STEM data; origin "origin-map", pattern px): {"axis", "kind"
+    # ("measured" / "fitted"), "source_id"}.
+    origin_map: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -471,6 +487,9 @@ class Dataset:
             "mask": self.mask,
             "virtual": self.virtual,
             "disks": self.disks,
+            "beam": self.beam,
+            "calibration": self.calibration,
+            "origin_map": self.origin_map,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -2210,10 +2229,265 @@ class Session:
                 ids.insert(ids.index(vectors.id) + 1, bvm_ds.id)
         return vectors
 
+    def set_beam_shifts(self, cube: Dataset, shifts: np.ndarray, info: dict) -> list[Dataset]:
+        """The direct beam found in 4D-STEM data: pyxem's shifts ([y, x, 2])
+        as "Beam shift x" and "Beam shift y" images under it (origin
+        "beam-shift", px, on the scan). Made again in place. Returns them."""
+        import hyperspy.api as hs
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        out = []
+        for k, axis in enumerate(("x", "y")):
+            signal = hs.signals.Signal2D(np.ascontiguousarray(shifts[..., k], dtype=np.float32))
+            for a, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.navigation_axes):
+                a.name, a.scale, a.offset, a.units = src.name, src.scale, src.offset, src.units
+            signal.metadata.General.title = f"Beam shift {axis}"
+            signal.metadata.set_item("Signal.quantity", "Shift (px)")
+            beam = {**info, "source_id": cube.id, "axis": axis}
+            with self._lock:
+                earlier = next((d for d in self.datasets.values() if d.origin == "beam-shift"
+                                and d.parent_id == cube.id and d.beam and d.beam.get("axis") == axis), None)
+            if earlier is not None:
+                earlier.replace_signal(signal)
+                earlier.beam = beam
+                out.append(earlier)
+                continue
+            ds = Dataset(id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                         origin="beam-shift", parent_id=cube.id, beam=beam)
+            with self._lock:
+                self.datasets[ds.id] = ds
+                ids = self.files[cube.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == cube.id]
+                ids.insert(ids.index(after[-1] if after else cube.id) + 1, ds.id)
+            out.append(ds)
+        return out
+
+    def beam_shifts_of(self, cube: Dataset) -> np.ndarray | None:
+        """The shifts found for 4D-STEM data ([y, x, 2]), if its beam was found."""
+        with self._lock:
+            found = {d.beam["axis"]: d for d in self.datasets.values()
+                     if d.origin == "beam-shift" and d.parent_id == cube.id and d.beam}
+        if set(found) != {"x", "y"}:
+            return None
+        return np.stack([np.asarray(found["x"].signal.data), np.asarray(found["y"].signal.data)], axis=-1)
+
+    def centre_patterns(self, cube: Dataset, shifts: np.ndarray, in_place: bool = True, report=None) -> Dataset:
+        """Shift every pattern of 4D-STEM data by ``shifts`` so the beam is at
+        the centre (``processing.centring.centre``): in place (a new revision;
+        the file is unchanged), or as a copy under it (origin "centred").
+        Returns the dataset centred. ValueError for data too big to hold."""
+        from .processing.centring import centre
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if cube.lazy:
+            if cube.signal.data.nbytes * 4 > DIFFRACTION4D_IN_MEMORY_LIMIT:
+                raise ValueError(f"{cube.title} is too big to centre in memory: bin it first")
+            cube.materialise()
+        if shifts.shape[:2] != tuple(cube.signal.data.shape[:2]):
+            raise ValueError("The shifts are not on this scan (was it binned since?)")
+        centred = centre(cube.signal, shifts, report)
+        if not in_place:
+            return self.copy_as(cube, "centred", f"{cube.title} (centred)", signal=centred)
+        centred.metadata.General.title = cube.signal.metadata.General.title
+        cube.replace_signal(centred)
+        return cube
+
+    def calibrate_patterns(self, cube: Dataset, scale: float, units: str, ring: dict | None, info: dict) -> Dataset:
+        """Calibrate 4D-STEM data's pattern axes: ``scale`` ``units`` per
+        pixel, and 0 at ``ring``'s centre if given (pattern px, pixel i
+        spanning [i, i + 1)), else the axes' offsets kept in the new units.
+        The data isn't changed; the calibration is kept in ``calibration``."""
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if not (np.isfinite(scale) and scale > 0):
+            raise ValueError("The pixel size must be a positive number")
+        axes = cube.signal.axes_manager.signal_axes  # [kx, ky]
+        centre = (ring["cx"], ring["cy"]) if ring else None
+        zeros = [
+            (centre[k] - 0.5) if centre else (-axis.offset / axis.scale if axis.scale else 0.0)
+            for k, axis in enumerate(axes)
+        ]
+        # What was calibrated before (the origin, the switches) is kept.
+        old = cube.calibration or {}
+        enabled = {**old.get("enabled", {}), "scale": True, **({"ellipse": True} if ring else {})}
+        cube.calibration = {**old, **info, "scale": float(scale), "units": units, "ring": ring, "zero": zeros,
+                            "enabled": enabled}
+        self.apply_calibration_axes(cube)
+        self.remake_bragg_map(cube)
+        return cube
+
+    # ---------- the calibration of 4D-STEM data (py4DSTEM-style) ----------
+
+    def origin_maps_of(self, cube: Dataset) -> dict[str, np.ndarray]:
+        """The origin maps measured for 4D-STEM data: {"measured": [y, x, 2],
+        "fitted": [y, x, 2]} (x, y pattern px; "fitted" when fitted)."""
+        with self._lock:
+            maps = [d for d in self.datasets.values()
+                    if d.origin == "origin-map" and d.origin_map and d.origin_map.get("source_id") == cube.id]
+        out = {}
+        for kind in ("measured", "fitted"):
+            parts = {d.origin_map["axis"]: d for d in maps if d.origin_map["kind"] == kind}
+            if set(parts) == {"x", "y"}:
+                out[kind] = np.stack([np.asarray(parts["x"].signal.data), np.asarray(parts["y"].signal.data)], axis=-1)
+        return out
+
+    def set_origin(self, cube: Dataset, measured: np.ndarray, fitted: np.ndarray | None, info: dict,
+                   parent: Dataset | None = None) -> list[Dataset]:
+        """The centring of 4D-STEM data: each scan position's origin (the
+        direct beam: [y, x, 2] of x, y pattern px), as measured and as fitted
+        (a descan plane; None: as measured), kept as "Origin x / y" and
+        "Origin x / y (fit)" images (origin "origin-map") under ``parent``
+        (the Bragg vector map when measured from the disks; else the data)
+        and in its calibration (switched on). Made again in place (moved if
+        the parent changed); the Bragg vector map is made again."""
+        import hyperspy.api as hs
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        parent = parent or cube
+        wanted = [("measured", measured)] + ([("fitted", fitted)] if fitted is not None else [])
+        with self._lock:
+            old = [d for d in self.datasets.values()
+                   if d.origin == "origin-map" and d.origin_map and d.origin_map.get("source_id") == cube.id]
+        # Maps under another parent (measured from elsewhere before) go: made again under this one.
+        for d in [d for d in old if d.parent_id != parent.id]:
+            self._remove_tree(d)
+        old = [d for d in old if d.parent_id == parent.id]
+        out = []
+        for kind, data in wanted:
+            for k, axis in enumerate(("x", "y")):
+                title = f"Origin {axis}" + (" (fit)" if kind == "fitted" else "")
+                signal = hs.signals.Signal2D(np.ascontiguousarray(data[..., k], dtype=np.float32))
+                for a, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.navigation_axes):
+                    a.name, a.scale, a.offset, a.units = src.name, src.scale, src.offset, src.units
+                signal.metadata.General.title = title
+                signal.metadata.set_item("Signal.quantity", "Origin (px)")
+                meta = {"axis": axis, "kind": kind, "source_id": cube.id}
+                earlier = next((d for d in old if d.origin_map and d.origin_map.get("axis") == axis
+                                and d.origin_map.get("kind") == kind), None)
+                if earlier is not None:
+                    earlier.replace_signal(signal)
+                    earlier.origin_map = meta
+                    out.append(earlier)
+                    continue
+                ds = Dataset(id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                             origin="origin-map", parent_id=parent.id, origin_map=meta)
+                with self._lock:
+                    self.datasets[ds.id] = ds
+                    ids = self.files[cube.file_id].dataset_ids
+                    after = [i for i in ids if self.datasets[i].parent_id == parent.id]
+                    ids.insert(ids.index(after[-1] if after else parent.id) + 1, ds.id)
+                out.append(ds)
+        # Fitted maps no longer wanted (fitted "none" this time) go.
+        if fitted is None:
+            for d in old:
+                if d.origin_map and d.origin_map.get("kind") == "fitted":
+                    self._remove_tree(d)
+        cal = cube.calibration or {}
+        cube.calibration = {**cal, "origin": info, "enabled": {**cal.get("enabled", {}), "origin": True}}
+        self.remake_bragg_map(cube)
+        return out
+
+    def set_calibration_switches(self, cube: Dataset, enabled: dict | None = None, view: str | None = None) -> None:
+        """Switch parts of 4D-STEM data's calibration on or off for its
+        Bragg vectors ("origin", "ellipse", "scale"), and whether its Bragg
+        vector map is shown "raw" or "calibrated"; the map is made again."""
+        cal = dict(cube.calibration or {})
+        if enabled:
+            cal["enabled"] = {**cal.get("enabled", {}), **{k: bool(v) for k, v in enabled.items()}}
+        if view:
+            cal["bvm"] = view
+        cube.calibration = cal
+        self.remake_bragg_map(cube)
+
+    def remake_bragg_map(self, cube: Dataset) -> Dataset | None:
+        """Make 4D-STEM data's Bragg vector map again from its disks and its
+        calibration (the parts switched on, or raw when its view is "raw").
+        None if its disks haven't been found."""
+        from .processing import disks
+
+        vectors = self.bragg_vectors_of(cube)
+        if vectors is None:
+            return None
+        key = ("table", vectors.revision)
+        table = vectors.cache.get(key)
+        if table is None:
+            table = disks.table_of(vectors.signal)
+            vectors.cache.clear()
+            vectors.cache[key] = table
+        cal = cube.calibration or {}
+        on = cal.get("enabled", {})
+        calibrated = cal.get("bvm", "calibrated") == "calibrated"
+        maps = self.origin_maps_of(cube) if calibrated and on.get("origin") else {}
+        origins = maps.get("fitted", maps.get("measured"))
+        if origins is not None and origins.shape[:2] != tuple(cube.signal.data.shape[:2]):
+            origins = None
+        ring = cal.get("ring") if calibrated and on.get("ellipse") else None
+        scale = cal.get("scale") if calibrated and on.get("scale") else None
+        shape = tuple(cube.signal.data.shape[2:])
+        centre = (ring["cx"], ring["cy"]) if ring else (cal["ring"]["cx"], cal["ring"]["cy"]) if cal.get("ring") else None
+        data, step, offset = disks.map_of(table, shape, origins, centre, ring, scale)
+        raw = origins is None and ring is None and scale is None
+        units = cal.get("units", "px") if scale else "px"
+        info = {"view": "raw" if raw else "calibrated", "origin": origins is not None, "ellipse": ring is not None,
+                "scale": scale is not None, "units": units}
+        return self.set_bragg_map(cube, data, step, offset, units, info)
+
+    @staticmethod
+    def apply_calibration_axes(ds: Dataset) -> None:
+        """Set 4D-STEM data's pattern axes from its ``calibration`` (after
+        calibrating, or when an analysis is opened from the raw file)."""
+        cal = ds.calibration
+        if not cal or not cal.get("scale") or ds.kind is not DatasetKind.DIFFRACTION4D:
+            return
+        for axis, zero in zip(ds.signal.axes_manager.signal_axes, cal.get("zero") or [0.0, 0.0]):
+            axis.scale, axis.units = cal["scale"], cal["units"]
+            axis.offset = -cal["scale"] * zero
+
+    def set_bragg_map(self, cube: Dataset, data: np.ndarray, scale: float, offset: float, units: str, info: dict) -> Dataset:
+        """Make the Bragg vector map of 4D-STEM data again (its disks must
+        have been found): ``data`` [ky, kx] with both axes at ``scale``
+        ``units`` per pixel from ``offset``; ``info`` (how it was calibrated)
+        kept as its ``disks["map"]``. Returns it."""
+        import hyperspy.api as hs
+
+        vectors = self.bragg_vectors_of(cube)
+        if vectors is None:
+            raise ValueError(f"The disks of {cube.title} haven't been found")
+        with self._lock:
+            bvm = next((d for d in self.datasets.values() if d.origin == "bragg-map" and d.parent_id == vectors.id), None)
+        signal = hs.signals.Signal2D(np.asarray(data, dtype=np.float32))
+        signal.metadata.General.title = "Bragg vector map"
+        signal.metadata.set_item("Signal.quantity", "Disks")
+        for axis, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.signal_axes):
+            axis.name, axis.units, axis.scale, axis.offset = src.name, units, scale, offset
+        disks = {**(vectors.disks or {}), "map": info}
+        if bvm is None:
+            bvm = Dataset(id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                          origin="bragg-map", parent_id=vectors.id, disks=disks)
+            with self._lock:
+                self.datasets[bvm.id] = bvm
+                ids = self.files[cube.file_id].dataset_ids
+                ids.insert(ids.index(vectors.id) + 1, bvm.id)
+        else:
+            bvm.replace_signal(signal)
+            bvm.disks = disks
+        return bvm
+
     def bragg_vectors_of(self, cube: Dataset) -> Dataset | None:
         """The Bragg vectors table of 4D-STEM data, if its disks were found."""
         with self._lock:
             return next((d for d in self.datasets.values() if d.origin == "disks" and d.parent_id == cube.id), None)
+
+    def bragg_map_of(self, cube: Dataset) -> Dataset | None:
+        """The Bragg vector map of 4D-STEM data, if its disks were found."""
+        vectors = self.bragg_vectors_of(cube)
+        with self._lock:
+            return vectors and next(
+                (d for d in self.datasets.values() if d.origin == "bragg-map" and d.parent_id == vectors.id), None
+            )
 
     def repair_pixels(self, cube: Dataset, mask: np.ndarray, in_place: bool = True) -> Dataset:
         """Replace the detector pixels of ``mask`` in every pattern of 4D-STEM

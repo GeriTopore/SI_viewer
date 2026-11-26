@@ -179,12 +179,27 @@ export interface BadPixels {
   border: number;
 }
 
+/** How a mark drawn over the pattern or the scan shows (Layers tab): a
+ * group's detector, the Bragg disks, a cursor. Unset: its default. */
+export interface OverlayLayer {
+  visible?: boolean;
+  opacity?: number;
+  colour?: string;
+  /** Bragg disks: a circle of the disk's size, or a dot at its position. */
+  style?: "circle" | "dot";
+  /** A dot's size (× its default). */
+  size?: number;
+}
+
 interface Store {
   byId: Record<string, FourDState>;
   patch: (id: string, init: FourDState, patch: Partial<FourDState>) => void;
   /** Pixels found by the Bad pixels process, ringed on the pattern. */
   bad: Record<string, BadPixels | null>;
   setBad: (id: string, bad: BadPixels | null) => void;
+  /** Per dataset, per mark ("det:<group>", "disks", "cursor:<id>"). */
+  overlays: Record<string, Record<string, OverlayLayer>>;
+  setOverlay: (id: string, key: string, patch: OverlayLayer) => void;
 }
 
 /** Per dataset, kept while the app is open (switching datasets keeps each one's detector and cursor). */
@@ -193,6 +208,11 @@ export const useFourD = create<Store>((set) => ({
   patch: (id, init, patch) => set((s) => ({ byId: { ...s.byId, [id]: { ...(s.byId[id] ?? init), ...patch } } })),
   bad: {},
   setBad: (id, bad) => set((s) => ({ bad: { ...s.bad, [id]: bad } })),
+  overlays: {},
+  setOverlay: (id, key, patch) =>
+    set((s) => ({
+      overlays: { ...s.overlays, [id]: { ...s.overlays[id], [key]: { ...s.overlays[id]?.[key], ...patch } } },
+    })),
 }));
 
 /** The detector moved by (dx, dy) pattern pixels (apertures and the array with it). */

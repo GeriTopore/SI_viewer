@@ -11,6 +11,8 @@ import { filterLabel, isInsituView, isLineScan } from "../format";
 import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
+import { CalibrationSection } from "./CalibrationSection";
+import { CentringSection } from "./CentringSection";
 import { DiskDetectionSection } from "./DiskDetectionSection";
 import { VirtualImageSection } from "./VirtualImageSection";
 import { AlignSection } from "./AlignSection";
@@ -527,6 +529,16 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       id: "bad-pixels", title: "Bad pixels",
       tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
       body: <BadPixelSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "centring", title: "Centring",
+      tip: "The direct beam found in every pattern, the descan as a plane, and every pattern shifted so the beam is at its centre",
+      body: <CentringSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "calibration", title: "Calibration",
+      tip: "The pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
+      body: <CalibrationSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
       id: "disks", title: "Disk detection",

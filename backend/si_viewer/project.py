@@ -55,7 +55,7 @@ FIELDS = (
     "thickness", "deconvolution", "quantity", "source_frame", "map_options", "rebinned", "zlp_aligned",
     "ops", "copied_at", "filters", "alignment", "technique_source", "eels_role", "eels_role_source",
     "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope", "curve_model", "atomic", "mask",
-    "virtual", "disks",
+    "virtual", "disks", "beam", "calibration", "origin_map",
 )
 # Bytes of a raw file hashed for its fingerprint.
 FINGERPRINT_BYTES = 1 << 20
@@ -546,6 +546,10 @@ def open_project(
             ds.set_microscope(**rec["microscope"])
         if rec.get("filters"):
             ds.filter_rev += 1
+        if rec.get("calibration"):
+            # 4D-STEM patterns calibrated: the raw file's axes set again.
+            ds.calibration = rec["calibration"]
+            session.apply_calibration_axes(ds)
         if ds.insitu is not None and rec.get("insitu"):
             _restore_view(session, path, ds, rec)
 

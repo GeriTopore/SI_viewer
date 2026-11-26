@@ -508,6 +508,25 @@ grid's *Merged* mode with each group's colour), and presets.
 - Centre of mass → beam shift (x, y) → magnitude, direction (colour wheel),
   iDPC / phase retrieval, magnetic DPC; feeding the existing DPC display.
 - Rotation calibration by minimising curl, as the guided steps in the viewer.
+- **Built (2026-11-26): DPC / iCOM process** (`processing/com.py`,
+  `/4d/com/run`, `ComSection`). Every pattern's centre of mass (pyxem
+  `get_direct_beam_position`, as Centring: above a threshold × the mean, in
+  a square around the mean pattern's bright-field disk), less the descan
+  (none: the mean; a plane over the scan, or over its corners), is the
+  deflection; rotated into the scan's frame by the rotation (and mirror)
+  leaving the least curl (`processing.dpc.find_rotation`, band-passed for
+  the scan's size; 180° resolved by the integral's sharp extremes being
+  maxima) or one given. Kept as the existing DPC objects under the data:
+  "DPC (COM)" (direction on the colour wheel, magnitude as brightness) with
+  COM x and COM y under it (the centre of mass's shift in the scan's frame,
+  ∝ the projected field), and "iCOM" (Fourier integration, mirror-padded),
+  in the pattern's units; made again in place. The centres of mass are kept
+  per data revision and beam settings, so changing the descan or rotation
+  reruns quickly. A plane descan also removes the specimen's own linear
+  field (a quadratic in iCOM): use Corners when there is vacuum.
+- Still to do: COM x / y and iCOM as live virtual-detector responses;
+  calibrated units (mrad, E field via `calibrate_electric_shifts`);
+  pyxem's phase-retrieval methods (Kottler, Arnison, Frankot) as options.
 
 ### Phase 5: radial, azimuthal and variance
 - Azimuthal integrals (1D and polar 2D), radial profiles per pixel (a

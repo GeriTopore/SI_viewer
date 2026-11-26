@@ -12,6 +12,7 @@ import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
 import { PatternBackgroundSection } from "./PatternBackgroundSection";
+import { ComSection } from "./ComSection";
 import { CalibrationSection } from "./CalibrationSection";
 import { CentringSection } from "./CentringSection";
 import { DiskDetectionSection } from "./DiskDetectionSection";
@@ -545,6 +546,11 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       id: "calibration", title: "Calibration",
       tip: "The pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
       body: <CalibrationSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "com", title: "DPC / iCOM",
+      tip: "Every pattern's centre of mass, less the descan, rotated into the scan's frame (the least curl): DPC (direction and magnitude) and iCOM",
+      body: <ComSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
       id: "disks", title: "Disk detection",

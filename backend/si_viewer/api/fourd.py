@@ -13,6 +13,7 @@ from ..processing import fourd
 from ..processing.pattern_background import PatternBackgroundOptions
 from ..processing.calibration import RingOptions
 from ..processing.centring import BeamOptions, PlaneOptions
+from ..processing.com import ComOptions
 from ..processing.disks import DiskOptions
 from ..session import DIFFRACTION4D_IN_MEMORY_LIMIT, DatasetKind
 from .datasets import array_response
@@ -505,6 +506,59 @@ def beam_centre(dataset_id: str, body: CentreBody, request: Request) -> dict:
         return {"file": session.file_of(ds).summary(session), "id": made.id}
 
     return request.app.state.jobs.submit("centre", f"Centring {ds.title}", run).summary()
+
+
+# ---------- DPC from the centre of mass ----------
+
+
+class ComBody(BaseModel):
+    options: ComOptions = ComOptions()
+
+
+@router.post("/api/datasets/{dataset_id}/4d/com/run")
+def com_run(dataset_id: str, body: ComBody, request: Request) -> dict:
+    """DPC and iCOM from every pattern's centre of mass (as a job): the
+    deflection (less the descan plane) rotated into the scan's frame (the
+    rotation found by the least curl, or as given), kept as "DPC (COM)" (DPC
+    x and y under it) and "iCOM" under the data. The centres of mass are kept
+    for the same data and beam settings, so changing the descan or rotation
+    is quick. The job's result is ``{file, ids, theta, mirror, curl_ratio}``."""
+    import json
+
+    from ..processing import centring, com
+    from ..processing.frames import get_frame
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    opts = body.options
+    if opts.beam.method != "center_of_mass":
+        raise HTTPException(422, "DPC needs the centre of mass (sub-pixel), not the blurred maximum")
+    try:
+        bf = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    key = ("com", ds.revision, json.dumps(opts.beam.model_dump(), sort_keys=True))
+
+    def run(job) -> dict:
+        shifts = ds.cache.get(key)
+        if shifts is None:
+            job.report(0.05, "Finding the centre of mass of every pattern")
+            shifts = centring.find_beam(ds.signal, opts.beam, bf)
+            ds.cache[key] = shifts
+        job.report(0.8, "Removing the descan, finding the rotation")
+        gx, gy = com.deflection(shifts, opts.plane)
+        found = com.rotation_of(gx, gy)
+        theta, mirror = (found["theta"], found["mirror"]) if opts.rotation.auto else (opts.rotation.theta, opts.rotation.mirror)
+        job.report(0.9, "Making DPC and iCOM")
+        made = session.make_com_dpc(ds, gx, gy, theta, mirror, {"options": opts.model_dump()})
+        return {
+            "file": session.file_of(ds).summary(session), "ids": [d.id for d in made],
+            "theta": float(theta), "mirror": bool(mirror),
+            # How much curl is left with the rotation found (relative to the divergence).
+            "curl_ratio": found["curl_ratio"], "found": {"theta": found["theta"], "mirror": found["mirror"]},
+        }
+
+    return request.app.state.jobs.submit("com", f"DPC of {ds.title}", run).summary()
 
 
 # ---------- calibration ----------

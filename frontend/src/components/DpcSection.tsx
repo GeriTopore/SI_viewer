@@ -6,7 +6,7 @@ const LETTERS = ["A", "B", "C", "D"] as const;
 
 /** The images DPC can be made from: segment images (and DPC images, to tune them). */
 export const canMakeDpc = (d: DatasetSummary) =>
-  (d.kind === "image" || d.kind === "stack") && (!!d.detector || d.origin === "dpc");
+  (d.kind === "image" || d.kind === "stack") && (!!d.detector || d.origin === "dpc") && d.dpc?.source !== "4d";
 
 /** Process tab, images of a segmented detector: a DPC object (the direction
  * of A − C, B − D rotated into the image's frame, in a circular colour map

@@ -358,9 +358,12 @@ export interface RefinedPeak {
 }
 
 export interface DpcSettings {
-  /** The image of each quadrant (A–D). */
+  /** The image of each quadrant (A–D); none for DPC made from 4D-STEM data. */
   inputs: Record<string, string>;
   normalise: boolean;
+  /** "4d": made from 4D-STEM data's centre of mass (``cube``: its id). */
+  source?: "4d";
+  cube?: string;
   /** Rotation of the detector's axes into the image's (degrees). */
   theta: number;
   mirror: boolean;
@@ -1502,6 +1505,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ plane, in_place: inPlace }),
     }),
+  /** DPC and iCOM from every pattern's centre of mass of 4D-STEM data (a job). */
+  comDpc: (id: string, options: object) =>
+    request<JobSummary>(`/api/datasets/${id}/4d/com/run`, { method: "POST", body: JSON.stringify({ options }) }),
   /** Subtract the background of every pattern of 4D-STEM data (a job), in place or as a copy. */
   subtractBackground: (id: string, options: object, inPlace: boolean) =>
     request<JobSummary>(`/api/datasets/${id}/4d/background/run`, {

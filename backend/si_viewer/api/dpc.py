@@ -30,6 +30,8 @@ def get_dpc(dataset_id: str, request: Request) -> dict:
         ds = session.get_dataset(dataset_id)
     except KeyError:
         raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    if ds.origin == "dpc" and ds.dpc and ds.dpc.get("source") == "4d":
+        raise HTTPException(409, f"{ds.title} was made from 4D-STEM data (its DPC / iCOM process)")
     if ds.origin == "dpc" and ds.dpc and ds.dpc["inputs"].get("A") in session.datasets:
         ds = session.datasets[ds.dpc["inputs"]["A"]]
     entry = session.file_of(ds)

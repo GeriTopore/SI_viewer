@@ -11,6 +11,7 @@ import { filterLabel, isInsituView, isLineScan } from "../format";
 import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
+import { DiskDetectionSection } from "./DiskDetectionSection";
 import { VirtualImageSection } from "./VirtualImageSection";
 import { AlignSection } from "./AlignSection";
 import { BackgroundSection } from "./BackgroundSection";
@@ -526,6 +527,11 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       id: "bad-pixels", title: "Bad pixels",
       tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
       body: <BadPixelSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "disks", title: "Disk detection",
+      tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
+      body: <DiskDetectionSection key={d.id} d={d} />,
     },
     canRebin(d) && d.origin !== "pca" && {
       id: "rebin", title: "Rebin", tip: "Sum neighbouring pixels or channels; overwrites the loaded data",

@@ -371,6 +371,12 @@ colour, added up (the viewer's merged mode: the Layers panel shows, hides
 and fades each; `StackLayer.colormap` gives the starting colour, and a colour
 changed in the process follows); the label names the groups in their
 colours. The pattern pane is as in Single (every group drawn on it).
+*Dominant / Max / Add* (`mergeBlend`, Dominant by default) under the image:
+Dominant keeps at each pixel only the group brightest there, judged within
+each layer's contrast limits and among the layers shown, the others set to
+their lower limit (done on the frames, then drawn added: one colour per
+pixel, never white); Max keeps the brighter colour per channel (WebGL
+`MAX` blending, `blend` prop down to the renderer); Add sums the colours.
 
 **Built (2026-11-26): List.** *Single / Grid / List*. List: a row per
 visible group (its colour down the left edge, name and detector in the
@@ -426,8 +432,28 @@ grid's *Merged* mode with each group's colour), and presets.
   amorphous samples.
 
 ### Phase 6: Bragg peaks and strain
-- Disk template matching, diffraction vectors, overlays on the patterns,
-  subpixel refinement, Bragg vectors from py4DSTEM files.
+- **Built (2026-11-26): Disk detection process** (`processing/disks.py`,
+  `/4d/disks/*`, `DiskDetectionSection`). Template: the probe (the mean
+  pattern around its bright-field disk, shifted so the disk is centred,
+  zero beyond 1.4 r) or a flat disc. Per pattern: pyxem's normalised
+  cross-correlation (`normalize_template_match`, edge-padded so the border
+  gives no false disks), HyperSpy's `find_local_max` (threshold, spacing,
+  edge, max disks), sub-pixel centre of mass of the correlation (3 × 3).
+  Tuned live on the patterns shown (every cursor/region in Grid) while the
+  process is open; *Find in every pattern* is a job (scan rows in parallel
+  threads; the Au NP dm4, 14 400 patterns of 128², ≈ 12 s on the M3 Max CPU)
+  making a **Bragg vectors** table under the data (kind "other", origin
+  "disks": one row per disk, scan_y, scan_x, ky, kx, score; selecting it
+  shows its data) and a **Bragg vector map** under that (bilinear
+  histogram, 2 × finer than the pattern). Found again in place; saved with
+  the analysis. Disks are drawn (circles of the template radius) only while
+  the process is shown: live with *Show on the patterns*, else the stored
+  ones at the cursors.
+  No GPU: CUDA (cupy) isn't available on Apple silicon; the correlation step
+  could later get an optional Apple-GPU (PyTorch MPS / MLX) backend.
+- Still to do: diffraction vectors as pyxem `DiffractionVectors` for its
+  clustering/strain/indexing; calibrations applied to stored vectors (keep
+  raw positions, py4DSTEM-style); Bragg vectors from py4DSTEM files.
 - Lattice vectors, strain maps (exx, eyy, exy, rotation) with the same display
   and conventions as kemstem's strain; snap g-vector arrays to peaks.
 

@@ -183,7 +183,7 @@ export class ImageRenderer {
   }
 
   /** Draw ``layers`` bottom to top (layers without uploaded data are skipped). */
-  draw(view: ViewTransform, layers: LayerDraw[], dpr: number) {
+  draw(view: ViewTransform, layers: LayerDraw[], dpr: number, blend: "add" | "max" = "add") {
     const { gl, canvas, loc } = this;
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.disable(gl.BLEND);
@@ -222,8 +222,10 @@ export class ImageRenderer {
       gl.uniform1f(loc.u_opacity, layer.opacity);
       gl.uniform1i(loc.u_first, first ? 1 : 0);
       if (!first) {
+        // Later layers add their colour, or ("max") keep the brighter of
+        // theirs and what is drawn, channel by channel.
         gl.enable(gl.BLEND);
-        gl.blendEquation(gl.FUNC_ADD);
+        gl.blendEquation(blend === "max" ? gl.MAX : gl.FUNC_ADD);
         gl.blendFunc(gl.ONE, gl.ONE);
       }
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

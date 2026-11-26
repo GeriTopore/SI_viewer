@@ -263,6 +263,12 @@ class Dataset:
     # A virtual image of 4D-STEM data (origin "virtual", processing/fourd.py):
     # {"source_id", "detector" (Detector fields, pattern pixels), "response"}.
     virtual: dict | None = None
+    # Bragg disks found in 4D-STEM data (processing/disks.py): on the "Bragg
+    # vectors" table (origin "disks": one row per disk, VECTOR_FIELDS) and its
+    # "Bragg vector map" image (origin "bragg-map"): {"source_id", "options"
+    # (DiskOptions), "template" ({"kind", "cx", "cy", "r"} pattern px),
+    # "count", "positions" (scan positions)}.
+    disks: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -464,6 +470,7 @@ class Dataset:
             "atomic": self.atomic,
             "mask": self.mask,
             "virtual": self.virtual,
+            "disks": self.disks,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -2154,6 +2161,62 @@ class Session:
             after = [i for i in ids if self.datasets[i].parent_id == cube.id]
             ids.insert(ids.index(after[-1] if after else cube.id) + 1, ds.id)
         return ds
+
+    def set_bragg_vectors(self, cube: Dataset, table: np.ndarray, info: dict, bvm: np.ndarray, upsample: int) -> Dataset:
+        """The Bragg disks found in 4D-STEM data: a "Bragg vectors" table
+        under it (kind "other", origin "disks"; ``processing.disks.VECTOR_FIELDS``)
+        and its "Bragg vector map" image under that (origin "bragg-map",
+        ``upsample`` × finer than the pattern). Made again in place. Returns
+        the table."""
+        import hyperspy.api as hs
+
+        from .processing.disks import VECTOR_FIELDS
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        info = {**info, "source_id": cube.id, "count": int(len(table))}
+        table_signal = hs.signals.BaseSignal(np.ascontiguousarray(table, dtype=np.float32))
+        table_signal.metadata.General.title = "Bragg vectors"
+        table_signal.metadata.set_item("Disks.fields", list(VECTOR_FIELDS))
+        map_signal = hs.signals.Signal2D(np.asarray(bvm, dtype=np.float32))
+        map_signal.metadata.General.title = "Bragg vector map"
+        map_signal.metadata.set_item("Signal.quantity", "Disks")
+        for axis, src in zip(map_signal.axes_manager.signal_axes, cube.signal.axes_manager.signal_axes):
+            axis.name, axis.units = src.name, src.units
+            axis.scale = src.scale / upsample
+            axis.offset = src.offset - src.scale / 2 + src.scale / (2 * upsample)
+        with self._lock:
+            vectors = next((d for d in self.datasets.values() if d.origin == "disks" and d.parent_id == cube.id), None)
+            bvm_ds = vectors and next(
+                (d for d in self.datasets.values() if d.origin == "bragg-map" and d.parent_id == vectors.id), None
+            )
+        if vectors is not None:
+            vectors.replace_signal(table_signal)
+            vectors.disks = info
+        else:
+            vectors = Dataset(id=_new_id(), file_id=cube.file_id, signal=table_signal, kind=DatasetKind.OTHER,
+                              origin="disks", parent_id=cube.id, disks=info)
+            with self._lock:
+                self.datasets[vectors.id] = vectors
+                ids = self.files[cube.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == cube.id]
+                ids.insert(ids.index(after[-1] if after else cube.id) + 1, vectors.id)
+        if bvm_ds is not None:
+            bvm_ds.replace_signal(map_signal)
+            bvm_ds.disks = info
+        else:
+            bvm_ds = Dataset(id=_new_id(), file_id=cube.file_id, signal=map_signal, kind=DatasetKind.IMAGE,
+                             origin="bragg-map", parent_id=vectors.id, disks=info)
+            with self._lock:
+                self.datasets[bvm_ds.id] = bvm_ds
+                ids = self.files[cube.file_id].dataset_ids
+                ids.insert(ids.index(vectors.id) + 1, bvm_ds.id)
+        return vectors
+
+    def bragg_vectors_of(self, cube: Dataset) -> Dataset | None:
+        """The Bragg vectors table of 4D-STEM data, if its disks were found."""
+        with self._lock:
+            return next((d for d in self.datasets.values() if d.origin == "disks" and d.parent_id == cube.id), None)
 
     def repair_pixels(self, cube: Dataset, mask: np.ndarray, in_place: bool = True) -> Dataset:
         """Replace the detector pixels of ``mask`` in every pattern of 4D-STEM

@@ -122,6 +122,9 @@ interface Props {
    * macOS) it scrolls the list instead; a trackpad pinch (Ctrl + wheel on
    * macOS) zooms. Default "always" (the wheel always zooms). */
   wheelZoom?: "always" | "modifier";
+  /** How layers over the first combine: their colours added (default), or
+   * the brighter kept per channel ("max"). */
+  blend?: "add" | "max";
 }
 
 const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
@@ -168,7 +171,7 @@ let hoveredView: string | null = null;
 export function ImageView({
   viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
   interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true, fftView, loupeGroup,
-  readout = true, follow = false, hoverChip = false, onSave, controlRef, scanFactor = 1, wheelZoom = "always",
+  readout = true, follow = false, hoverChip = false, onSave, controlRef, scanFactor = 1, wheelZoom = "always", blend = "add",
 }: Props) {
   const anyFrame = layers.some((l) => l.frame);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -279,10 +282,10 @@ export function ImageView({
       const draws = layers
         .filter((l) => l.visible && l.frame && l.display)
         .map((l) => ({ key: l.key, display: l.display!, opacity: l.opacity }));
-      r.draw(view, draws, window.devicePixelRatio || 1);
+      r.draw(view, draws, window.devicePixelRatio || 1, blend);
     });
     return () => cancelAnimationFrame(id);
-  }, [view, layers, size]);
+  }, [view, layers, size, blend]);
 
   // Publish the analysed layer and the part of it in view (e.g. for the FFT).
   const owner = useId();

@@ -9,6 +9,8 @@ import { FftBoxOverlay } from "../components/FftBoxOverlay";
 import { LoupeToggle } from "../components/Loupe";
 import { LineOverlay } from "../components/LineOverlay";
 import { RoiOverlay } from "../components/RoiOverlay";
+import { diskOptionsOf, useDisks, type Disk } from "../state/disks";
+import { useLayers } from "../state/layers";
 import { useProfiles } from "../state/profiles";
 import { useUi } from "../state/ui";
 import { useFftBoxTool } from "./useFftBoxTool";
@@ -30,6 +32,8 @@ import { imageGeometry } from "./geometry";
 import { logFrame } from "./LineScanView";
 
 const HANDLE_PX = 8;
+// Bragg disks found on a pattern.
+const DISK_COLOR = "#ffffff";
 // The frames around the virtual image and the pattern in their group's / source's colour.
 const FRAME_WIDTH = 2;
 const FRAME_OPACITY = 0.6;
@@ -462,6 +466,93 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
     for (const [id, v] of Object.entries(dpSet.frames)) out[id] = log ? logFrame(v.frame) : v.frame;
     return out;
   }, [dpSet.frames, log]);
+  // ---------- Bragg disks on the patterns shown ----------
+  // Only while the Disk detection process is shown (the Process tab on this
+  // data's Disk detection): found live with its settings ("Show on the
+  // patterns"), else, once every pattern's are found, those at each cursor.
+  const diskProcessShown = useUi((s) => s.processOpen === "disks" && s.rightTab === "process");
+  const focused = useDatasets((s) => s.focusId === ds.id);
+  const diskOpen = diskProcessShown && focused;
+  const diskPreview = useDisks((s) => s.preview[ds.id] ?? true) && diskOpen;
+  const diskOpts = useDisks((s) => diskOptionsOf(s, ds.id));
+  const shownSourceIds = grid ? dpItems.map((i) => i.id) : [source];
+  const specOf = (id: string): object | null => {
+    const c = cursors.find((k) => k.id === id);
+    if (c) return { x: c.x, y: c.y };
+    const r = rois.find((k) => k.id === id);
+    if (r) return { region: shapeToRegion(r.shape) };
+    if (id === SCAN_MEAN || id === SCAN_MAX) return { scan: id === SCAN_MAX ? "max" : "mean" };
+    return null;
+  };
+  const previewSpecs = shownSourceIds.map((id) => ({ id, ...specOf(id) }));
+  const previewKey = diskPreview ? `${version}|${JSON.stringify(diskOpts)}|${JSON.stringify(previewSpecs)}` : "";
+  const [previewDisks, setPreviewDisks] = useState<{ key: string; r: number; disks: Record<string, Disk[]> } | null>(null);
+  useEffect(() => {
+    if (!previewKey) return;
+    let stale = false;
+    // After the settings rest a moment (typing, dragging a cursor).
+    const id = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/datasets/${ds.id}/4d/disks/preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ options: diskOpts, sources: previewSpecs }),
+        });
+        const body = await res.json();
+        if (!stale && res.ok) setPreviewDisks({ key: previewKey, r: body.template.r, disks: body.disks });
+      } catch {
+        /* the next change tries again */
+      }
+    }, 150);
+    return () => {
+      stale = true;
+      clearTimeout(id);
+    };
+  }, [previewKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vectorsDs = useMemo(
+    () => allDatasets(files).find((d) => d.origin === "disks" && d.parent_id === ds.id) ?? null,
+    [files, ds.id],
+  );
+  const vectorsKey = vectorsDs ? `${vectorsDs.id}@${dataVersion(vectorsDs)}` : "";
+  const [storedDisks, setStoredDisks] = useState<Record<string, Disk[]>>({});
+  const cursorKeys = cursors.map((c) => `${c.x},${c.y}`);
+  useEffect(() => {
+    if (!vectorsKey || diskPreview || !diskOpen) return;
+    for (const xy of cursorKeys) {
+      const k = `${vectorsKey}|${xy}`;
+      if (storedDisks[k]) continue;
+      const [x, y] = xy.split(",");
+      fetch(`/api/datasets/${ds.id}/4d/disks?x=${x}&y=${y}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((body) => body && setStoredDisks((s) => ({ ...s, [k]: body.disks })))
+        .catch(() => undefined);
+    }
+  }, [vectorsKey, diskPreview, diskOpen, cursorKeys.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** The disks to draw on the pattern of source ``id`` (and their radius), if any. */
+  const disksOf = (id: string): { disks: Disk[]; r: number } | null => {
+    // Only while the Disk detection process is shown.
+    if (!diskOpen) return null;
+    if (diskPreview) {
+      const p = previewDisks;
+      return p?.disks[id] ? { disks: p.disks[id], r: p.r } : null;
+    }
+    const c = cursors.find((k) => k.id === id);
+    const found = c && vectorsDs?.disks ? storedDisks[`${vectorsKey}|${c.x},${c.y}`] : undefined;
+    return found ? { disks: found, r: vectorsDs!.disks!.template.r } : null;
+  };
+  const disksOverlay = (t: Transform, id: string): ReactNode => {
+    const found = disksOf(id);
+    if (!found) return null;
+    return (
+      <g className="fourd-overlay">
+        {found.disks.map(([ky, kx], i) => {
+          const [x, y] = t.toScreen(kx, ky);
+          return <circle key={i} cx={x} cy={y} r={Math.max(3, found.r * t.zoom)} fill="none" stroke={DISK_COLOR} strokeWidth={1.25} />;
+        })}
+      </g>
+    );
+  };
+
   // A press that makes a grid panel the active one only does that (it
   // doesn't also move the cursor or the detector): set when the panel changes.
   const activatedAt = useRef(0);
@@ -849,7 +940,14 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
         .map((g) => <g key={g.id}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1)}</g>)}
     </g>
   );
-  const patternOverlay = (t: Transform, key?: string): ReactNode => <>{sourceBorder(t, key)}{othersOverlay(t)}{detectorOverlay(t)}</>;
+  const patternOverlay = (t: Transform, key?: string): ReactNode => (
+    <>
+      {sourceBorder(t, key)}
+      {disksOverlay(t, grid && key ? key.replace(/^dp:/, "") : source)}
+      {othersOverlay(t)}
+      {detectorOverlay(t)}
+    </>
+  );
   const detectorOverlay = (t: Transform): ReactNode => {
     const d = det;
     if (d.shape === "apertures") return <>{aperturesOverlay(t)}{badRings(t)}</>;
@@ -951,8 +1049,46 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   // Merge: the same images as layers of one view, each in its group's colour
   // (colours add up), under contrast keys of their own.
   const mergeKey = (id: string) => `${ds.id}:merge:vi:${id}`;
+  const mergeBlend = st.mergeBlend ?? "dominant";
+  // Dominant: at each pixel only the group brightest there (its value within
+  // its contrast limits; among the layers shown) keeps its value, the others
+  // drop to their lower limit (black); drawn added, one colour per pixel.
+  const mergeDisplays = useDisplay((s) => s.display);
+  const layerProps = useLayers((s) => s.props);
+  const dominant = useMemo(() => {
+    if (!merge || mergeBlend !== "dominant") return null;
+    const items = visibleGroups.map((g) => ({
+      id: g.id,
+      f: viSet.frames[g.id]?.frame,
+      d: mergeDisplays[mergeKey(g.id)],
+      shown: layerProps[`vi:${g.id}`]?.visible ?? true,
+    }));
+    // Until every layer has its contrast (set from its own frame), as is.
+    if (!items.length || items.some((i) => !i.f || !i.d)) return null;
+    const n = items[0].f!.data.length;
+    if (items.some((i) => i.f!.data.length !== n)) return null;
+    const out = items.map((i) => new Float32Array(i.f!.data));
+    const floor = items.map((i) => Math.min(i.d!.lo, i.d!.hi));
+    for (let p = 0; p < n; p++) {
+      let best = -1;
+      let bestV = -Infinity;
+      for (let k = 0; k < items.length; k++) {
+        const { f, d, shown } = items[k];
+        if (!shown) continue;
+        const v = (f!.data[p] - d!.lo) / (d!.hi - d!.lo || 1);
+        if (v > bestV) {
+          bestV = v;
+          best = k;
+        }
+      }
+      for (let k = 0; k < items.length; k++) if (k !== best) out[k][p] = floor[k];
+    }
+    return Object.fromEntries(items.map((i, k) => [i.id, { ...i.f!, data: out[k] }])) as Record<string, Frame>;
+  }, [merge, mergeBlend, visibleGroups.map((g) => g.id).join(), viSet.frames, mergeDisplays, layerProps]); // eslint-disable-line react-hooks/exhaustive-deps
   const mergeStacks: StackLayer[] = viStacks.map((s, i) => ({
     ...s,
+    // The same version: contrast stays set from the whole image.
+    frame: dominant?.[visibleGroups[i].id] ?? s.frame,
     displayKey: mergeKey(visibleGroups[i].id),
     colormap: visibleGroups[i].color,
   }));
@@ -1066,6 +1202,7 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
                       renderOverlay={(t) => (
                         <>
                           {sourceBorder(t)}
+                          {disksOverlay(t, source)}
                           {on ? detectorOverlay(t) : (
                             <g className="fourd-overlay">{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1.5)}</g>
                           )}
@@ -1163,6 +1300,7 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
           images={[]}
           stacks={grid ? viStacks : merge ? mergeStacks : undefined}
           gridOnly={grid}
+          blend={merge && mergeBlend === "max" ? "max" : "add"}
           requestActive={viRequest}
           onActiveChange={grid || merge ? onViActive : undefined}
           empty="Show a detector group (Virtual image process) to see its image"
@@ -1176,6 +1314,11 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
           footer={
             <div className="stack-bar fourd-bar">
               {!grid && !merge && imagePicker}
+              {merge && segmented("Combine", [
+                { id: "dominant", label: "Dominant", title: "At each pixel, only the group brightest there (for its contrast): one colour per pixel" },
+                { id: "max", label: "Max", title: "The brighter of the groups' colours, channel by channel" },
+                { id: "add", label: "Add", title: "The groups' colours added up" },
+              ], mergeBlend, (v) => patch({ mergeBlend: v }))}
               <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click or Delete removes one">
                 {cursorText}
               </span>

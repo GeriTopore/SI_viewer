@@ -50,6 +50,11 @@ export function MainView() {
   // Keyed by the primary dataset and its revision: each gets fresh view
   // state, and so does rebinned data.
   const key = primary && `${primary.id}@${primary.revision}`;
+  // Bragg vectors (a table): shown on their 4D-STEM data's patterns.
+  if (primary?.origin === "disks") {
+    const cube = byId.get(primary.parent_id ?? "");
+    if (cube?.kind === "4dstem") return <FourDView key={`${cube.id}@${cube.revision}`} ds={cube} />;
+  }
   switch (primary?.kind) {
     case "spectrum_image":
       if (isLineScan(primary)) return <LineScanView key={key} ds={primary} />;

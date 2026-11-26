@@ -466,7 +466,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -488,6 +488,15 @@ export interface DatasetSummary {
   mask?: MaskInfo | null;
   /** A virtual image of 4D-STEM data: the detector (pattern pixels) and response it was made with. */
   virtual?: { source_id: string; detector: Record<string, number | string>; response: string } | null;
+  /** Bragg disks found in 4D-STEM data (the "Bragg vectors" table, origin
+   * "disks", and its "Bragg vector map", origin "bragg-map"). */
+  disks?: {
+    source_id: string;
+    options: Record<string, unknown>;
+    template: { kind: string; cx: number; cy: number; r: number };
+    count: number;
+    positions: number;
+  } | null;
   /** Spectrum image a computed map was made from. */
   parent_id: string | null;
   /** Bumped when the data is recomputed or rebinned. */
@@ -1068,6 +1077,9 @@ export interface JobSummary {
     pca_id?: string;
     /** Opening an analysis: the files its drift corrections changed. */
     files?: FileSummary[];
+    /** Disk detection: the Bragg vectors table's id and how many disks. */
+    id?: string;
+    count?: number;
   } | null;
 }
 
@@ -1449,6 +1461,9 @@ export const api = {
   alignedSum: (id: string, choice: ShiftsChoice) =>
     request<JobSummary>(`/api/datasets/${id}/insitu/aligned-sum`, { method: "POST", body: JSON.stringify(choice) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
+  /** Find the Bragg disks of every pattern of 4D-STEM data (a job). */
+  findDisks: (id: string, options: object) =>
+    request<JobSummary>(`/api/datasets/${id}/4d/disks/run`, { method: "POST", body: JSON.stringify({ options }) }),
   /** Every queued or running job, then the ``recent`` latest to finish (no results). */
   listJobs: (recent = 3) => request<JobSummary[]>(`/api/jobs?recent=${recent}`),
   /** A new spectrum image under ``id``, cropped to a rectangle (navigation

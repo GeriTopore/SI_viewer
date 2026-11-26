@@ -5,10 +5,12 @@ from __future__ import annotations
 
 from typing import Literal
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..processing import fourd
+from ..processing.disks import DiskOptions
 from ..session import DatasetKind
 from .datasets import array_response
 
@@ -155,3 +157,127 @@ def repair_bad_pixels(dataset_id: str, body: RepairBody, request: Request) -> di
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"file": session.file_of(ds).summary(session), "id": made.id, "pixels": int(mask.sum())}
+
+
+# ---------- Bragg disk detection ----------
+
+
+def _template(ds, opts):
+    """The template for ``opts`` and what it is ({"kind", "cx", "cy", "r"}:
+    the bright-field disk it was measured on, pattern px)."""
+    from ..processing import disks
+    from ..processing.frames import get_frame
+
+    mean = get_frame(ds, projection="mean-pattern")
+    bf = fourd.bright_field_disk(mean)
+    if opts.template == "probe":
+        return disks.probe_template(mean, bf), {"kind": "probe", **bf}
+    r = opts.radius or bf["r"]
+    return disks.disc_template(r), {"kind": "disc", "cx": bf["cx"], "cy": bf["cy"], "r": r}
+
+
+class DiskBody(BaseModel):
+    options: DiskOptions = DiskOptions()
+
+
+@router.post("/api/datasets/{dataset_id}/4d/disks/template")
+def disk_template(dataset_id: str, body: DiskBody, request: Request) -> Response:
+    """The template disks are found with (the probe from the mean pattern,
+    or a disc), with what it is in the headers."""
+    ds = _cube(request, dataset_id)
+    try:
+        template, info = _template(ds, body.options)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return array_response(template, **info)
+
+
+class PreviewSource(BaseModel):
+    """A pattern to try the detection on: at a scan pixel, over a region, or
+    the scan's mean or maximum. ``id``: the caller's name for it."""
+
+    id: str
+    x: float | None = None
+    y: float | None = None
+    region: fourd.Region | None = None
+    scan: Literal["mean", "max"] | None = None
+
+
+class PreviewBody(DiskBody):
+    sources: list[PreviewSource] = Field(default_factory=list, max_length=64)
+
+
+@router.post("/api/datasets/{dataset_id}/4d/disks/preview")
+def disk_preview(dataset_id: str, body: PreviewBody, request: Request) -> dict:
+    """The disks found in a few patterns with ``options``, to tune them before
+    finding every pattern's: {"template": …, "disks": {source id: [[ky, kx,
+    score], …]}} (pattern px, pixel i spanning [i, i + 1))."""
+    from ..processing import disks
+    from ..processing.frames import get_frame
+
+    ds = _cube(request, dataset_id)
+    try:
+        template, info = _template(ds, body.options)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    data = ds.signal.data
+    out = {}
+    for s in body.sources:
+        try:
+            if s.scan:
+                pattern = get_frame(ds, projection=f"{s.scan}-pattern")
+            elif s.region is not None:
+                pattern, _ = fourd.pattern_over(data, s.region, "mean")
+            elif s.x is not None and s.y is not None:
+                pattern = fourd.pattern_at(data, s.x, s.y)
+            else:
+                continue
+        except (ValueError, IndexError):
+            continue
+        out[s.id] = disks.find_disks(pattern, template, body.options).round(3).tolist()
+    return {"template": info, "disks": out}
+
+
+@router.post("/api/datasets/{dataset_id}/4d/disks/run")
+def disk_run(dataset_id: str, body: DiskBody, request: Request) -> dict:
+    """Find the disks of every pattern (as a job): kept as the data's "Bragg
+    vectors" table and "Bragg vector map" (made again if there are). The
+    job's result is ``{file, id}`` (the table's id) and ``count``."""
+    from ..processing import disks
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    try:
+        template, info = _template(ds, body.options)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    opts = body.options
+
+    def run(job) -> dict:
+        job.report(0.0, "Starting")
+        table = disks.find_all(ds.signal.data, template, opts, lambda f, m: job.report(0.97 * f, m))
+        job.report(0.98, "Making the Bragg vector map")
+        shape = tuple(ds.signal.data.shape[2:])
+        bvm = disks.vector_map(table, shape, upsample=2)
+        ny, nx = ds.signal.data.shape[:2]
+        made = session.set_bragg_vectors(
+            ds, table, {"options": opts.model_dump(), "template": info, "positions": int(ny * nx)}, bvm, upsample=2,
+        )
+        return {"file": session.file_of(ds).summary(session), "id": made.id, "count": int(len(table))}
+
+    return request.app.state.jobs.submit("disks", f"Disk detection of {ds.title}", run).summary()
+
+
+@router.get("/api/datasets/{dataset_id}/4d/disks")
+def disks_at(dataset_id: str, x: float, y: float, request: Request) -> dict:
+    """The disks found at scan pixel (x, y): {"disks": [[ky, kx, score], …]};
+    404 if the data's disks haven't been found."""
+    from ..processing import disks
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    vectors = session.bragg_vectors_of(ds)
+    if vectors is None:
+        raise HTTPException(404, f"The disks of {ds.title} haven't been found")
+    rows = disks.disks_at(np.asarray(vectors.signal.data), x, y)
+    return {"disks": rows[:, 2:].round(3).tolist()}

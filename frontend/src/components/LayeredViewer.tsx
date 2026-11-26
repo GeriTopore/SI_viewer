@@ -101,6 +101,8 @@ interface Props {
   renderOverlay?: (t: Transform, key?: string) => ReactNode;
   /** Always a grid (no merged choice), e.g. the 4D view's panels. */
   gridOnly?: boolean;
+  /** Merged: the layers' colours added (default) or the brighter kept. */
+  blend?: "add" | "max";
   /** The line (profile) tool is active. Without this prop the viewer offers
    * its own Pan / Line / FFT tool buttons. */
   lineTool?: boolean;
@@ -221,7 +223,7 @@ export const FLAP_MIN_W = 220;
 
 export function LayeredViewer({
   viewKey, base, images: maps, items = [], implied = [], stacks = [], geometry, loading, error, children, empty, interaction, renderOverlay,
-  gridOnly = false, lineTool, fftTool, toolButtons = true, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], focusCorner, overlays = true, gridContext, requestActive, onActiveChange,
+  gridOnly = false, blend, lineTool, fftTool, toolButtons = true, profilePick, onLineScan, imageMenu, footer, bottomTabs = [], focusCorner, overlays = true, gridContext, requestActive, onActiveChange,
   histogramRegions,
   scanFactor = 1,
 }: Props) {
@@ -828,6 +830,7 @@ export function LayeredViewer({
               empty={imageLayers.length ? null : (empty ?? null)}
               panel={panel}
               interaction={toolInteraction}
+              blend={blend}
               fftView={viewKey}
               renderOverlay={(t) => (
                 <>

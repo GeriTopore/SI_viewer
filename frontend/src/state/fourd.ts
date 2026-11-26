@@ -125,6 +125,9 @@ export interface FourDState {
   layout: "single" | "grid" | "list" | "merge";
   /** The list's row height (px). */
   rowHeight: number;
+  /** Merge: the groups' colours added, the brighter kept per channel, or at
+   * each pixel only the group that is brightest there (for its contrast). */
+  mergeBlend: "add" | "max" | "dominant";
 }
 
 export const ROW_HEIGHTS = { min: 160, max: 640, initial: 280 };
@@ -165,6 +168,7 @@ export function initialState(scan: [number, number], pattern: [number, number]):
     shown: "live",
     layout: "single",
     rowHeight: ROW_HEIGHTS.initial,
+    mergeBlend: "dominant",
   };
 }
 

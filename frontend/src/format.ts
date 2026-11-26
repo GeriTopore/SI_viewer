@@ -74,6 +74,8 @@ export function kindLabel(d: DatasetSummary): string {
   if (d.atomic?.kind === "cage") return "Disp";
   if (d.atomic) return ATOMIC_LABEL[d.atomic.output];
   if (d.origin === "mask") return "Mask";
+  if (d.origin === "disks") return "Bragg";
+  if (d.origin === "bragg-map") return "BVM";
   if (d.origin === "fitted" || d.origin === "curve-fit") return "Fit";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.

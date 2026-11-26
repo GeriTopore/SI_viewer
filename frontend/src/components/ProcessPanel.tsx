@@ -11,6 +11,7 @@ import { filterLabel, isInsituView, isLineScan } from "../format";
 import { InsituAlignSection } from "./InsituAlignSection";
 import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
+import { PatternBackgroundSection } from "./PatternBackgroundSection";
 import { CalibrationSection } from "./CalibrationSection";
 import { CentringSection } from "./CentringSection";
 import { DiskDetectionSection } from "./DiskDetectionSection";
@@ -529,6 +530,11 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       id: "bad-pixels", title: "Bad pixels",
       tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
       body: <BadPixelSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "background", title: "Background",
+      tip: "Diffuse scattering subtracted from every pattern (pyxem: median kernel, difference of Gaussians, radial median, h-dome), tried on the patterns shown",
+      body: <PatternBackgroundSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
       id: "centring", title: "Centring",

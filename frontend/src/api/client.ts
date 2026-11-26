@@ -1502,6 +1502,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ plane, in_place: inPlace }),
     }),
+  /** Subtract the background of every pattern of 4D-STEM data (a job), in place or as a copy. */
+  subtractBackground: (id: string, options: object, inPlace: boolean) =>
+    request<JobSummary>(`/api/datasets/${id}/4d/background/run`, {
+      method: "POST",
+      body: JSON.stringify({ options, in_place: inPlace }),
+    }),
   /** Find the Bragg disks of every pattern of 4D-STEM data (a job). */
   findDisks: (id: string, options: object) =>
     request<JobSummary>(`/api/datasets/${id}/4d/disks/run`, { method: "POST", body: JSON.stringify({ options }) }),

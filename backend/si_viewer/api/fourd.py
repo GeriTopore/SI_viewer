@@ -10,10 +10,11 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..processing import fourd
+from ..processing.pattern_background import PatternBackgroundOptions
 from ..processing.calibration import RingOptions
 from ..processing.centring import BeamOptions, PlaneOptions
 from ..processing.disks import DiskOptions
-from ..session import DatasetKind
+from ..session import DIFFRACTION4D_IN_MEMORY_LIMIT, DatasetKind
 from .datasets import array_response
 
 router = APIRouter(tags=["4dstem"])
@@ -195,6 +196,87 @@ def repair_bad_pixels(dataset_id: str, body: RepairBody, request: Request) -> di
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"file": session.file_of(ds).summary(session), "id": made.id, "pixels": int(mask.sum())}
+
+
+# ---------- background subtraction (pyxem's methods) ----------
+
+
+class BackgroundPreviewBody(BaseModel):
+    options: PatternBackgroundOptions = PatternBackgroundOptions()
+    # The pattern: at scan pixel (x, y), the mean over a region, or over the scan.
+    x: float | None = None
+    y: float | None = None
+    region: fourd.Region | None = None
+    scan: Literal["mean", "max"] | None = None
+
+
+def _beam_centres(request: Request, ds):
+    """The beam's centre per scan position ([y, x, 2] of x, y px) when the
+    Centring is on, else that of the mean pattern's bright-field disk ([2])."""
+    from ..processing.frames import get_frame
+
+    origins = request.app.state.session.centring_origins(ds)
+    if origins is not None:
+        return origins
+    try:
+        disk = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
+        return np.array([disk["cx"], disk["cy"]], float)
+    except ValueError:
+        h, w = ds.signal.data.shape[2:]
+        return np.array([w / 2, h / 2], float)
+
+
+@router.post("/api/datasets/{dataset_id}/4d/background/preview")
+def background_preview(dataset_id: str, body: BackgroundPreviewBody, request: Request) -> Response:
+    """One pattern (a scan pixel's, a region's mean, the scan's mean or max)
+    with its background subtracted by ``options``, to tune them."""
+    from ..processing import pattern_background as background
+    from ..processing.frames import get_frame
+
+    ds = _cube(request, dataset_id)
+    centres = _beam_centres(request, ds)
+    try:
+        if body.x is not None and body.y is not None:
+            pattern = fourd.pattern_at(ds.signal.data, body.x, body.y)
+            centre = centres if centres.ndim == 1 else centres[int(body.y), int(body.x)]
+        else:
+            if body.region is not None:
+                pattern, _ = fourd.pattern_over(ds.signal.data, body.region, "mean")
+            else:
+                pattern = get_frame(ds, projection="max-pattern" if body.scan == "max" else "mean-pattern")
+            centre = centres if centres.ndim == 1 else np.nanmean(centres.reshape(-1, 2), axis=0)
+    except IndexError as e:
+        raise HTTPException(416, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return array_response(background.subtract(pattern, body.options, (float(centre[0]), float(centre[1]))))
+
+
+class BackgroundBody(BaseModel):
+    options: PatternBackgroundOptions = PatternBackgroundOptions()
+    in_place: bool = True
+
+
+@router.post("/api/datasets/{dataset_id}/4d/background/run")
+def background_run(dataset_id: str, body: BackgroundBody, request: Request) -> dict:
+    """Subtract the background of every pattern (as a job), in place or as
+    a copy under the data. The job's result is ``{file, id}`` (the data changed)."""
+    from ..processing import pattern_background as background
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    if ds.lazy and ds.signal.data.nbytes > DIFFRACTION4D_IN_MEMORY_LIMIT:
+        raise HTTPException(422, f"{ds.title} is too big to process in memory: bin it first")
+    centres = _beam_centres(request, ds)
+
+    def run(job) -> dict:
+        job.report(0.0, "Starting")
+        data = background.subtract_all(ds.signal.data, body.options, centres, lambda f, m: job.report(0.98 * f, m))
+        job.report(0.99, "Keeping the patterns")
+        made = session.subtract_background(ds, data, background.describe(body.options), body.in_place)
+        return {"file": session.file_of(ds).summary(session), "id": made.id}
+
+    return request.app.state.jobs.submit("background", f"Background of {ds.title}", run).summary()
 
 
 # ---------- Bragg disk detection ----------

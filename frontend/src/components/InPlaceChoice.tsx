@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 /** Operations that change loaded data, each with its own remembered choice. */
-export type InPlaceOp = "rebin" | "zlp" | "align" | "repair" | "centre";
+export type InPlaceOp = "rebin" | "zlp" | "align" | "repair" | "centre" | "background";
 
 const key = (op: InPlaceOp) => `si-viewer:in-place:${op}`;
 

@@ -2510,6 +2510,23 @@ class Session:
                 (d for d in self.datasets.values() if d.origin == "bragg-map" and d.parent_id == vectors.id), None
             )
 
+    def subtract_background(self, cube: Dataset, data: np.ndarray, how: str, in_place: bool = True) -> Dataset:
+        """4D-STEM data with its patterns' background subtracted (``data``:
+        float32, the data's shape; ``how``: e.g. "median kernel 19 px"): in
+        place (a new revision; the file is unchanged), or as a copy under it
+        (origin "pattern-background"; "background" is EELS'). Returns the dataset changed."""
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if data.shape != tuple(cube.signal.data.shape):
+            raise ValueError("The patterns are not the data's (was it binned since?)")
+        signal = cube.signal._deepcopy_with_new_data(data)
+        signal.metadata.set_item("Signal.background", how)
+        if not in_place:
+            return self.copy_as(cube, "pattern-background", f"{cube.title} (background subtracted)", signal=signal)
+        signal.metadata.General.title = cube.signal.metadata.General.title
+        cube.replace_signal(signal)
+        return cube
+
     def repair_pixels(self, cube: Dataset, mask: np.ndarray, in_place: bool = True) -> Dataset:
         """Replace the detector pixels of ``mask`` in every pattern of 4D-STEM
         data by the mean of the 8 around them: in place (a new revision; the

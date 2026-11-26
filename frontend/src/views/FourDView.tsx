@@ -22,6 +22,7 @@ import { autoContrast } from "./useImageDisplay";
 import type { ImageGeometry } from "./geometry";
 import { ImageToolButtons, LayeredViewer, type ExtraLayers, type StackLayer } from "../components/LayeredViewer";
 import { useLayersTab } from "../state/layersTab";
+import { backgroundOptionsOf, usePatternBackground } from "../state/patternBackground";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
@@ -449,10 +450,25 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   useEffect(() => {
     if (selectedRoi && selectedRoi !== latest.current.source) patch({ source: selectedRoi });
   }, [selectedRoi]); // eslint-disable-line react-hooks/exhaustive-deps
+  // While the Background process is shown (on this data, "Show on the
+  // patterns"): every pattern shown with its background subtracted.
+  const bgProcessShown = useProcessShown("background");
+  const bgFocused = useDatasets((s) => s.focusId === ds.id);
+  const bgPreview = usePatternBackground((s) => s.preview[ds.id] ?? true);
+  const bgOpts = usePatternBackground((s) => backgroundOptionsOf(s, ds.id));
+  const bgOn = bgProcessShown && bgFocused && bgPreview;
+  // The radial median's centre follows the centring.
+  const bgTag = bgOn ? `|bg|${JSON.stringify(bgOpts)}|${ddfVersion}` : "";
+  const bgPattern = (spec: object) => post(`/api/datasets/${ds.id}/4d/background/preview`, { options: bgOpts, ...spec }).then(asFrame);
   const patternKey = `${version}|${
     sourceRoi ? `roi|${JSON.stringify(sourceRoi.shape)}` : source === SCAN_MEAN || source === SCAN_MAX ? source : `cursor|${activeCursor.x},${activeCursor.y}`
-  }`;
+  }${bgTag}`;
   const pattern = useLatest(patternKey, () => {
+    if (bgOn) {
+      return bgPattern(sourceRoi ? { region: shapeToRegion(sourceRoi.shape) }
+        : source === SCAN_MEAN || source === SCAN_MAX ? { scan: source === SCAN_MAX ? "max" : "mean" }
+        : { x: activeCursor.x, y: activeCursor.y });
+    }
     if (sourceRoi) return post(`/api/datasets/${ds.id}/4d/pattern`, { region: shapeToRegion(sourceRoi.shape), reduce: "mean" }).then(asFrame);
     if (source === SCAN_MEAN || source === SCAN_MAX) return fetchFrame(ds.id, { projection: source === SCAN_MAX ? "max-pattern" : "mean-pattern" });
     return fetchArray(`/api/datasets/${ds.id}/4d/pattern?x=${activeCursor.x}&y=${activeCursor.y}`).then(asFrame);
@@ -480,17 +496,21 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const scanSource = source === SCAN_MEAN || source === SCAN_MAX ? source : null;
   const dpItems = [
     ...cursors.map((c) => ({
-      id: c.id, key: `${version}|cursor|${c.x},${c.y}`,
-      run: () => fetchArray(`/api/datasets/${ds.id}/4d/pattern?x=${c.x}&y=${c.y}`).then(asFrame),
+      id: c.id, key: `${version}|cursor|${c.x},${c.y}${bgTag}`,
+      run: () => (bgOn ? bgPattern({ x: c.x, y: c.y }) : fetchArray(`/api/datasets/${ds.id}/4d/pattern?x=${c.x}&y=${c.y}`).then(asFrame)),
     })),
     ...rois.map((r) => ({
-      id: r.id, key: `${version}|roi|${JSON.stringify(r.shape)}`,
-      run: () => post(`/api/datasets/${ds.id}/4d/pattern`, { region: shapeToRegion(r.shape), reduce: "mean" }).then(asFrame),
+      id: r.id, key: `${version}|roi|${JSON.stringify(r.shape)}${bgTag}`,
+      run: () => (bgOn
+        ? bgPattern({ region: shapeToRegion(r.shape) })
+        : post(`/api/datasets/${ds.id}/4d/pattern`, { region: shapeToRegion(r.shape), reduce: "mean" }).then(asFrame)),
     })),
     ...(scanSource
       ? [{
-          id: scanSource, key: `${version}|${scanSource}`,
-          run: () => fetchFrame(ds.id, { projection: scanSource === SCAN_MAX ? "max-pattern" : "mean-pattern" }),
+          id: scanSource, key: `${version}|${scanSource}${bgTag}`,
+          run: () => (bgOn
+            ? bgPattern({ scan: scanSource === SCAN_MAX ? "max" : "mean" })
+            : fetchFrame(ds.id, { projection: scanSource === SCAN_MAX ? "max-pattern" : "mean-pattern" })),
         }]
       : []),
   ];

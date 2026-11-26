@@ -12,6 +12,7 @@ Positions are in pattern pixels with pixel i spanning [i, i + 1).
 from __future__ import annotations
 
 import math
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -195,3 +196,78 @@ def fit_lattice(table: np.ndarray, scan_shape: tuple[int, int], lattice: StrainL
     fit = np.stack([cx[:, 1], cy[:, 1], cx[:, 2], cy[:, 2], cx[:, 0], cy[:, 0]]).reshape(6, ny, nx)
     return {"fit": fit.astype(np.float32), "count": count.reshape(ny, nx).astype(np.float32),
             "residual": residual.reshape(ny, nx).astype(np.float32)}
+
+
+# ---------- steps 3 and 4: the reference, the strain axes and the maps ----------
+
+
+class StrainAxes(BaseModel):
+    """The strain maps' x axis: the scan's x (the calibrated frame's: the
+    scan's when the QR rotation is applied), along the reference g1, or at
+    ``angle``° from the scan's x, counter-clockwise as seen on screen."""
+
+    along: Literal["scan", "g1", "angle"] = "scan"
+    angle: float = Field(0.0, ge=-360, le=360)
+
+
+# The maps made, in order: (output, title), as kemstem's strain tensor names them.
+STRAIN_OUTPUTS = (("exx", "εxx"), ("eyy", "εyy"), ("exy", "εxy"), ("oxy", "ωxy"))
+
+
+def fitted_basis(fit: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The fitted g1 and g2 at every position (``fit_lattice``'s ``fit``,
+    [6, y, x]) as rows: ([y, x, 2, 2], [y, x] where fitted)."""
+    vs = np.moveaxis(np.asarray(fit[:4], dtype=np.float64), 0, -1).reshape(*fit.shape[1:], 2, 2)
+    return vs, np.isfinite(vs).all(axis=(-2, -1))
+
+
+def reference_basis(fit: np.ndarray, mask: np.ndarray | None = None) -> tuple[np.ndarray, int]:
+    """The unstrained g1 and g2 (rows, [2, 2]): the median of the fitted
+    ones over the scan, or over ``mask`` ([y, x] bool, a region of it);
+    with how many positions it is from."""
+    vs, ok = fitted_basis(fit)
+    if mask is not None:
+        ok = ok & mask
+    if not ok.any():
+        raise ValueError("No position in the reference was fitted")
+    ref = np.median(vs[ok], axis=0)
+    if abs(np.linalg.det(ref)) < 1e-12:
+        raise ValueError("The reference g1 and g2 are on one line")
+    return ref, int(ok.sum())
+
+
+def axis_direction(axes: StrainAxes, ref: np.ndarray) -> tuple[float, float]:
+    """The maps' x axis as a unit vector in the calibrated frame (pattern px,
+    y down)."""
+    if axes.along == "g1":
+        g = ref[0] / np.hypot(*ref[0])
+        return float(g[0]), float(g[1])
+    if axes.along == "angle":
+        a = math.radians(axes.angle)
+        return math.cos(a), -math.sin(a)
+    return 1.0, 0.0
+
+
+def strain_maps(fit: np.ndarray, ref: np.ndarray, x_axis: tuple[float, float]) -> dict[str, np.ndarray]:
+    """εxx, εyy, εxy and ωxy at every position (``STRAIN_OUTPUTS``; NaN where
+    not fitted) from the fitted g1 and g2 against ``ref``, by pyxem
+    (``get_DisplacementGradientMap`` → ``get_strain_maps`` →
+    ``StrainMap.rotate_strain_basis`` onto ``x_axis``). Signs as kemstem's
+    strain tensor (image axes, y down): pyxem's e12 is its reciprocal-space
+    stretch's, the opposite of the real-space shear, and its θ turns x
+    toward y (clockwise on screen), so εxy = −e12 and ωxy = −θ (positive
+    counter-clockwise on screen, radians)."""
+    import hyperspy.api as hs
+    from pyxem.generators.displacement_gradient_tensor_generator import get_DisplacementGradientMap
+
+    vs, ok = fitted_basis(fit)
+    # Positions not fitted take the reference (pyxem's maths needs numbers), then NaN.
+    vs[~ok] = ref
+    gradient = get_DisplacementGradientMap(hs.signals.Signal2D(vs), ref, show_progressbar=False)
+    sm = gradient.get_strain_maps()
+    sm.data[2] *= -1
+    if abs(x_axis[1]) > 1e-12 or x_axis[0] < 0:
+        sm = sm.rotate_strain_basis([x_axis[0], x_axis[1]])
+    data = np.asarray(sm.data, dtype=np.float64)
+    out = {"exx": data[0], "eyy": data[1], "exy": data[2], "oxy": -data[3]}
+    return {k: np.where(ok, v, np.nan).astype(np.float32) for k, v in out.items()}

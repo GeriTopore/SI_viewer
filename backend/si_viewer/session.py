@@ -2465,6 +2465,51 @@ class Session:
             made.append(ds)
         return made
 
+    def strain_fit_of(self, cube: Dataset) -> Dataset | None:
+        """The "Lattice fit" of 4D-STEM data (``set_strain_fit``), if made."""
+        with self._lock:
+            return next((d for d in self.datasets.values() if d.origin == "strain-fit" and d.strain
+                         and d.strain.get("source_id") == cube.id and d.strain.get("output") == "lattice"), None)
+
+    def set_strain_maps(self, cube: Dataset, maps: dict[str, np.ndarray], meta: dict) -> list[Dataset]:
+        """The strain maps of 4D-STEM data (``processing.strain.strain_maps``:
+        εxx, εyy, εxy, ωxy) as images under its "Lattice fit", on the scan's
+        axes, ``meta`` (the reference and axes) kept in their ``strain``. Made
+        again in place. Returns them in ``STRAIN_OUTPUTS``' order."""
+        import hyperspy.api as hs
+
+        from .processing.strain import STRAIN_OUTPUTS
+
+        fit = self.strain_fit_of(cube)
+        if fit is None:
+            raise ValueError(f"The lattice of {cube.title} hasn't been fitted")
+        with self._lock:
+            earlier = {d.strain["output"]: d for d in self.datasets.values()
+                       if d.origin == "strain-fit" and d.strain and d.strain.get("source_id") == cube.id}
+        made: list[Dataset] = []
+        for output, title in STRAIN_OUTPUTS:
+            signal = hs.signals.Signal2D(np.ascontiguousarray(maps[output], dtype=np.float32))
+            for axis, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.navigation_axes):
+                axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
+            signal.metadata.General.title = title
+            signal.metadata.set_item("Signal.quantity", "Rotation (rad)" if output == "oxy" else "Strain")
+            info = {**meta, "source_id": cube.id, "output": output}
+            ds = earlier.get(output)
+            if ds is not None:
+                ds.replace_signal(signal)
+                ds.strain = info
+                made.append(ds)
+                continue
+            ds = Dataset(id=_new_id(), file_id=cube.file_id, signal=signal, kind=DatasetKind.IMAGE, origin="strain-fit",
+                         parent_id=fit.id, strain=info)
+            with self._lock:
+                self.datasets[ds.id] = ds
+                ids = self.files[cube.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == fit.id and i != ds.id]
+                ids.insert(ids.index(after[-1] if after else fit.id) + 1, ds.id)
+            made.append(ds)
+        return made
+
     def set_calibration_switches(self, cube: Dataset, enabled: dict | None = None, view: str | None = None) -> None:
         """Switch parts of 4D-STEM data's calibration on or off for its
         Bragg vectors ("origin", "ellipse", "scale", "rotation"), and whether

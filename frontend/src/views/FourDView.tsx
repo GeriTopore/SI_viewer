@@ -583,8 +583,13 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // Bragg vectors shows them.
   const diskProcessShown = useProcessShown("disks");
   const focused = useDatasets((s) => s.focusId === ds.id);
+  // The Calibration and Strain processes are the Bragg vectors': shown while they (of this data) are focused.
+  const braggFocused = useDatasets((s) => {
+    const f = s.focusId ? allDatasets(s.files).find((x) => x.id === s.focusId) : undefined;
+    return f?.origin === "disks" && f.parent_id === ds.id;
+  });
   // ---------- the Strain process: its lattice on the Bragg vector map ----------
-  const strainShown = useProcessShown("strain") && focused && hasVectors;
+  const strainShown = useProcessShown("strain") && braggFocused && hasVectors;
   const strainLattice = useStrain((s) => s.lattice[ds.id]);
   const strainPeaks = useStrain((s) => s.peaks[ds.id]?.list);
   const strainTol = useStrain((s) => toleranceOf(s, ds.id));
@@ -763,11 +768,6 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
 
   // ---------- the ring, while the Calibration process is shown ----------
   // The annulus searched (dashed), the ellipse fitted and the points on it.
-  // The Calibration process is the Bragg vectors': shown while they (of this data) are focused.
-  const braggFocused = useDatasets((s) => {
-    const f = s.focusId ? allDatasets(s.files).find((x) => x.id === s.focusId) : undefined;
-    return f?.origin === "disks" && f.parent_id === ds.id;
-  });
   const calibrationShown = useProcessShown("calibration") && (focused || braggFocused);
   const ringSearch = useCalibration((s) => s.search[ds.id]);
   const ringGuess = useCalibration((s) => s.guess[ds.id]);
@@ -1369,7 +1369,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     { id: SCAN_MEAN, label: "Mean", title: "The mean pattern over the whole scan" },
     { id: SCAN_MAX, label: "Max", title: "The maximum of every pixel over the whole scan" },
     ...(hasVectors
-      ? [{ id: SCAN_BVM, label: "BVM", title: "The Bragg vector map on the pattern's pixels (centred when the centring is on)" }]
+      ? [{ id: SCAN_BVM, label: "BVM", title: "The Bragg vector map on the pattern's pixels (centred while the descan is corrected)" }]
       : []),
   ], source, (v) => setScan({ source: v }));
   // The image on the scan: a group's, live, or a map made from the data.
@@ -1758,7 +1758,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
               </section>
             );
           })}
-          {!visibleGroups.length && <div className="image-message">Show a detector group (Virtual image process) to see its row</div>}
+          {!visibleGroups.length && <div className="image-message">Show a detector group (Virtual imaging process) to see its row</div>}
         </div>
         <div className="stack-bar fourd-bar fourd-list-bar">
           {sourcePicker}
@@ -1810,7 +1810,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           blend={merge && mergeBlend === "max" ? "max" : "add"}
           requestActive={viRequest}
           onActiveChange={grid || merge ? onViActive : undefined}
-          empty="Show a detector group (Virtual image process) to see its image"
+          empty="Show a detector group (Virtual imaging process) to see its image"
           geometry={scanG}
           loading={grid || merge || virtual.frame ? null : "Computing the virtual image…"}
           error={grid || merge ? viSet.error : virtual.error}

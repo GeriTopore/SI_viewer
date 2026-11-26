@@ -120,6 +120,24 @@ interface Process {
   body: ReactNode;
 }
 
+/** Sections that come first, in this order (4D-STEM data: cleaning the
+ * patterns before analysing them); the others follow in order of their
+ * first process. */
+const SECTION_ORDER = ["Pre-processing", "Analysis"];
+
+/** ``processes`` sorted by section (``SECTION_ORDER``, then as they come),
+ * keeping their order within each, so the numbers run through. */
+function bySection(processes: Process[]): Process[] {
+  const first = new Map<string, number>();
+  processes.forEach((p, i) => first.set(p.section ?? "General", first.get(p.section ?? "General") ?? i));
+  const rank = (p: Process) => {
+    const name = p.section ?? "General";
+    const k = SECTION_ORDER.indexOf(name);
+    return k >= 0 ? k - SECTION_ORDER.length : first.get(name)!;
+  };
+  return processes.map((p, i) => ({ p, i })).sort((a, b) => rank(a.p) - rank(b.p) || a.i - b.i).map(({ p }) => p);
+}
+
 /** The processes by section, in order of their first process; numbered
  * through. */
 function sectionsOf(processes: Process[]): { name: string; items: { p: Process; n: number }[] }[] {
@@ -511,13 +529,18 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   const otherMaps = d.is_element_map
     ? allDatasets(files).filter((x) => x.file_id === d.file_id && x.is_element_map && !x.parent_id && x.id !== d.id)
     : [];
-  // Bragg vectors: their 4D data (the calibration they are calibrated with is the data's).
+  // Bragg vectors: their 4D data (their Calibration and Strain processes work on the data's records).
   const braggCube = d.origin === "disks" ? allDatasets(files).find((x) => x.id === d.parent_id && x.kind === "4dstem") : undefined;
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
   const mode = useUi((s) => s.processMode);
   // The processes that apply, in workflow order.
-  const processes = ([
+  const rebinBody = (
+    <button className="process-rebin" onClick={() => setRebinOpen(true)}>
+      Rebin…
+    </button>
+  );
+  const processes = bySection(([
     d.kind === "stack" && d.origin !== "pca" && {
       id: "align", title: "Align frames", tip: "Register the frames to remove drift, then average them",
       body: <AlignSection d={d} />,
@@ -527,33 +550,38 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       tip: "Differential phase contrast from the four quadrants of a segmented detector, and its integral",
       body: <DpcSection d={d} />,
     },
+    // 4D-STEM data: Pre-processing (Rebin first), then Analysis.
+    canRebin(d) && d.kind === "4dstem" && {
+      id: "rebin", title: "Rebin", section: "Pre-processing", tip: "Sum neighbouring scan positions or pattern pixels; overwrites the loaded data",
+      body: rebinBody,
+    },
     d.kind === "4dstem" && {
-      id: "virtual-image", title: "Virtual image",
+      id: "virtual-image", title: "Virtual imaging", section: "Analysis",
       tip: "The virtual detector drawn on the pattern: its shape, response, apertures; keep the image as a dataset",
       body: <VirtualImageSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
-      id: "bad-pixels", title: "Bad pixels",
+      id: "bad-pixels", title: "Remove bad pixels", section: "Pre-processing",
       tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
       body: <BadPixelSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
-      id: "background", title: "Background",
+      id: "background", title: "Background", section: "Pre-processing",
       tip: "Diffuse scattering subtracted from every pattern (pyxem: median kernel, difference of Gaussians, radial median, h-dome), tried on the patterns shown",
       body: <PatternBackgroundSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
-      id: "centring", title: "Centring",
+      id: "centring", title: "Fix descan", section: "Pre-processing",
       tip: "The direct beam found in every pattern, the descan as a plane, and every pattern shifted so the beam is at its centre",
       body: <CentringSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
-      id: "com", title: "DPC / iCOM",
+      id: "com", title: "DPC / iCOM", section: "Analysis",
       tip: "Every pattern's centre of mass, less the descan, rotated into the scan's frame (the least curl): DPC (direction and magnitude) and iCOM",
       body: <ComSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
-      id: "disks", title: "Disk detection",
+      id: "disks", title: "Disk detection", section: "Analysis",
       tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
       body: <DiskDetectionSection key={d.id} d={d} />,
     },
@@ -562,18 +590,14 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       tip: "The Bragg vectors' calibration: each position's origin, the pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
       body: <CalibrationSection key={braggCube.id} d={braggCube} />,
     },
-    d.kind === "4dstem" && {
-      id: "strain", title: "Strain",
-      tip: "Strain from the Bragg vectors: the lattice (O, g1, g2) placed on the Bragg vector map, every pattern's disks indexed and fitted to it",
-      body: <StrainSection key={d.id} d={d} />,
+    braggCube && {
+      id: "strain", title: "Strain mapping",
+      tip: "Strain from the Bragg vectors: the lattice (O, g1, g2) placed on the Bragg vector map, every pattern's disks indexed and fitted to it, then εxx, εyy, εxy and ωxy against a reference",
+      body: <StrainSection key={braggCube.id} d={braggCube} />,
     },
-    canRebin(d) && d.origin !== "pca" && {
+    canRebin(d) && d.origin !== "pca" && d.kind !== "4dstem" && {
       id: "rebin", title: "Rebin", tip: "Sum neighbouring pixels or channels; overwrites the loaded data",
-      body: (
-        <button className="process-rebin" onClick={() => setRebinOpen(true)}>
-          Rebin…
-        </button>
-      ),
+      body: rebinBody,
     },
     isInsituView(d) && d.kind === "spectrum_image" && !isLineScan(d) && {
       id: "aligned-sum", title: "Aligned sum",
@@ -585,8 +609,10 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       tip: "Shift every spectrum so its zero-loss peak is at 0 eV; linked core losses follow. Without a low loss: shift by hand",
       body: <ZlpSection d={d} />,
     },
-    {
+    // Not on Bragg vectors (a table: nothing to filter).
+    d.origin !== "disks" && {
       id: "filters", title: "Filters", tip: "Applied whenever the data is shown; the loaded data is unchanged",
+      ...(d.kind === "4dstem" && { section: "Pre-processing" }),
       summary: active,
       body: (
         <>
@@ -819,7 +845,7 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
         : "Decompose over an energy window (HyperSpy): the components' maps and spectra",
       body: <PcaSection d={d} />,
     },
-  ] as (Process | false)[]).filter((x): x is Process => !!x);
+  ] as (Process | false)[]).filter((x): x is Process => !!x));
 
   if (only) {
     const k = processes.findIndex((p) => p.id === only);

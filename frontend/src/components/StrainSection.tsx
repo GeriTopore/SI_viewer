@@ -1,10 +1,30 @@
 import { useEffect } from "react";
-import type { DatasetSummary } from "../api/client";
+import { dataVersion, type DatasetSummary, type JobSummary, type StrainAxes, type StrainFitMeta } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
+import { shapeToRegion, useSiState } from "../state/si";
 import {
-  bvmVersion, fitOf, latticeGrid, peakOptionsOf, peaksOnLattice, strainJobRunning, toleranceOf, useStrain, type BvmPeakOptions,
+  axesOf, bvmVersion, fitOf, latticeGrid, peakOptionsOf, peaksOnLattice, strainJobRunning, toleranceOf, useStrain,
+  type BvmPeakOptions, type ReferenceBody,
 } from "../state/strain";
 import { formatValue } from "../format";
+import { segmented } from "../views/FourDView";
+
+const MAP_OUTPUTS = ["exx", "eyy", "exy", "oxy"];
+
+/** A job's progress bar with its message and Cancel. */
+function JobProgress({ job, cancel }: { job: JobSummary; cancel: () => void }) {
+  return (
+    <div className="q-job">
+      <div className="q-progress" role="progressbar" aria-valuenow={Math.round(job.progress * 100)}>
+        <div style={{ width: `${Math.round(job.progress * 100)}%` }} />
+      </div>
+      <div className="q-job-row small">
+        <span>{job.message || "Starting…"} {Math.round(job.progress * 100)}%</span>
+        <button className="link-button" onClick={cancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
 
 const PEAK_FIELDS: { key: keyof BvmPeakOptions; label: string; title: string; min: number; max: number; step: number }[] = [
   { key: "sigma", label: "Blur (px)", title: "Gaussian blur of the map before its peaks are found (0: none)", min: 0, max: 50, step: 0.25 },
@@ -17,7 +37,8 @@ const PEAK_FIELDS: { key: keyof BvmPeakOptions; label: string; title: string; mi
  * proposed from them and dragged on the map (snapping to peaks), the
  * tolerance within which disks are indexed to the lattice points. Step 2,
  * the fit: tried on the patterns at the cursors, then every pattern's disks
- * indexed and the lattice fitted at every position (a job). */
+ * indexed and the lattice fitted at every position (a job). Steps 3 and 4
+ * (``StrainMaps``), once fitted. */
 export function StrainSection({ d }: { d: DatasetSummary }) {
   const files = useDatasets((s) => s.files);
   const cube = allDatasets(files).find((x) => x.id === d.id) ?? d;
@@ -37,10 +58,11 @@ export function StrainSection({ d }: { d: DatasetSummary }) {
   // A lattice fitted earlier (an analysis reopened): its lattice and settings back.
   useEffect(() => {
     const st = useStrain.getState();
-    if (!fitted?.strain || st.lattice[d.id]) return;
-    st.setLattice(d.id, fitted.strain.lattice);
-    st.setTolerance(d.id, fitted.strain.options.tolerance);
-    st.setFit(d.id, { min_disks: fitted.strain.options.min_disks, weighted: fitted.strain.options.weighted });
+    const meta = fitted?.strain as StrainFitMeta | undefined;
+    if (!meta || st.lattice[d.id]) return;
+    st.setLattice(d.id, meta.lattice);
+    st.setTolerance(d.id, meta.options.tolerance);
+    st.setFit(d.id, { min_disks: meta.options.min_disks, weighted: meta.options.weighted });
   }, [fitted?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Found again as the settings or the map (disks, centring) change.
@@ -157,23 +179,18 @@ export function StrainSection({ d }: { d: DatasetSummary }) {
         <input type="checkbox" checked={preview} onChange={(e) => setPreview(d.id, e.target.checked)} />
         Show on the patterns
       </label>
-      {fitted && (
-        <p className="muted small">
-          Fitted with tol {formatValue(fitted.strain!.options.tolerance)} px, min {fitted.strain!.options.min_disks}
-          {fitted.strain!.frame.ellipse ? ", ellipse" : ""}{fitted.strain!.frame.rotation ? `, QR ${formatValue(fitted.strain!.frame.rotation.theta)}°` : ", no QR rotation"}
-        </p>
-      )}
+      {fitted && (() => {
+        const m = fitted.strain as StrainFitMeta;
+        return (
+          <p className="muted small">
+            Fitted with tol {formatValue(m.options.tolerance)} px, min {m.options.min_disks}
+            {m.frame.ellipse ? ", ellipse" : ""}{m.frame.rotation ? `, QR ${formatValue(m.frame.rotation.theta)}°` : ", no QR rotation"}
+          </p>
+        );
+      })()}
       {error && <p className="field-error">{error}</p>}
       {running ? (
-        <div className="q-job">
-          <div className="q-progress" role="progressbar" aria-valuenow={Math.round(job!.progress * 100)}>
-            <div style={{ width: `${Math.round(job!.progress * 100)}%` }} />
-          </div>
-          <div className="q-job-row small">
-            <span>{job!.message || "Starting…"} {Math.round(job!.progress * 100)}%</span>
-            <button className="link-button" onClick={() => void cancelFit(d.id)}>Cancel</button>
-          </div>
-        </div>
+        <JobProgress job={job!} cancel={() => void cancelFit(d.id)} />
       ) : (
         <div className="process-actions">
           <button
@@ -194,6 +211,105 @@ export function StrainSection({ d }: { d: DatasetSummary }) {
       )}
       {job?.status === "failed" && !running && <p className="field-error">{job.error}</p>}
       {job?.status === "cancelled" && !running && <p className="muted small">Cancelled.</p>}
+      {fitted && <StrainMaps d={d} fit={fitted} />}
     </section>
+  );
+}
+
+/** Step 3, the reference (the median of the fitted g1 and g2 over the scan
+ * or a scan region, found live) and the strain axes; step 4, εxx, εyy, εxy
+ * and ωxy made from them (a job, by pyxem) under the Lattice fit. */
+function StrainMaps({ d, fit }: { d: DatasetSummary; fit: DatasetSummary }) {
+  const files = useDatasets((s) => s.files);
+  const rois = useSiState(`${d.id}:virtual`).rois;
+  const roiId = useStrain((s) => s.refRegion[d.id] ?? null);
+  const roi = rois.find((r) => r.id === roiId) ?? null;
+  const axes = useStrain((s) => axesOf(s, d.id));
+  const ref = useStrain((s) => s.reference[d.id]);
+  const job = useStrain((s) => s.mapsJobs[d.id]);
+  const { setRefRegion, setAxes, findReference, runMaps, cancelMaps } = useStrain.getState();
+  const running = strainJobRunning(job);
+  const body: ReferenceBody = { region: roi ? shapeToRegion(roi.shape) : null, axes };
+  const key = `${fit.id}@${dataVersion(fit)}|${JSON.stringify(body)}`;
+  useEffect(() => {
+    if (ref?.key === key) return;
+    const id = setTimeout(() => void findReference(d.id, key, body), 150);
+    return () => clearTimeout(id);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const meta = fit.strain as StrainFitMeta;
+  const made = allDatasets(files).find((x) => x.origin === "strain-fit" && x.strain?.source_id === d.id && MAP_OUTPUTS.includes(x.strain.output))?.strain;
+  const stale = !!made && JSON.stringify(made.fit) !== JSON.stringify({ lattice: meta.lattice, options: meta.options, frame: meta.frame });
+  const r = ref?.value;
+  const len = (g: [number, number]) => formatValue(Math.hypot(g[0], g[1]));
+  // Angles on screen (y down), counter-clockwise from x as seen.
+  const ang = (g: [number, number]) => (Math.atan2(-g[1], g[0]) * 180) / Math.PI;
+  const AXES: { id: StrainAxes["along"]; label: string; title: string }[] = [
+    { id: "scan", label: "Scan", title: "x along the scan's x (the pattern's while the QR rotation isn't applied)" },
+    { id: "g1", label: "g1", title: "x along the reference g1" },
+    { id: "angle", label: "Angle", title: "x at an angle from the scan's x, counter-clockwise" },
+  ];
+
+  return (
+    <>
+      <p className="process-heading small">Reference</p>
+      <label title="The unstrained lattice: the median of the fitted g1 and g2 over the scan, or over a region drawn on it">
+        <span>Median over</span>
+        <select value={roi?.id ?? ""} onChange={(e) => setRefRegion(d.id, e.target.value || null)}>
+          <option value="">Whole scan</option>
+          {rois.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+        </select>
+      </label>
+      {r ? (
+        <dl className="props">
+          <dt>g1</dt>
+          <dd>{len(r.g1)} px · {formatValue(ang(r.g1))}°</dd>
+          <dt>g2</dt>
+          <dd>{len(r.g2)} px · {formatValue(ang(r.g2))}°</dd>
+          <dt>Positions</dt>
+          <dd>{r.positions}</dd>
+        </dl>
+      ) : ref?.error ? <p className="field-error">{ref.error}</p> : null}
+      <p className="process-heading small">Axes</p>
+      <div className="virtual-row">
+        {segmented("x axis", AXES, axes.along, (v) => setAxes(d.id, { along: v }))}
+      </div>
+      {axes.along === "angle" && (
+        <label title="The maps' x axis from the scan's x, counter-clockwise">
+          <span>Angle (°)</span>
+          <input
+            type="number"
+            min={-360}
+            max={360}
+            step={1}
+            value={axes.angle}
+            onChange={(e) => e.target.value !== "" && setAxes(d.id, { angle: Math.min(360, Math.max(-360, Number(e.target.value))) })}
+          />
+        </label>
+      )}
+      {axes.along === "g1" && r && <p className="muted small">x at {formatValue(r.x_angle)}°</p>}
+      {axes.along !== "g1" && !meta.frame.rotation && <p className="muted small">No QR rotation: the pattern's axes</p>}
+      {running ? (
+        <JobProgress job={job!} cancel={() => void cancelMaps(d.id)} />
+      ) : (
+        <div className="process-actions">
+          <button
+            className="primary"
+            disabled={!r}
+            onClick={() => void runMaps(d.id, body)}
+            title="εxx, εyy, εxy and ωxy against the reference, on these axes (pyxem), as kemstem's: under the Lattice fit"
+          >
+            {made ? "Make maps again" : "Make strain maps"}
+          </button>
+        </div>
+      )}
+      {made && !running && (
+        <p className="muted small">
+          Maps from {made.reference?.positions} positions{made.reference?.region ? " (region)" : ""}, x at {formatValue(made.reference?.x_angle ?? 0)}°
+        </p>
+      )}
+      {stale && !running && <p className="field-error">Made from an earlier fit</p>}
+      {job?.status === "failed" && !running && <p className="field-error">{job.error}</p>}
+    </>
   );
 }

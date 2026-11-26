@@ -40,7 +40,7 @@ export function PatternBackgroundSection({ d }: { d: DatasetSummary }) {
         {segmented("Method", [
           { id: "median kernel", label: "Median", title: "The pattern minus its median filter: smooth diffuse background, amorphous haze" },
           { id: "difference of gaussians", label: "DoG", title: "Difference of Gaussians: compact spots kept on a slowly varying background (≥ 0; not quantitative)" },
-          { id: "radial median", label: "Radial", title: "At each radius from the beam, the median there subtracted: radially falling diffuse scattering (the beam per pattern when the Centring is on)" },
+          { id: "radial median", label: "Radial", title: "At each radius from the beam, the median there subtracted: radially falling diffuse scattering (the beam per pattern while the descan is corrected)" },
           { id: "h-dome", label: "h-dome", title: "Only the local maxima rising more than h above their surroundings, normalised to 1 (for finding peaks)" },
         ], opts.method, (v) => set({ method: v }))}
       </div>

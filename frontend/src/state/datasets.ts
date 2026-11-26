@@ -830,6 +830,8 @@ export function initialColormap(d: DatasetSummary): string {
   // Masks: a colour each, so overlaid they stay apart.
   if (d.origin === "mask") return useDisplay.getState().ensureElementColour(`mask:${d.id}`);
   if (d.atomic && d.atomic.output !== "grating") return "rdbu";
+  // 4D-STEM strain maps, as kemstem's.
+  if (d.origin === "strain-fit" && ["exx", "eyy", "exy", "oxy"].includes(d.strain?.output ?? "")) return "rdbu";
   return d.is_element_map ? useDisplay.getState().ensureElementColour(elementOf(d)) : DEFAULT_COLORMAP;
 }
 

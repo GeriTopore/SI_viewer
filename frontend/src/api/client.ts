@@ -196,6 +196,27 @@ export interface FftPeakOptions {
 }
 
 /** What Fourier filtering makes (per peak), and how (kemstem). */
+/** How a lattice was fitted at every position of 4D-STEM data. */
+export interface StrainFitMeta {
+  lattice: { ox: number; oy: number; g1x: number; g1y: number; g2x: number; g2y: number };
+  options: { tolerance: number; min_disks: number; weighted: boolean };
+  frame: { centred: boolean; ellipse: boolean; rotation: { theta: number; mirror: boolean } | null };
+}
+export type StrainMapOutput = "exx" | "eyy" | "exy" | "oxy";
+/** The strain maps' x axis: the scan's, along g1, or at ``angle``° (counter-clockwise on screen). */
+export interface StrainAxes {
+  along: "scan" | "g1" | "angle";
+  angle: number;
+}
+/** The unstrained g1 and g2 (calibrated frame, pattern px), the positions
+ * they are the median of, the maps' x axis (degrees, counter-clockwise). */
+export interface StrainReference {
+  g1: [number, number];
+  g2: [number, number];
+  positions: number;
+  x_angle: number;
+}
+
 export type AtomicOutput = "amplitude" | "grating" | "phase" | "strain";
 
 export interface FourierSettings {
@@ -509,16 +530,18 @@ export interface DatasetSummary {
     enabled?: { origin?: boolean; ellipse?: boolean; scale?: boolean; rotation?: boolean };
     bvm?: "raw" | "calibrated";
   } | null;
-  /** Strain from 4D-STEM Bragg vectors (origin "strain-fit": the "Lattice fit"
-   * stack, "Indexed disks", "Fit residual"): the 4D data, which output, the
-   * lattice picked and the fit settings, the calibration it was fitted in. */
-  strain?: {
+  /** Strain from 4D-STEM Bragg vectors (origin "strain-fit"): the 4D data and
+   * which output. The fit's ("Lattice fit" stack, "Indexed disks", "Fit
+   * residual"): the lattice picked, the fit settings, the calibration it was
+   * fitted in. The strain maps' (εxx, εyy, εxy, ωxy): the reference, the axes
+   * and the fit they are from. */
+  strain?: Partial<StrainFitMeta> & {
     source_id: string;
-    output: "lattice" | "count" | "residual";
-    lattice: { ox: number; oy: number; g1x: number; g1y: number; g2x: number; g2y: number };
-    options: { tolerance: number; min_disks: number; weighted: boolean };
-    frame: { centred: boolean; ellipse: boolean; rotation: { theta: number; mirror: boolean } | null };
+    output: "lattice" | "count" | "residual" | StrainMapOutput;
     components?: string[];
+    reference?: StrainReference & { region: unknown };
+    axes?: StrainAxes;
+    fit?: StrainFitMeta;
   } | null;
   /** An origin map of 4D-STEM data ("Origin x / y", "(fit)"; origin "origin-map"). */
   origin_map?: { axis: "x" | "y"; kind: "measured" | "fitted"; source_id: string } | null;

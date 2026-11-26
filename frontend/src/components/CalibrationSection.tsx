@@ -118,7 +118,7 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
       {search.source === "bvm" && (
         <div className="virtual-row">
           {segmented("Origin", [
-            { id: "beam", label: "Beam", title: "Each position's beam found by Centring (step 1), descan plane", disabled: !beamFound },
+            { id: "beam", label: "Beam", title: "Each position's beam found by Fix descan (step 1), descan plane", disabled: !beamFound },
             { id: "direct", label: "Direct beam", title: "Each position's own direct-beam disk, descan plane" },
           ], search.origin ?? (beamFound ? "beam" : "direct"), (v) => setSearch(d.id, { ...search, origin: v }))}
         </div>
@@ -237,7 +237,7 @@ function OriginStep({ d, hasVectors, beamFound }: { d: DatasetSummary; hasVector
 
   return (
     <>
-      <h4 className="process-heading">Step 1 · Centring</h4>
+      <h4 className="process-heading">Step 1 · Descan</h4>
       <div className="virtual-row">
         {segmented("Measured from", [
           {
@@ -246,7 +246,7 @@ function OriginStep({ d, hasVectors, beamFound }: { d: DatasetSummary; hasVector
           },
           {
             id: "beam", label: "Beam found", disabled: !beamFound,
-            title: beamFound ? "The beam found by Centring (step 1)" : "Find the beam first (Centring, step 1)",
+            title: beamFound ? "The beam found by Fix descan (step 1)" : "Find the beam first (Fix descan, step 1)",
           },
         ], source, setSource)}
       </div>

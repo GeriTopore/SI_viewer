@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, dataVersion, type DatasetSummary, type JobSummary } from "../api/client";
+import { api, dataVersion, type DatasetSummary, type JobSummary, type StrainAxes, type StrainReference } from "../api/client";
 import { allDatasets, useDatasets } from "./datasets";
 import { useLayers } from "./layers";
 
@@ -45,6 +45,34 @@ export const DEFAULT_FIT: FitSettings = { min_disks: 4, weighted: true };
 const ACTIVE = new Set(["queued", "running"]);
 export const strainJobRunning = (job: JobSummary | undefined) => !!job && ACTIVE.has(job.status);
 
+export const DEFAULT_AXES: StrainAxes = { along: "scan", angle: 0 };
+
+/** What the reference and the maps are asked for with: a scan region (the
+ * backend's ``Region``; none: the whole scan) and the axes. */
+export interface ReferenceBody {
+  region: unknown | null;
+  axes: StrainAxes;
+}
+
+/** Post ``body`` to start a job at ``url``, then poll it (here, not in the
+ * Process tab, so it finishes if the tab is closed), ``setJob`` at each step. */
+async function runJob(url: string, body: unknown, setJob: (job: JobSummary) => void): Promise<JobSummary> {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let job = (await res.json()) as JobSummary;
+  if (!res.ok) throw new Error((job as unknown as { detail?: string }).detail ?? res.statusText);
+  setJob(job);
+  while (ACTIVE.has(job.status)) {
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      job = await api.getJob(job.id);
+      setJob(job);
+    } catch {
+      /* backend busy or restarted: try again */
+    }
+  }
+  return job;
+}
+
 interface StrainState {
   options: Record<string, BvmPeakOptions>;
   /** The peaks found, with the key (data and settings) they were found for. */
@@ -64,6 +92,18 @@ interface StrainState {
   /** Index every pattern's disks and fit the lattice (a job); its maps join the dataset list. */
   runFit: (id: string) => Promise<void>;
   cancelFit: (id: string) => Promise<void>;
+  /** The reference: a scan region's id, or null for the whole scan. */
+  refRegion: Record<string, string | null>;
+  axes: Record<string, StrainAxes>;
+  /** The reference found for the settings ``key``. */
+  reference: Record<string, { key: string; value: StrainReference | null; error: string | null } | undefined>;
+  mapsJobs: Record<string, JobSummary | undefined>;
+  setRefRegion: (id: string, roi: string | null) => void;
+  setAxes: (id: string, patch: Partial<StrainAxes>) => void;
+  findReference: (id: string, key: string, body: ReferenceBody) => Promise<void>;
+  /** εxx, εyy, εxy, ωxy against the reference (a job); they join the dataset list. */
+  runMaps: (id: string, body: ReferenceBody) => Promise<void>;
+  cancelMaps: (id: string) => Promise<void>;
   setLattice: (id: string, l: StrainLattice) => void;
   setTolerance: (id: string, r: number) => void;
   /** Find the map's peaks; the lattice proposed from them is taken if there is none yet. */
@@ -73,6 +113,7 @@ interface StrainState {
 export const peakOptionsOf = (s: StrainState, id: string) => s.options[id] ?? DEFAULT_BVM_PEAK_OPTIONS;
 export const toleranceOf = (s: StrainState, id: string) => s.tolerance[id] ?? DEFAULT_TOLERANCE;
 export const fitOf = (s: StrainState, id: string) => s.fit[id] ?? DEFAULT_FIT;
+export const axesOf = (s: StrainState, id: string) => s.axes[id] ?? DEFAULT_AXES;
 
 export const useStrain = create<StrainState>((set, get) => ({
   options: {},
@@ -84,6 +125,43 @@ export const useStrain = create<StrainState>((set, get) => ({
   fit: {},
   preview: {},
   jobs: {},
+  refRegion: {},
+  axes: {},
+  reference: {},
+  mapsJobs: {},
+  setRefRegion: (id, roi) => set((s) => ({ refRegion: { ...s.refRegion, [id]: roi } })),
+  setAxes: (id, patch) => set((s) => ({ axes: { ...s.axes, [id]: { ...axesOf(s, id), ...patch } } })),
+  findReference: async (id, key, body) => {
+    try {
+      const res = await fetch(`/api/datasets/${id}/4d/strain/reference`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const got = await res.json();
+      if (!res.ok) throw new Error(got.detail ?? res.statusText);
+      set((s) => ({ reference: { ...s.reference, [id]: { key, value: got as StrainReference, error: null } } }));
+    } catch (e) {
+      set((s) => ({ reference: { ...s.reference, [id]: { key, value: null, error: (e as Error).message } } }));
+    }
+  },
+  runMaps: async (id, body) => {
+    const setJob = (job: JobSummary) => set((s) => ({ mapsJobs: { ...s.mapsJobs, [id]: job } }));
+    set((s) => ({ errors: { ...s.errors, [id]: null } }));
+    try {
+      const job = await runJob(`/api/datasets/${id}/4d/strain/maps`, body, setJob);
+      if (job.status === "done" && job.result) {
+        useDatasets.getState().replaceFile(job.result.file);
+        useLayers.getState().notify("Strain maps εxx, εyy, εxy and ωxy added under the Lattice fit.");
+      }
+    } catch (e) {
+      set((s) => ({ errors: { ...s.errors, [id]: (e as Error).message } }));
+    }
+  },
+  cancelMaps: async (id) => {
+    const job = get().mapsJobs[id];
+    if (job) set((s) => ({ mapsJobs: { ...s.mapsJobs, [id]: undefined } })), await api.cancelJob(job.id);
+  },
   setFit: (id, patch) => set((s) => ({ fit: { ...s.fit, [id]: { ...fitOf(s, id), ...patch } } })),
   setPreview: (id, on) => set((s) => ({ preview: { ...s.preview, [id]: on } })),
   runFit: async (id) => {
@@ -92,24 +170,8 @@ export const useStrain = create<StrainState>((set, get) => ({
     const setJob = (job: JobSummary) => set((s) => ({ jobs: { ...s.jobs, [id]: job } }));
     set((s) => ({ errors: { ...s.errors, [id]: null } }));
     try {
-      const res = await fetch(`/api/datasets/${id}/4d/strain/fit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lattice, options: { tolerance: toleranceOf(get(), id), ...fitOf(get(), id) } }),
-      });
-      let job = (await res.json()) as JobSummary;
-      if (!res.ok) throw new Error((job as unknown as { detail?: string }).detail ?? res.statusText);
-      setJob(job);
-      // Polled here, not in the Process tab, so it finishes if the tab is closed.
-      while (ACTIVE.has(job.status)) {
-        await new Promise((r) => setTimeout(r, 300));
-        try {
-          job = await api.getJob(job.id);
-          setJob(job);
-        } catch {
-          /* backend busy or restarted: try again */
-        }
-      }
+      const body = { lattice, options: { tolerance: toleranceOf(get(), id), ...fitOf(get(), id) } };
+      const job = await runJob(`/api/datasets/${id}/4d/strain/fit`, body, setJob);
       if (job.status === "done" && job.result) {
         useDatasets.getState().replaceFile(job.result.file);
         const r = job.result as unknown as { fitted: number; positions: number };

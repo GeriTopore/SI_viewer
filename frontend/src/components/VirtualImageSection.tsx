@@ -452,7 +452,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
             label: "Bragg vectors",
             disabled: !vectorsDs,
             title: vectorsDs
-              ? "Digital dark field: the disks found inside the detector, centred per position when the Centring is on; an aperture's radius is the match tolerance"
+              ? "Digital dark field: the disks found inside the detector, centred per position while the descan is corrected; an aperture's radius is the match tolerance"
               : `Digital dark field: ${NO_VECTORS}`,
           },
         ], ddf ? "vectors" : "pixels", (v) => patchGroup(group.id, { source: v }))}

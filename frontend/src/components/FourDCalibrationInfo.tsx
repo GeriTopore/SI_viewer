@@ -76,7 +76,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
           {scan.length ? `${formatValue(scan[0].scale)} ${scan[0].units || "px"}` : "–"}
           <span className="muted"> · the scan's axes</span>
         </dd>
-        <dt>Centring</dt>
+        <dt>Descan</dt>
         <dd>
           {sw("origin", !!cal.origin, "Subtract each scan position's fitted origin from its Bragg vectors (descan)")}
           {cal.origin ? (

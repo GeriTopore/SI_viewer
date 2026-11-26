@@ -623,14 +623,14 @@ grid's *Merged* mode with each group's colour), and presets.
   and conventions as kemstem's strain; snap g-vector arrays to peaks.
 
 **Strain from the Bragg vectors (planned 2026-11-26).** A *Strain* process
-on 4D data in four guided steps, py4DSTEM's workflow with pyxem's maths
+(of the Bragg vectors since 2026-11-26) in four guided steps, py4DSTEM's workflow with pyxem's maths
 (`DiffractionVectors.filter_basis` → `get_DisplacementGradientMap` →
 `get_strain_maps`, `StrainMap.rotate_strain_basis`): (1) the lattice on the
 BVM; (2) index every pattern's disks to the lattice points within the
 tolerance (calibrated: origin, ellipse, QR rotation as switched) and fit g1,
 g2 per position (a job; "Indexed disks" and "Fit residual" maps); (3) the
 reference (median over the scan or a scan region) and the strain axes (the
-scan's via the QR rotation, an angle, or along g1); (4) εxx, εyy, εxy, θ under
+scan's via the QR rotation, an angle, or along g1); (4) εxx, εyy, εxy, ωxy under
 the data, displayed as kemstem's strain. Checked against pyxem's simulated
 strain example (known field) and a backend test with a known strain.
 
@@ -679,6 +679,49 @@ strain example (known field) and a backend test with a known strain.
   *Strained disks* (tolerance 15 px for the streaks): 1024 of 1024
   positions fitted, 19 871 of 20 724 disks indexed, |g1| 52.1 px at the
   edges rising to 55 px at the centre.
+- **Built (2026-11-26): steps 3 and 4, reference, axes and maps.**
+  Reference (`processing/strain.py` `reference_basis`,
+  `/4d/strain/reference`): the median of the fitted g1 and g2 over the scan
+  or a scan region (the viewer's ROIs on the scan pane), found live and shown
+  (|g|, angle, positions). Axes (`StrainAxes`, `axis_direction`): x along the
+  scan's x (the calibrated frame's, the pattern's while the QR rotation isn't
+  applied, said so), along the reference g1, or at an angle counter-clockwise
+  on screen. Maps (`strain_maps`, `/4d/strain/maps`, a job): pyxem's
+  `get_DisplacementGradientMap` → `get_strain_maps` →
+  `StrainMap.rotate_strain_basis`, kept as images εxx, εyy, εxy, ωxy under
+  the Lattice fit (origin "strain-fit"; the reference, axes and the fit they
+  are from in `strain`; made again in place; flagged when the fit changed
+  since), shown as kemstem's (blue–white–red, symmetric about 0). Signs as
+  kemstem's strain tensor (image axes, y down): pyxem's e12 is the
+  reciprocal stretch's, opposite to the real-space shear, and its θ turns x
+  toward y (clockwise on screen), so εxy = −e12 and ωxy = −θ (radians,
+  counter-clockwise positive); checked by backend tests with a known strain
+  and rotation, the axes (an angle, g1) and a region reference. pyxem's
+  measure is finite (ε = 1/U − 1 of the reciprocal stretch): equal to the
+  infinitesimal strain at small strain (≤ 3 % apart at ~2 %), apart at large
+  (at 15 %: εxy −0.10 vs −0.075). On pyxem's *Strained disks* (reference: a
+  5 × 5 corner): εxx −0.166, εyy −0.094, εxy −0.100, ωxy −0.042 at the
+  precipitate's centre, pyxem on the exact lattice giving −0.163, −0.094,
+  −0.101, −0.043; the corner ≈ 0.
+- Still to do: **absolute strain**, a third reference beside the scan's or a
+  region's median: g1 and g2 from a known lattice (entered d-spacings and
+  the angle between them, or a CIF via the abTEM plugin's structures),
+  placed along the fitted directions. Needs the pattern's pixel size
+  calibrated (Calibration of the Bragg vectors); its error shows as a
+  uniform strain.
+- **Strain moved to the Bragg vectors (2026-11-26)**, beside Calibration:
+  their Process tab lists Calibration and Strain only (no Filters: a table).
+  It still works on the 4D data's records; its BVM lattice, previews on the
+  patterns and the pattern pane switched to the BVM only while the Bragg
+  vectors are selected, so the 4D data's detectors are drawn as usual.
+
+**Process tab of 4D data in sections (2026-11-26).** *Pre-processing*:
+Rebin, Remove bad pixels, Background, Fix descan (was Centring), Filters;
+*Analysis*: Virtual imaging (was Virtual image), DPC / iCOM, Disk
+detection. The Bragg vectors keep Calibration and Strain mapping (was
+Strain). Sections are ordered Pre-processing, Analysis, then the others as
+they come (`ProcessPanel` `SECTION_ORDER`, `bySection`), numbered through.
+Calibration's step 1 and the Info tab's row are now "Descan".
 
 ### Phase 7: orientation and phase mapping
 - Template matching against diffsims simulations from CIF structures (the

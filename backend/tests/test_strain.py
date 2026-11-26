@@ -1,5 +1,6 @@
-"""Strain from Bragg vectors, step 1: the Bragg vector map's peaks and the
-lattice (O, g1, g2) proposed from them."""
+"""Strain from Bragg vectors: the Bragg vector map's peaks and the lattice
+(O, g1, g2) proposed from them (step 1), indexing and the lattice fit (step
+2), the reference and the strain maps (steps 3 and 4)."""
 
 import numpy as np
 
@@ -218,6 +219,26 @@ def test_fit_through_the_api(tmp_path):
     np.testing.assert_allclose(p00[:2], o, atol=0.15)
     np.testing.assert_allclose(np.subtract(p10[:2], p00[:2]), g1, atol=0.15)
 
+    # Steps 3 and 4: the reference at position (0, 0) (a scan region), the maps.
+    region = {"kind": "rect", "x0": 0, "y0": 0, "x1": 1, "y1": 1}
+    ref = client.post(f"{url}/4d/strain/reference", json={"region": region}).json()
+    assert ref["positions"] == 1 and ref["x_angle"] == 0
+    np.testing.assert_allclose(ref["g1"], fit[0:2, 0, 0], atol=1e-5)
+    assert client.post(f"{url}/4d/strain/reference", json={}).json()["positions"] == NY * NX
+    job = wait(client.post(f"{url}/4d/strain/maps", json={"region": region}).json())
+    assert job["status"] == "done", job["error"]
+    maps = {d["title"]: d for d in job["result"]["file"]["datasets"] if d["origin"] == "strain-fit" and d["parent_id"] == made["Lattice fit"]["id"]}
+    assert sorted(maps) == ["Fit residual", "Indexed disks", "εxx", "εxy", "εyy", "ωxy"]
+    assert maps["εxx"]["strain"]["output"] == "exx" and maps["εxx"]["strain"]["reference"]["region"]["kind"] == "rect"
+    exx = np.asarray(session.get_dataset(maps["εxx"]["id"]).signal.data)
+    oxy = np.asarray(session.get_dataset(maps["ωxy"]["id"]).signal.data)
+    # The reciprocal lattice stretched 3 % along x at the right: the real one shrunk;
+    # turned clockwise on screen with y: ωxy negative.
+    assert abs(exx[0, 0]) < 1e-6 and abs(exx[0, 4] - (1 / 1.03 - 1)) < 0.008
+    assert abs(oxy[3, 0] + 0.03) < 0.008
+    again = wait(client.post(f"{url}/4d/strain/maps", json={"axes": {"along": "g1"}}).json())["result"]
+    assert sorted(again["ids"]) == sorted(maps[t]["id"] for t in ("εxx", "εyy", "εxy", "ωxy"))
+
     # Kept with the analysis.
     saved = save_project(session, tmp_path / "p.hspy")
     other = Session()
@@ -225,3 +246,78 @@ def test_fit_through_the_api(tmp_path):
     back = other.get_dataset(made["Lattice fit"]["id"])
     assert back.strain["output"] == "lattice" and back.strain["components"][0] == "g1 x"
     np.testing.assert_allclose(np.asarray(back.signal.data), fit, equal_nan=True)
+    assert other.get_dataset(maps["εxy"]["id"]).strain["axes"]["along"] == "g1"
+
+
+# ---------- steps 3 and 4: the reference and the strain maps ----------
+
+A0 = np.array([[9.0, 1.5], [-1.0, 10.0]])  # real-space basis vectors as columns
+
+
+def _basis_rows(f=np.eye(2)):
+    """The reciprocal g1, g2 (rows) of the real lattice ``A0`` deformed by ``f``."""
+    return np.linalg.inv(f @ A0)
+
+
+def _fit_of(rows):
+    """A Lattice fit stack ([6, y, x]) with g1 and g2 ``rows`` [y, x, 2, 2]."""
+    ny, nx = rows.shape[:2]
+    out = np.zeros((6, ny, nx), np.float32)
+    out[:4] = np.moveaxis(rows.reshape(ny, nx, 4), -1, 0)
+    return out
+
+
+def test_strain_maps_signs_as_kemstem():
+    """A known real-space strain and rotation (image axes, y down; the
+    rotation counter-clockwise on screen) recovered with kemstem's signs."""
+    exx, eyy, exy, w = 0.02, -0.01, 0.005, 0.01
+    # du/dy − dv/dx = 2ω (kemstem's ωxy), the symmetric part ε.
+    f = np.eye(2) + np.array([[exx, exy + w], [exy - w, eyy]])
+    rows = np.stack([_basis_rows(), _basis_rows(f)])[None]  # (0, 0) the reference, (0, 1) strained
+    fit = _fit_of(rows)
+    fit[:, 0, 0] = np.nan  # not fitted there…
+    fit[:4, 0, 0] = np.nan
+    ref, n = strain.reference_basis(_fit_of(rows[:, :1]))
+    assert n == 1
+    maps = strain.strain_maps(fit, ref, (1.0, 0.0))
+    assert all(np.isnan(maps[k][0, 0]) for k in maps)  # …so NaN in the maps
+    got = [maps[k][0, 1] for k in ("exx", "eyy", "exy", "oxy")]
+    np.testing.assert_allclose(got, (exx, eyy, exy, w), atol=5e-4)
+
+
+def test_strain_axes():
+    exx, eyy, exy = 0.02, -0.01, 0.005
+    f = np.eye(2) + np.array([[exx, exy], [exy, eyy]])
+    fit = _fit_of(np.stack([_basis_rows(), _basis_rows(f)])[None])
+    ref = _basis_rows()
+    eps = np.array([[exx, exy], [exy, eyy]])
+    for angle in (30.0, 90.0, -45.0):
+        x = strain.axis_direction(strain.StrainAxes(along="angle", angle=angle), ref)
+        # Counter-clockwise on screen: y up.
+        np.testing.assert_allclose(x, (np.cos(np.radians(angle)), -np.sin(np.radians(angle))), atol=1e-12)
+        maps = strain.strain_maps(fit, ref, x)
+        xv = np.array(x)
+        assert abs(maps["exx"][0, 1] - xv @ eps @ xv) < 5e-4
+        # The trace and the rotation don't change with the axes.
+        assert abs(maps["exx"][0, 1] + maps["eyy"][0, 1] - (exx + eyy)) < 5e-4
+        assert abs(maps["oxy"][0, 1]) < 5e-4
+    g1 = strain.axis_direction(strain.StrainAxes(along="g1"), ref)
+    np.testing.assert_allclose(g1, ref[0] / np.hypot(*ref[0]))
+
+
+def test_reference_over_a_region():
+    rows = np.stack([_basis_rows(np.eye(2) * s) for s in (1.0, 1.0, 1.1, 1.2)]).reshape(2, 2, 2, 2)
+    fit = _fit_of(rows)
+    ref, n = strain.reference_basis(fit)
+    assert n == 4
+    np.testing.assert_allclose(ref, np.median(rows.reshape(4, 2, 2), axis=0))
+    mask = np.array([[False, False], [True, True]])
+    ref, n = strain.reference_basis(fit, mask)
+    np.testing.assert_allclose(ref, (rows[1, 0] + rows[1, 1]) / 2)
+    fit[:] = np.nan
+    try:
+        strain.reference_basis(fit)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("no fitted position should fail")

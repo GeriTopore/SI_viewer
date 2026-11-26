@@ -3,6 +3,7 @@ through a detector, and virtual images kept as datasets."""
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 import numpy as np
@@ -15,7 +16,7 @@ from ..processing.calibration import RingOptions
 from ..processing.centring import BeamOptions, PlaneOptions
 from ..processing.com import ComLive, ComOptions
 from ..processing.disks import DiskOptions
-from ..processing.strain import BvmPeakOptions, FitOptions, StrainLattice
+from ..processing.strain import BvmPeakOptions, FitOptions, StrainAxes, StrainLattice
 from ..session import DIFFRACTION4D_IN_MEMORY_LIMIT, DatasetKind
 from .datasets import array_response
 
@@ -172,6 +173,76 @@ def strain_fit(dataset_id: str, body: StrainFitBody, request: Request) -> dict:
                 "positions": int(ny * nx), "indexed": int(result["count"].sum()), "disks": int(len(table))}
 
     return request.app.state.jobs.submit("strain-fit", f"Lattice fit of {ds.title}", run).summary()
+
+
+class StrainReferenceBody(BaseModel):
+    # A scan region the reference is the median over; None: the whole scan.
+    region: fourd.Region | None = None
+    axes: StrainAxes = StrainAxes()
+
+
+def _strain_reference(request: Request, ds, body: StrainReferenceBody):
+    """The data's Lattice fit, the reference g1 and g2 (rows) and how many
+    positions it is from, and the maps' x axis."""
+    from ..processing import strain
+    from ..processing.regions import region_mask
+
+    session = request.app.state.session
+    fit = session.strain_fit_of(ds)
+    if fit is None:
+        raise HTTPException(422, "Fit the lattice first (Fit every pattern)")
+    data = np.asarray(fit.signal.data)
+    mask = None
+    if body.region is not None:
+        ny, nx = data.shape[1:]
+        rows, cols, inside = region_mask((ny, nx), body.region)
+        mask = np.zeros((ny, nx), dtype=bool)
+        mask[rows, cols] = inside
+    try:
+        ref, n = strain.reference_basis(data, mask)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return fit, data, ref, n, strain.axis_direction(body.axes, ref)
+
+
+def _reference_summary(ref: np.ndarray, n: int, x_axis: tuple[float, float]) -> dict:
+    return {"g1": [float(v) for v in ref[0]], "g2": [float(v) for v in ref[1]], "positions": n,
+            # The x axis counter-clockwise on screen from the frame's x (degrees).
+            "x_angle": math.degrees(math.atan2(-x_axis[1], x_axis[0]))}
+
+
+@router.post("/api/datasets/{dataset_id}/4d/strain/reference")
+def strain_reference(dataset_id: str, body: StrainReferenceBody, request: Request) -> dict:
+    """The unstrained lattice (step 3): the median of the fitted g1 and g2
+    over the scan or a region, ``{g1: [x, y], g2: [x, y]}`` (calibrated
+    frame, pattern px), ``positions`` it is from, and the maps' x axis
+    (``x_angle``)."""
+    _, _, ref, n, x_axis = _strain_reference(request, _cube(request, dataset_id), body)
+    return _reference_summary(ref, n, x_axis)
+
+
+@router.post("/api/datasets/{dataset_id}/4d/strain/maps")
+def strain_maps(dataset_id: str, body: StrainReferenceBody, request: Request) -> dict:
+    """εxx, εyy, εxy and ωxy against the reference, on the axes (step 4; a
+    job, by pyxem), kept as images under the Lattice fit. The job's result
+    is ``{file, ids, reference}``."""
+    from ..processing import strain
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    fit, data, ref, n, x_axis = _strain_reference(request, ds, body)
+    reference = _reference_summary(ref, n, x_axis)
+    meta = {"reference": {**reference, "region": body.region.model_dump() if body.region else None},
+            "axes": body.axes.model_dump(), "fit": {k: fit.strain.get(k) for k in ("lattice", "options", "frame")}}
+
+    def run(job) -> dict:
+        job.report(0.1, "Strain from the lattice fit (pyxem)")
+        maps = strain.strain_maps(data, ref, x_axis)
+        job.report(0.9, "Making the maps")
+        made = session.set_strain_maps(ds, maps, meta)
+        return {"file": session.file_of(ds).summary(session), "ids": [d.id for d in made], "reference": reference}
+
+    return request.app.state.jobs.submit("strain-maps", f"Strain maps of {ds.title}", run).summary()
 
 
 class StrainPreviewBody(BaseModel):

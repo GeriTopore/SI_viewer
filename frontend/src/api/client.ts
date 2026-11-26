@@ -526,7 +526,7 @@ export interface DatasetSummary {
     affine?: number[][] | null;
     origin?: { source: "vectors" | "beam"; plane: { mode: "none" | "plane" | "corners"; corners: number }; mean: [number, number]; rms: number };
     /** The QR rotation: the pattern's axes into the scan's (degrees; y flipped first if mirrored). */
-    rotation?: { theta: number; mirror: boolean; how: "com" | "entered"; curl_ratio?: number };
+    rotation?: { theta: number; mirror: boolean; how: "curl" | "com" | "entered"; curl_ratio?: number };
     enabled?: { origin?: boolean; ellipse?: boolean; scale?: boolean; rotation?: boolean };
     bvm?: "raw" | "calibrated";
   } | null;
@@ -1541,9 +1541,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ plane, in_place: inPlace }),
     }),
-  /** DPC and iCOM from every pattern's centre of mass of 4D-STEM data (a job). */
-  comDpc: (id: string, options: object) =>
-    request<JobSummary>(`/api/datasets/${id}/4d/com/run`, { method: "POST", body: JSON.stringify({ options }) }),
   /** Subtract the background of every pattern of 4D-STEM data (a job), in place or as a copy. */
   subtractBackground: (id: string, options: object, inPlace: boolean) =>
     request<JobSummary>(`/api/datasets/${id}/4d/background/run`, {

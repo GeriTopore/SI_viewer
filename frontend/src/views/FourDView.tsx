@@ -23,7 +23,6 @@ import type { ImageGeometry } from "./geometry";
 import { ImageToolButtons, LayeredViewer, type ExtraLayers, type StackLayer } from "../components/LayeredViewer";
 import { useLayersTab } from "../state/layersTab";
 import { backgroundOptionsOf, usePatternBackground } from "../state/patternBackground";
-import { comOptionsOf, useCom } from "../state/com";
 import { bvmVersion, fitOf, latticeGrid, nearestPeak, peaksOnLattice, toleranceOf, useStrain, type StrainLattice } from "../state/strain";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
@@ -82,10 +81,10 @@ export const RESPONSES: { id: Response; label: string; title: string }[] = [
   { id: "sum", label: "Sum", title: "The total intensity inside the detector" },
   { id: "mean", label: "Mean", title: "The mean intensity inside the detector" },
   { id: "max", label: "Max", title: "The brightest pixel inside the detector" },
-  { id: "com", label: "COM", title: "The centre of mass of the pixels inside the detector, its shift in colour: the direction round the colour wheel, the magnitude as brightness (descan and rotation as in the DPC / iCOM process)" },
-  { id: "com_x", label: "COM x", title: "The centre of mass of the pixels inside the detector: its shift along the scan's x (descan and rotation as in the DPC / iCOM process)" },
-  { id: "com_y", label: "COM y", title: "The centre of mass of the pixels inside the detector: its shift along the scan's y" },
-  { id: "icom", label: "iCOM", title: "The centre of mass's shift of the pixels inside the detector, integrated (the projected potential, up to scale)" },
+  { id: "com", label: "COM", title: "The centre of mass of the pixels inside the detector from the pattern's centre, as in the data (no descan or rotation), in colour: the direction round the colour wheel, the magnitude as brightness" },
+  { id: "com_x", label: "COM x", title: "The centre of mass of the pixels inside the detector along the pattern's x, from its centre, as in the data" },
+  { id: "com_y", label: "COM y", title: "The centre of mass of the pixels inside the detector along the pattern's y, from its centre, as in the data" },
+  { id: "icom", label: "iCOM", title: "The centre of mass of the pixels inside the detector, integrated (the projected potential, up to scale, once the data is centred and in the scan's frame)" },
 ];
 
 const asFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame => ({ data, height: shape[0], width: shape[1], bin: 1 });
@@ -459,10 +458,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const keyOf = (req: ReturnType<typeof imageRequest>) =>
     `${version}|${JSON.stringify(req)}${req.source === "vectors" ? `|${ddfVersion}` : ""}`;
   const hasVectors = !ddfVersion.startsWith("none|");
-  // Centre-of-mass responses: the descan and rotation of the DPC / iCOM process.
-  const comOpts = useCom((s) => comOptionsOf(s, ds.id));
-  const comLive = useMemo(() => ({ plane: comOpts.plane, rotation: comOpts.rotation }), [comOpts]);
-  const sent = imageRequest(group, patternG.width, patternG.height, hasVectors, comLive);
+  const sent = imageRequest(group, patternG.width, patternG.height, hasVectors);
   const virtualKey = shownSaved ? `saved|${shownSaved.id}|${dataVersion(shownSaved)}` : keyOf(sent);
   const grid = st.layout === "grid";
   const list = st.layout === "list";
@@ -527,7 +523,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // ---------- the grid: a virtual image per visible group, a pattern per cursor and region ----------
   const visibleGroups = st.groups.filter((g) => g.visible);
   const viItems = visibleGroups.map((g) => {
-    const req = imageRequest(g, patternG.width, patternG.height, hasVectors, comLive);
+    const req = imageRequest(g, patternG.width, patternG.height, hasVectors);
     return { id: g.id, key: keyOf(req), req };
   });
   const viSet = useFrameSet(

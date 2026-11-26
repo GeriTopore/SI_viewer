@@ -22,7 +22,7 @@ export async function setCalibrationSwitches(
  * data's calibration, switched on: the Bragg vector map is turned at once. */
 export async function setQrRotation(
   cubeId: string,
-  body: { theta: number; mirror: boolean; how: "com" | "entered"; curl_ratio?: number },
+  body: { theta: number; mirror: boolean; how: "curl" | "entered"; curl_ratio?: number },
 ): Promise<void> {
   const res = await fetch(`/api/datasets/${cubeId}/4d/calibration/rotation`, {
     method: "POST",

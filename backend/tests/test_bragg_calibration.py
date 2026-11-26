@@ -190,14 +190,14 @@ def test_calibrated_map_through_the_api(tmp_path, found):
     assert bvm_of().disks["map"] == {"view": "calibrated", "origin": True, "ellipse": True, "scale": True,
                                      "rotation": False, "units": "1/nm"}
 
-    # The QR rotation (as the DPC / iCOM process finds it): kept, switched on,
+    # The QR rotation (as Calibration step 2 finds it): kept, switched on,
     # the map turned into the scan's frame (its total unchanged; the ellipse
     # made circular, so the ring stays at 1/d).
     before = np.asarray(bvm_of().signal.data).copy()
-    r = client.post(f"{url}/4d/calibration/rotation", json={"theta": 90, "mirror": False, "how": "com", "curl_ratio": 0.05})
+    r = client.post(f"{url}/4d/calibration/rotation", json={"theta": 90, "mirror": False, "how": "curl", "curl_ratio": 0.05})
     assert r.status_code == 200, r.text
     cal = session.get_dataset(cube_id).calibration
-    assert cal["rotation"] == {"how": "com", "curl_ratio": 0.05, "theta": 90.0, "mirror": False}
+    assert cal["rotation"] == {"how": "curl", "curl_ratio": 0.05, "theta": 90.0, "mirror": False}
     assert cal["enabled"]["rotation"] is True and bvm_of().disks["map"]["rotation"] is True
     turned = np.asarray(bvm_of().signal.data)
     assert abs(turned.sum() - before.sum()) < 1e-2

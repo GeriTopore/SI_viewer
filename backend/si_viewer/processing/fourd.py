@@ -17,10 +17,11 @@ from .regions import Region, region_mask
 
 Shape = Literal["circle", "annulus", "rectangle", "point", "apertures"]
 Response = Literal["sum", "mean", "max", "com", "com_x", "com_y", "icom"]
-# The centre of mass of the pixels inside the detector: its shift in the
-# scan's frame as a colour image ("com": direction and magnitude, two
-# channels), its x and y, and that field integrated (iCOM), as the DPC /
-# iCOM process.
+# The centre of mass of the pixels inside the detector, from the pattern's
+# centre, as it is in the data (no descan or rotation: centre the data
+# first, Fix descan, for the deflection alone): as a colour image ("com":
+# direction and magnitude, two channels), its x and y, and that field
+# integrated (iCOM).
 COM_RESPONSES = ("com", "com_x", "com_y", "icom")
 MAX_APERTURES = 2000
 # Hot pixels aren't looked for within this × the bright-field disk's radius (+1 px).
@@ -101,25 +102,25 @@ def _numpy(a) -> np.ndarray:
     return np.asarray(a.compute() if hasattr(a, "compute") else a)
 
 
-def virtual_image(data, d: Detector, response: Response = "sum", com=None, scale: float = 1.0) -> np.ndarray:
+def virtual_image(data, d: Detector, response: Response = "sum", scale: float = 1.0) -> np.ndarray:
     """The virtual image of ``data`` ([y, x, ky, kx], numpy or dask) through
     ``d``: per scan position, the sum, mean or maximum of the pattern pixels
     inside it (zeros if it covers none); or the centre of mass of those
     pixels (``COM_RESPONSES``, see ``virtual_images``). float32, [y, x];
     "com": [2, y, x] (direction in degrees, magnitude)."""
-    return virtual_images(data, [(d, response, com)], scale)[0]
+    return virtual_images(data, [(d, response)], scale)[0]
 
 
-def com_field(data, d: Detector, com=None, scale: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """The centre of mass's shift of the pixels inside ``d`` in the scan's
-    frame (x, y; [y, x] each, × ``scale``), as ``virtual_images`` makes it."""
-    ny, nx = data.shape[:2]
+def com_field(data, d: Detector, scale: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+    """The centre of mass of the pixels inside ``d`` from the pattern's
+    centre (x, y; [y, x] each, × ``scale``), as ``virtual_images`` makes it."""
+    ny, nx, kh, kw = data.shape
     sums = _virtual(data, d, "com_x")
     if any(hasattr(v, "compute") for v in sums):
         import dask
 
         sums = dask.compute(*sums)
-    return _com_field(sums, (ny, nx), com, scale)
+    return _com_field(sums, (ny, nx), (kh, kw), scale)
 
 
 def _virtual(data, d: Detector, response: Response):
@@ -144,65 +145,55 @@ def _virtual(data, d: Detector, response: Response):
     return out / idx.size if response == "mean" else out
 
 
-def _com_image(sums, shape: tuple[int, int], response: Response, com, scale: float) -> np.ndarray:
+def _com_image(sums, shape: tuple[int, int], kshape: tuple[int, int], response: Response, scale: float) -> np.ndarray:
     """A centre-of-mass response from its sums (``_com_field``): x, y,
-    integrated (iCOM), or ("com") the direction (degrees) and magnitude,
-    [2, y, x], as a DPC object is shown."""
+    integrated (iCOM: of the field less its mean, which would only add a
+    ramp), or ("com") the direction (degrees) and magnitude, [2, y, x], as a
+    DPC object is shown."""
     from .dpc import integrate
 
-    rx, ry = _com_field(sums, shape, com, scale)
+    rx, ry = _com_field(sums, shape, kshape, scale)
     if response == "com":
         return np.stack([np.degrees(np.arctan2(ry, rx)), np.hypot(rx, ry)]).astype(np.float32)
-    out = rx if response == "com_x" else ry if response == "com_y" else integrate(rx, ry, pad=True)
-    return np.asarray(out, np.float32)
+    if response == "icom":
+        return np.asarray(integrate(rx - rx.mean(), ry - ry.mean(), pad=True), np.float32)
+    return np.asarray(rx if response == "com_x" else ry, np.float32)
 
 
-def _com_field(sums, shape: tuple[int, int], com, scale: float) -> tuple[np.ndarray, np.ndarray]:
-    """The centre of mass from its sums (pattern px; where nothing is
-    inside, the mean), less the descan, rotated into the scan's frame
-    (``com``: a ``processing.com.ComLive``; its rotation found by the least
-    curl if asked), × ``scale``, its mean removed."""
-    from .com import ComLive, rotation_of
-    from .dpc import rotate
-
-    com = com or ComLive()
+def _com_field(sums, shape: tuple[int, int], kshape: tuple[int, int], scale: float) -> tuple[np.ndarray, np.ndarray]:
+    """The centre of mass from its sums, from the pattern's centre (where
+    nothing is inside: the mean), × ``scale``: as in the data, no descan or
+    rotation."""
     s, sx, sy = (np.asarray(v, np.float64).reshape(shape) for v in sums)
     ok = s > 0
     if not ok.any():
         z = np.zeros(shape)
         return z, z
-    cx = np.where(ok, sx / np.where(ok, s, 1), np.nan)
-    cy = np.where(ok, sy / np.where(ok, s, 1), np.nan)
+    kh, kw = kshape
+    cx = np.where(ok, sx / np.where(ok, s, 1), np.nan) - kw / 2
+    cy = np.where(ok, sy / np.where(ok, s, 1), np.nan) - kh / 2
     cx[~ok], cy[~ok] = np.nanmean(cx), np.nanmean(cy)
-    gx, gy = com.deflection(cx, cy)
-    if com.rotation.auto:
-        found = rotation_of(gx, gy)
-        theta, mirror = found["theta"], found["mirror"]
-    else:
-        theta, mirror = com.rotation.theta, com.rotation.mirror
-    rx, ry = rotate(gx * scale, gy * scale, theta, mirror)
-    return rx - rx.mean(), ry - ry.mean()
+    return cx * scale, cy * scale
 
 
 def virtual_images(data, items: list[tuple], scale: float = 1.0) -> list[np.ndarray]:
     """The virtual images through several detectors, float32 [y, x] each
-    ("com": [2, y, x]): items of (detector, response) or (detector,
-    response, com options). Lazy (dask) data is read once for all of them.
-    Centre-of-mass responses in the pattern's units (``scale`` per pixel)."""
-    ny, nx = data.shape[:2]
+    ("com": [2, y, x]): items of (detector, response). Lazy (dask) data is
+    read once for all of them. Centre-of-mass responses in the pattern's
+    units (``scale`` per pixel)."""
+    ny, nx, kh, kw = data.shape
     if not items:
         return []
-    items = [(it[0], it[1], it[2] if len(it) > 2 else None) for it in items]
-    parts = [_virtual(data, d, r) for d, r, _ in items]
+    parts = [_virtual(data, d, r) for d, r in items]
     lazy = any(hasattr(q, "compute") for p in parts for q in (p if isinstance(p, tuple) else (p,)))
     if lazy:
         import dask
 
         parts = dask.compute(*parts)
     out = []
-    for (d, r, com), p in zip(items, parts):
+    for (d, r), p in zip(items, parts):
         if r in COM_RESPONSES:
-            out.append(_com_image(p, (ny, nx), r, com, scale))
+            out.append(_com_image(p, (ny, nx), (kh, kw), r, scale))
         else:
             out.append(np.asarray(p).reshape(ny, nx).astype(np.float32))
     return out

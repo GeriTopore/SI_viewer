@@ -2162,22 +2162,19 @@ class Session:
             ids.insert(ids.index(after[-1] if after else cube.id) + 1, ds.id)
         return ds
 
-    def set_bragg_vectors(self, cube: Dataset, table: np.ndarray, info: dict, bvm: np.ndarray, upsample: int) -> Dataset:
-        """The Bragg disks found in 4D-STEM data: a "Bragg vectors" table
-        under it (kind "other", origin "disks"; ``processing.disks.VECTOR_FIELDS``)
-        and its "Bragg vector map" image under that (origin "bragg-map",
-        ``upsample`` × finer than the pattern). Made again in place. Returns
-        the table."""
+    def set_bragg_vectors(self, cube: Dataset, vectors, count: int, info: dict, bvm: np.ndarray, upsample: int) -> Dataset:
+        """The Bragg disks found in 4D-STEM data: "Bragg vectors" under it
+        (pyxem ``DiffractionVectors``, ``processing.disks.to_vectors``; kind
+        "other", origin "disks"; ``count`` disks) and its "Bragg vector map"
+        image under that (origin "bragg-map", ``upsample`` × finer than the
+        pattern). Made again in place. Returns the vectors."""
         import hyperspy.api as hs
-
-        from .processing.disks import VECTOR_FIELDS
 
         if cube.kind is not DatasetKind.DIFFRACTION4D:
             raise ValueError(f"{cube.title} is not 4D-STEM data")
-        info = {**info, "source_id": cube.id, "count": int(len(table))}
-        table_signal = hs.signals.BaseSignal(np.ascontiguousarray(table, dtype=np.float32))
+        info = {**info, "source_id": cube.id, "count": int(count)}
+        table_signal = vectors
         table_signal.metadata.General.title = "Bragg vectors"
-        table_signal.metadata.set_item("Disks.fields", list(VECTOR_FIELDS))
         map_signal = hs.signals.Signal2D(np.asarray(bvm, dtype=np.float32))
         map_signal.metadata.General.title = "Bragg vector map"
         map_signal.metadata.set_item("Signal.quantity", "Disks")

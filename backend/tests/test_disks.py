@@ -76,6 +76,35 @@ def test_every_pattern_and_the_vector_map():
         assert abs(bvm[int(cy) - 3 : int(cy) + 4, int(cx) - 3 : int(cx) + 4].sum() - 12) < 1e-3
 
 
+def test_bragg_vectors_as_pyxem_diffraction_vectors():
+    import hyperspy.api as hs
+    from pyxem.signals import DiffractionVectors
+
+    cube = _cube()
+    s = hs.signals.Signal2D(cube)
+    for ax, (name, scale, offset, units) in zip(
+        s.axes_manager.navigation_axes + s.axes_manager.signal_axes,
+        [("x", 1.5, 0, "nm"), ("y", 1.5, 0, "nm"), ("kx", 0.02, -0.64, "1/nm"), ("ky", 0.03, -0.96, "1/nm")],
+    ):
+        ax.name, ax.scale, ax.offset, ax.units = name, scale, offset, units
+    table = disks.find_all(cube, _template(cube), disks.DiskOptions(threshold=0.3))
+    v = disks.to_vectors(table, s)
+    assert isinstance(v, DiffractionVectors)
+    assert v.axes_manager.navigation_shape == (4, 3)
+    assert [a.scale for a in v.axes_manager.navigation_axes] == [1.5, 1.5]
+    assert v.column_names == ["ky", "kx", "intensity"] and v.units[:2] == ["1/nm", "1/nm"]
+    # In the pattern's calibration: value = offset + scale × index (pixel i's centre at index i).
+    row = table[(table[:, 0] == 1.5) & (table[:, 1] == 2.5)]
+    got = np.asarray(v.data[1, 2])
+    want = np.column_stack([-0.96 + 0.03 * (row[:, 2] - 0.5), -0.64 + 0.02 * (row[:, 3] - 0.5), row[:, 4]])
+    np.testing.assert_allclose(np.sort(got, axis=0), np.sort(want, axis=0), rtol=1e-5, atol=1e-6)
+    # And back to pattern pixels.
+    np.testing.assert_allclose(np.sort(disks.vectors_at(v, 2, 1), axis=0), np.sort(row[:, 2:], axis=0), atol=1e-4)
+    np.testing.assert_allclose(disks.table_of(v)[np.lexsort(disks.table_of(v).T[::-1])], table[np.lexsort(table.T[::-1])], atol=1e-4)
+    # pyxem's own tools work on it.
+    assert v.get_magnitudes().data.shape == (3, 4)
+
+
 def _wait(client, job):
     for _ in range(600):
         job = client.get(f"/api/jobs/{job['id']}").json()
@@ -126,9 +155,14 @@ def test_disks_through_the_api_and_kept_with_the_analysis(tmp_path):
     job = _wait(client, client.post(f"/api/datasets/{cube_id}/4d/disks/run", json={"options": {"threshold": 0.3, "max_disks": 1}}).json())
     assert job["result"]["id"] == vectors_id and job["result"]["count"] == 12
 
+    from pyxem.signals import DiffractionVectors
+
+    assert isinstance(session.get_dataset(vectors_id).signal, DiffractionVectors)
     saved = save_project(session, tmp_path / "p.hspy")
     other = Session()
     open_project(other, saved)
     restored = other.get_dataset(vectors_id)
-    assert restored.disks["count"] == 12 and restored.signal.data.shape == (12, 5)
+    assert isinstance(restored.signal, DiffractionVectors)
+    assert restored.disks["count"] == 12 and restored.signal.data.shape == (3, 4)
     assert other.bragg_vectors_of(other.get_dataset(cube_id)).id == vectors_id
+    assert len(disks.vectors_at(restored.signal, 1, 2)) == 1

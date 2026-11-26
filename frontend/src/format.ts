@@ -240,7 +240,8 @@ export function shapeLabel(d: DatasetSummary): string {
   }
   const nav = d.navigation_shape.join("×");
   const sig = d.signal_shape.join("×");
-  return nav ? `${nav} | ${sig}` : sig;
+  // Ragged (e.g. diffraction vectors: a list at each position): navigation only.
+  return nav && sig ? `${nav} | ${sig}` : nav || sig;
 }
 
 /** Compact number for readouts: integers as is, others to 4 significant digits. */

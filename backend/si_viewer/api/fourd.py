@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-import numpy as np
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
@@ -256,12 +255,14 @@ def disk_run(dataset_id: str, body: DiskBody, request: Request) -> dict:
     def run(job) -> dict:
         job.report(0.0, "Starting")
         table = disks.find_all(ds.signal.data, template, opts, lambda f, m: job.report(0.97 * f, m))
-        job.report(0.98, "Making the Bragg vector map")
+        job.report(0.98, "Making the diffraction vectors and the Bragg vector map")
         shape = tuple(ds.signal.data.shape[2:])
         bvm = disks.vector_map(table, shape, upsample=2)
+        vectors = disks.to_vectors(table, ds.signal)
         ny, nx = ds.signal.data.shape[:2]
         made = session.set_bragg_vectors(
-            ds, table, {"options": opts.model_dump(), "template": info, "positions": int(ny * nx)}, bvm, upsample=2,
+            ds, vectors, len(table), {"options": opts.model_dump(), "template": info, "positions": int(ny * nx)},
+            bvm, upsample=2,
         )
         return {"file": session.file_of(ds).summary(session), "id": made.id, "count": int(len(table))}
 
@@ -279,5 +280,8 @@ def disks_at(dataset_id: str, x: float, y: float, request: Request) -> dict:
     vectors = session.bragg_vectors_of(ds)
     if vectors is None:
         raise HTTPException(404, f"The disks of {ds.title} haven't been found")
-    rows = disks.disks_at(np.asarray(vectors.signal.data), x, y)
-    return {"disks": rows[:, 2:].round(3).tolist()}
+    try:
+        rows = disks.vectors_at(vectors.signal, x, y)
+    except IndexError as e:
+        raise HTTPException(416, str(e))
+    return {"disks": rows.round(3).tolist()}

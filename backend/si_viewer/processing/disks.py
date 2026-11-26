@@ -143,6 +143,92 @@ def find_all(
     return np.ascontiguousarray(table, dtype=np.float32).reshape(-1, 5)
 
 
+def to_vectors(table: np.ndarray, cube):
+    """A Bragg vectors table as pyxem ``DiffractionVectors``: over ``cube``'s
+    scan (its navigation axes), at each position its disks as (ky, kx,
+    intensity) in the pattern's calibration (value = offset + scale × pixel
+    index, as HyperSpy's axes), the intensity being the correlation."""
+    import hyperspy.api as hs
+    from pyxem.signals import DiffractionVectors
+
+    ny, nx = cube.data.shape[:2]
+    iy = np.floor(table[:, 0]).astype(int)
+    ix = np.floor(table[:, 1]).astype(int)
+    order = np.lexsort((ix, iy))
+    flat = iy[order] * nx + ix[order]
+    rows = table[order]
+    bounds = np.searchsorted(flat, np.arange(ny * nx + 1))
+    peaks = np.empty((ny, nx), dtype=object)
+    for k in range(ny * nx):
+        r = rows[bounds[k] : bounds[k + 1]]
+        # Pixel indices (pixel i's centre at index i), then the score.
+        peaks[k // nx, k % nx] = np.column_stack([r[:, 2] - 0.5, r[:, 3] - 0.5, r[:, 4]]).astype(np.float64)
+    signal = hs.signals.BaseSignal(peaks, ragged=True)
+    for axis, src in zip(signal.axes_manager.navigation_axes, cube.axes_manager.navigation_axes):
+        axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
+    ky_ax, kx_ax = cube.axes_manager.signal_axes[::-1]
+    with _quiet():
+        vectors = DiffractionVectors.from_peaks(
+            signal,
+            center=[-ky_ax.offset / ky_ax.scale, -kx_ax.offset / kx_ax.scale],
+            calibration=[ky_ax.scale, kx_ax.scale],
+            column_names=[str(ky_ax.name), str(kx_ax.name)],
+            units=[str(ky_ax.units), str(kx_ax.units)],
+        )
+    vectors.metadata.General.title = "Bragg vectors"
+    return vectors
+
+
+class _quiet:
+    """HyperSpy's progress bar and its warning that the function mapped
+    ignores the axes' scales off for a while (pyxem's ``from_peaks`` maps a
+    per-vector calibration, which doesn't use them)."""
+
+    def __enter__(self):
+        import logging
+
+        import hyperspy.api as hs
+
+        self.was = hs.preferences.General.show_progressbar
+        hs.preferences.General.show_progressbar = False
+        self.logger = logging.getLogger("hyperspy.signal")
+        self.level = self.logger.level
+        self.logger.setLevel(logging.ERROR)
+
+    def __exit__(self, *exc):
+        import hyperspy.api as hs
+
+        hs.preferences.General.show_progressbar = self.was
+        self.logger.setLevel(self.level)
+
+
+def vectors_at(vectors, x: float, y: float) -> np.ndarray:
+    """The disks of ``DiffractionVectors`` (``to_vectors``) at scan pixel
+    (x, y) as pattern pixel positions (pixel i spanning [i, i + 1)) and
+    intensities: float32 [n, 3] of (ky, kx, intensity)."""
+    ny, nx = vectors.data.shape[:2]
+    ix, iy = int(np.floor(x)), int(np.floor(y))
+    if not (0 <= ix < nx and 0 <= iy < ny):
+        raise IndexError(f"({ix}, {iy}) is outside the {nx} × {ny} scan")
+    v = np.asarray(vectors.data[iy, ix], dtype=np.float64).reshape(-1, 3)
+    off, sc = np.asarray(vectors.offsets, dtype=float), np.asarray(vectors.scales, dtype=float)
+    out = v.copy()
+    out[:, :2] = (v[:, :2] - off[:2]) / sc[:2] + 0.5
+    return out.astype(np.float32)
+
+
+def table_of(vectors) -> np.ndarray:
+    """``DiffractionVectors`` (``to_vectors``) back as a Bragg vectors table
+    (``VECTOR_FIELDS``, pattern pixels)."""
+    ny, nx = vectors.data.shape[:2]
+    parts = []
+    for iy in range(ny):
+        for ix in range(nx):
+            d = vectors_at(vectors, ix, iy)
+            parts.append(np.column_stack([np.full(len(d), iy + 0.5), np.full(len(d), ix + 0.5), d]))
+    return np.concatenate(parts).astype(np.float32) if parts else np.empty((0, 5), np.float32)
+
+
 def disks_at(table: np.ndarray, x: float, y: float) -> np.ndarray:
     """The rows of a Bragg vectors table at scan pixel (x, y)."""
     sel = (np.floor(table[:, 0]) == np.floor(y)) & (np.floor(table[:, 1]) == np.floor(x))

@@ -442,18 +442,22 @@ grid's *Merged* mode with each group's colour), and presets.
   Tuned live on the patterns shown (every cursor/region in Grid) while the
   process is open; *Find in every pattern* is a job (scan rows in parallel
   threads; the Au NP dm4, 14 400 patterns of 128², ≈ 12 s on the M3 Max CPU)
-  making a **Bragg vectors** table under the data (kind "other", origin
-  "disks": one row per disk, scan_y, scan_x, ky, kx, score; selecting it
-  shows its data) and a **Bragg vector map** under that (bilinear
+  making **Bragg vectors** under the data (kind "other", origin "disks"):
+  pyxem `DiffractionVectors` (`disks.to_vectors`, via `from_peaks`): a
+  ragged signal over the scan (its axes), at each position the disks as
+  (ky, kx, intensity = correlation) in the pattern's calibration (value =
+  offset + scale × pixel index); saved and reopened as `DiffractionVectors`;
+  `vectors_at` / `table_of` give pattern pixels back (selecting it shows
+  its data) and a **Bragg vector map** under that (bilinear
   histogram, 2 × finer than the pattern). Found again in place; saved with
   the analysis. Disks are drawn (circles of the template radius) only while
   the process is shown: live with *Show on the patterns*, else the stored
   ones at the cursors.
   No GPU: CUDA (cupy) isn't available on Apple silicon; the correlation step
   could later get an optional Apple-GPU (PyTorch MPS / MLX) backend.
-- Still to do: diffraction vectors as pyxem `DiffractionVectors` for its
-  clustering/strain/indexing; calibrations applied to stored vectors (keep
-  raw positions, py4DSTEM-style); Bragg vectors from py4DSTEM files.
+- Still to do: use pyxem's tools on the vectors (clustering, strain,
+  indexing); calibrations applied to stored vectors (keep raw positions,
+  py4DSTEM-style); Bragg vectors from py4DSTEM files.
 - Lattice vectors, strain maps (exx, eyy, exy, rotation) with the same display
   and conventions as kemstem's strain; snap g-vector arrays to peaks.
 

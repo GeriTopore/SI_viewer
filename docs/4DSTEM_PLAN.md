@@ -579,9 +579,20 @@ grid's *Merged* mode with each group's colour), and presets.
   (each origin less its descan plane; a whole-scan plane when kept as
   measured) and finds the rotation and mirror leaving the least curl
   (`processing.com.rotation_of`); θ and the mirror can be edited, then "Set
-  rotation" keeps them (how "curl" or "entered"). Calibration's steps:
-  Descan, QR rotation, Ellipticity, Pixel size, Apply; a kept calibration's
+  rotation" keeps them (how "curl" or "entered"). A kept calibration's
   step and its Info tab row get a green tick.
+- **Calibration steps reordered (2026-11-26)** as applied to the vectors:
+  1 Descan, 2 Ellipticity, 3 QR rotation, 4 Pixel size. The ellipse is kept
+  on its own ("Set ellipse", `/4d/calibration/ellipse`, `session.set_ellipse`,
+  with pyxem's affine); setting the pixel size no longer replaces or clears
+  it. The ring is fitted on the Bragg vector map by default (origin as step
+  1 measured). Why: on sim_Au_data_binned an ellipse fitted on the Max
+  pattern (long axis 46.6°) left the vectors' ellipse (30°, 1.9 %) half
+  corrected, whatever the rotation; fitted on the BVM around the 111 ring
+  (52–60 px) it is 30.5°, and the calibrated ring's two-fold distortion goes
+  (radius spread over 8 sectors 2.45 % → 1.1 %, the rest one-fold: the ring's
+  centre vs the origins). The rotation is rigid and changes no shape (test:
+  no cos 2θ left with origin, ellipse, rotation and pixel size on).
 - Still to do: calibrated units (mrad, E field via `calibrate_electric_shifts`);
   pyxem's phase-retrieval methods (Kottler, Arnison, Frankot) as options.
 

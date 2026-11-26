@@ -2308,7 +2308,8 @@ class Session:
         """Calibrate 4D-STEM data's pattern axes: ``scale`` ``units`` per
         pixel, and 0 at ``ring``'s centre if given (pattern px, pixel i
         spanning [i, i + 1)), else the axes' offsets kept in the new units.
-        The data isn't changed; the calibration is kept in ``calibration``."""
+        The data isn't changed; the calibration is kept in ``calibration``.
+        The ellipse kept (``set_ellipse``) is left as it is."""
         if cube.kind is not DatasetKind.DIFFRACTION4D:
             raise ValueError(f"{cube.title} is not 4D-STEM data")
         if not (np.isfinite(scale) and scale > 0):
@@ -2321,9 +2322,8 @@ class Session:
         ]
         # What was calibrated before (the origin, the switches) is kept.
         old = cube.calibration or {}
-        enabled = {**old.get("enabled", {}), "scale": True, **({"ellipse": True} if ring else {})}
-        cube.calibration = {**old, **info, "scale": float(scale), "units": units, "ring": ring, "zero": zeros,
-                            "enabled": enabled}
+        enabled = {**old.get("enabled", {}), "scale": True}
+        cube.calibration = {**old, **info, "scale": float(scale), "units": units, "zero": zeros, "enabled": enabled}
         self.apply_calibration_axes(cube)
         self.remake_bragg_map(cube)
         return cube
@@ -2399,6 +2399,23 @@ class Session:
         cube.calibration = {**cal, "origin": info, "enabled": {**cal.get("enabled", {}), "origin": True}}
         self.remake_bragg_map(cube)
         return out
+
+    def set_ellipse(self, cube: Dataset, ring: dict) -> None:
+        """Keep ``ring`` (an ellipse fitted: cx, cy, a, b, angle, radius,
+        ellipticity; pattern px) in 4D-STEM data's calibration, with pyxem's
+        affine making it circular, switched on: the Bragg vectors made
+        circular (after the origin, before the rotation and pixel size); the
+        Bragg vector map is made again."""
+        from .processing import calibration
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if not (ring["a"] > 0 and ring["b"] > 0):
+            raise ValueError("The ellipse's axes must be positive")
+        cal = cube.calibration or {}
+        cube.calibration = {**cal, "ring": dict(ring), "affine": calibration.affine_of(ring),
+                            "enabled": {**cal.get("enabled", {}), "ellipse": True}}
+        self.remake_bragg_map(cube)
 
     def set_qr_rotation(self, cube: Dataset, theta: float, mirror: bool, info: dict) -> None:
         """The rotation (degrees) and mirror turning 4D-STEM data's pattern

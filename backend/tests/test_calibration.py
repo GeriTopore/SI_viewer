@@ -83,6 +83,12 @@ def test_calibration_through_the_api_and_kept(tmp_path):
     assert bad.status_code == 422
     assert "Au" in client.get(f"/api/datasets/{cube_id}/4d/calibration/standards").json()
 
+    # The ellipse kept (step 2): with pyxem's affine, switched on.
+    kept = client.post(f"/api/datasets/{cube_id}/4d/calibration/ellipse", json={"ring": ring})
+    assert kept.status_code == 200
+    cal = session.get_dataset(cube_id).calibration
+    assert cal["ring"]["a"] == pytest.approx(ring["a"]) and cal["affine"] is not None and cal["enabled"]["ellipse"]
+
     # From the ring: Au 111 → 1/d at the ring's radius; 0 at its centre.
     body = {"how": "ring", "ring": ring, "d": 2.355, "standard": "Au", "hkl": "111", "units": "1/nm"}
     r = client.post(f"/api/datasets/{cube_id}/4d/calibration", json=body).json()
@@ -94,12 +100,14 @@ def test_calibration_through_the_api_and_kept(tmp_path):
     # The ring's centre (pixel-edge position) at 0: index cx − 0.5.
     assert kx.offset + kx.scale * (ring["cx"] - 0.5) == pytest.approx(0, abs=1e-9)
     assert ky.offset + ky.scale * (ring["cy"] - 0.5) == pytest.approx(0, abs=1e-9)
-    assert ds.calibration["how"]["hkl"] == "111" and ds.calibration["affine"] is not None
+    assert ds.calibration["how"]["hkl"] == "111" and ds.calibration["ring"]["a"] == pytest.approx(ring["a"])
 
     # Entered: kept in its units, 0 left where it was.
     r = client.post(f"/api/datasets/{cube_id}/4d/calibration", json={"how": "entered", "scale": 0.02, "units": "1/Å", "centre": False}).json()
     assert kx.scale == 0.02 and kx.units == "1/Å"
     assert kx.offset + kx.scale * (ring["cx"] - 0.5) == pytest.approx(0, abs=1e-9)
+    # The pixel size set again: the ellipse kept as it was.
+    assert ds.calibration["ring"]["a"] == pytest.approx(ring["a"]) and ds.calibration["enabled"]["ellipse"]
     assert client.post(f"/api/datasets/{cube_id}/4d/calibration", json={"how": "camera"}).status_code == 422
 
     # Kept with the analysis, also when the data is read from its file again.

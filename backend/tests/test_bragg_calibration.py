@@ -164,9 +164,11 @@ def test_calibrated_map_through_the_api(tmp_path, found):
     assert ring["a"] == pytest.approx(A, abs=0.4) and ring["b"] == pytest.approx(B, abs=0.4)
     assert ring["ellipticity"] == pytest.approx(A / B - 1, abs=0.03)
 
+    # Step 2 keeps the ellipse; step 4 the pixel size (the ellipse left as kept).
+    assert client.post(f"{url}/4d/calibration/ellipse", json={"ring": ring}).status_code == 200
     r = client.post(f"{url}/4d/calibration", json={"how": "ring", "ring": ring, "d": 2.355, "units": "1/nm"}).json()
     scale = r["scale"]
-    # Calibrating switched the ellipse and the pixel size on; the origin stays.
+    # The ellipse and the pixel size switched on; the origin stays.
     assert session.get_dataset(cube_id).calibration["enabled"] == {"origin": True, "ellipse": True, "scale": True}
     bvm = bvm_of()
     kx, ky = bvm.signal.axes_manager.signal_axes
@@ -203,6 +205,20 @@ def test_calibrated_map_through_the_api(tmp_path, found):
     assert abs(turned.sum() - before.sum()) < 1e-2
     # 90° counter-clockwise (x right, y down the rows): (x, y) → (−y, x), the map turned as an array.
     np.testing.assert_allclose(turned, np.rot90(before, k=-1), atol=0.05 * before.max())
+    # Still circular with the rotation on (origin, ellipse, rotation, then the pixel size).
+    table = session.vectors_table(session.get_dataset(cube_id))
+    from si_viewer.processing import disks as _disks
+
+    cal = session.get_dataset(cube_id).calibration
+    q = _disks.calibrated(table, session.centring_origins(session.get_dataset(cube_id)), (0, 0), cal["ring"],
+                          cal["scale"], cal["rotation"])
+    rr = np.hypot(q[:, 0], q[:, 1])
+    band = np.abs(rr - 10 / 2.355) < 0.15 * 10 / 2.355
+    t = np.arctan2(q[band, 1], q[band, 0])
+    # Radius against angle: no cos 2θ / sin 2θ left (the ellipse made circular).
+    m = np.column_stack([np.ones(band.sum()), np.cos(2 * t), np.sin(2 * t)])
+    c = np.linalg.lstsq(m, rr[band], rcond=None)[0]
+    assert np.hypot(c[1], c[2]) / c[0] < 0.005
     assert client.post(f"{url}/4d/calibration/rotation", json={"theta": 400}).status_code == 422
     # Switched off: the map as before.
     client.post(f"{url}/4d/calibration/switches", json={"enabled": {"rotation": False}})

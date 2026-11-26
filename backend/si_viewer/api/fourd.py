@@ -856,6 +856,24 @@ class Ring(BaseModel):
     ellipticity: float = 0.0
 
 
+class EllipseBody(BaseModel):
+    ring: Ring
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration/ellipse")
+def calibration_ellipse(dataset_id: str, body: EllipseBody, request: Request) -> dict:
+    """Keep the ellipse fitted (Calibration step 2) in the data's
+    calibration, switched on: the Bragg vectors made circular, the Bragg
+    vector map made again. Returns the data's ``file``."""
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    try:
+        session.set_ellipse(ds, body.ring.model_dump())
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(ds).summary(session)}
+
+
 class CalibrateBody(BaseModel):
     """How the pixel size is set: from the ring and a reflection (``d``, Å;
     with ``standard`` and ``hkl`` named), from the camera length, detector
@@ -901,7 +919,7 @@ def calibrate(dataset_id: str, body: CalibrateBody, request: Request) -> dict:
             raise HTTPException(422, "The pixel size is needed")
         scale = body.scale
         how = {"entered": True}
-    info = {"how": how, "affine": calibration.affine_of(ring) if ring else None}
+    info = {"how": how}
     try:
         session.calibrate_patterns(ds, scale, body.units, ring if body.centre else None, info)
     except ValueError as e:

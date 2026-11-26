@@ -365,6 +365,13 @@ List has the same top bar: its rows' images take the same tools
 keys, so what is drawn in one layout shows in the others; line profiles are
 plotted in Single).
 
+**Built (2026-11-26): Merge.** *Single / Grid / Merge / List*. Merge: the
+visible groups' virtual images as layers of one view, each in its group's
+colour, added up (the viewer's merged mode: the Layers panel shows, hides
+and fades each; `StackLayer.colormap` gives the starting colour, and a colour
+changed in the process follows); the label names the groups in their
+colours. The pattern pane is as in Single (every group drawn on it).
+
 **Built (2026-11-26): List.** *Single / Grid / List*. List: a row per
 visible group (its colour down the left edge, name and detector in the
 header): the pattern shown (the chosen cursor, region, mean or max, framed

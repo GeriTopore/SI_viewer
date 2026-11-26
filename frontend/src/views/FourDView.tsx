@@ -386,8 +386,10 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
     : `${version}|${JSON.stringify(sent)}|${group.response}`;
   const grid = st.layout === "grid";
   const list = st.layout === "list";
-  // Grid and list show every visible group's image (each in its colour).
-  const multi = grid || list;
+  // Merge: the visible groups' images as one colour composite, each in its colour.
+  const merge = st.layout === "merge";
+  // Grid, list and merge show every visible group's image (each in its colour).
+  const multi = grid || list || merge;
   const virtual = useLatest(virtualKey, () =>
     shownSaved
       ? fetchFrame(shownSaved.id)
@@ -921,7 +923,7 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   // ---------- the grid's panels ----------
   // The grid's active panels follow the selected group and the pattern shown;
   // a panel clicked selects its group or source.
-  const viRequest = useMemo(() => (grid ? { key: `vi:${group.id}` } : null), [grid, group.id]);
+  const viRequest = useMemo(() => (grid || merge ? { key: `vi:${group.id}` } : null), [grid, merge, group.id]);
   const dpRequest = useMemo(() => (grid ? { key: `dp:${source}` } : null), [grid, source]);
   const onViActive = (key: string) => {
     const id = key.replace(/^vi:/, "");
@@ -946,6 +948,14 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
     removable: false,
     geometry: scanG,
   }));
+  // Merge: the same images as layers of one view, each in its group's colour
+  // (colours add up), under contrast keys of their own.
+  const mergeKey = (id: string) => `${ds.id}:merge:vi:${id}`;
+  const mergeStacks: StackLayer[] = viStacks.map((s, i) => ({
+    ...s,
+    displayKey: mergeKey(visibleGroups[i].id),
+    colormap: visibleGroups[i].color,
+  }));
   const dpLabel = (id: string) =>
     sources.find((s) => s.id === id)?.label ?? (id === SCAN_MAX ? "Max over the scan" : "Mean over the scan");
   const dpStacks: StackLayer[] = dpItems.map((it) => ({
@@ -961,6 +971,7 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   const layoutSwitch = segmented("Layout", [
     { id: "single", label: "Single", title: "One virtual image and one pattern" },
     { id: "grid", label: "Grid", title: "A virtual image per visible group, a pattern per cursor and region" },
+    { id: "merge", label: "Merge", title: "The visible groups' virtual images as one colour composite, each in its group's colour" },
     { id: "list", label: "List", title: "A row per visible group: the pattern with its detector, and its virtual image (the wheel zooms; ⌘ + wheel or the scroll bar scrolls)" },
   ], st.layout, (v) => {
     // The other layout's panels are another size: they open fitted.
@@ -975,6 +986,14 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
   // ---------- the list: a row per visible group ----------
   const displays = useDisplay((s) => s.display);
   const setDisplay = useDisplay((s) => s.setDisplay);
+  // Merge: each layer keeps its group's colour (a colour changed in the process follows).
+  useEffect(() => {
+    if (!merge) return;
+    for (const g of visibleGroups) {
+      const d = displays[mergeKey(g.id)];
+      if (d && d.colormap !== g.color) setDisplay(mergeKey(g.id), { colormap: g.color });
+    }
+  });
   // Every image of the list has its own contrast (each row's pattern too).
   const listDpKey = (id: string) => `${ds.id}:list:dp:${id}${log ? ":log" : ""}`;
   const listViKey = (id: string) => `${ds.id}:list:vi:${id}`;
@@ -1134,7 +1153,7 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
         <LayeredViewer
           viewKey={`${ds.id}:virtual`}
           toolButtons={false}
-          base={grid ? null : {
+          base={grid || merge ? null : {
             key: shownSaved ? shownSaved.id : `${ds.id}:virtual`,
             label: virtualLabel,
             frame: virtual.frame,
@@ -1142,28 +1161,35 @@ export function FourDView({ ds }: { ds: DatasetSummary }) {
             source: shownSaved ?? ds,
           }}
           images={[]}
-          stacks={grid ? viStacks : undefined}
+          stacks={grid ? viStacks : merge ? mergeStacks : undefined}
           gridOnly={grid}
           requestActive={viRequest}
-          onActiveChange={grid ? onViActive : undefined}
+          onActiveChange={grid || merge ? onViActive : undefined}
           empty="Show a detector group (Virtual image process) to see its image"
           geometry={scanG}
-          loading={grid || virtual.frame ? null : "Computing the virtual image…"}
-          error={grid ? viSet.error : virtual.error}
+          loading={grid || merge || virtual.frame ? null : "Computing the virtual image…"}
+          error={grid || merge ? viSet.error : virtual.error}
           overlays={false}
           interaction={scanInteraction}
           imageMenu={scanMenu}
           renderOverlay={scanOverlay}
           footer={
             <div className="stack-bar fourd-bar">
-              {!grid && imagePicker}
+              {!grid && !merge && imagePicker}
               <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click or Delete removes one">
                 {cursorText}
               </span>
             </div>
           }
         >
-          {!grid && <span className="frame-chip">{virtualLabel}</span>}
+          {!grid && !merge && <span className="frame-chip">{virtualLabel}</span>}
+          {merge && (
+            <span className="frame-chip">
+              {visibleGroups.map((g, i) => (
+                <span key={g.id} style={{ color: g.color }}>{i ? " + " : ""}{g.name}</span>
+              ))}
+            </span>
+          )}
         </LayeredViewer>
       </div>
       <div className="fourd-pane fourd-pattern">

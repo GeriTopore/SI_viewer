@@ -163,6 +163,8 @@ export interface StackLayer {
   /** The panel's size and calibration (default: the dataset's image plane),
    * e.g. a 4D-STEM dataset's virtual image on its scan. */
   geometry?: ImageGeometry;
+  /** Its starting colormap or colour (default: the dataset's). */
+  colormap?: string;
 }
 
 /** One layer of the view besides the base: a stack's frame or a map. */
@@ -269,7 +271,7 @@ export function LayeredViewer({
       if (f) autoContrast(d.id, f, contrastVersion(d), () => initialColormap(d));
     }
     for (const s of stacks) {
-      if (s.frame) autoContrast(s.displayKey, s.frame, s.version ?? contrastVersion(s.dataset), () => initialColormap(s.dataset));
+      if (s.frame) autoContrast(s.displayKey, s.frame, s.version ?? contrastVersion(s.dataset), () => s.colormap ?? initialColormap(s.dataset));
     }
   }); // every render: cheap, it only acts when a version changes
 

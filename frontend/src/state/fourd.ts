@@ -122,7 +122,7 @@ export interface FourDState {
   /** One virtual image and one pattern, a grid of each (a virtual image per
    * visible group, a pattern per cursor and region), or a scrolling list of
    * rows (per visible group: the pattern with its detector, its image). */
-  layout: "single" | "grid" | "list";
+  layout: "single" | "grid" | "list" | "merge";
   /** The list's row height (px). */
   rowHeight: number;
 }

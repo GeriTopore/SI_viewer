@@ -6,9 +6,25 @@ import { useDatasets } from "./datasets";
  * again at once (the file's datasets refreshed). */
 export async function setCalibrationSwitches(
   cubeId: string,
-  body: { enabled?: Partial<Record<"origin" | "ellipse" | "scale", boolean>>; view?: "raw" | "calibrated" },
+  body: { enabled?: Partial<Record<"origin" | "ellipse" | "scale" | "rotation", boolean>>; view?: "raw" | "calibrated" },
 ): Promise<void> {
   const res = await fetch(`/api/datasets/${cubeId}/4d/calibration/switches`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const out = await res.json();
+  if (!res.ok) throw new Error(out.detail ?? res.statusText);
+  useDatasets.getState().replaceFile(out.file);
+}
+
+/** Keep the QR rotation (the pattern's axes into the scan's) in 4D-STEM
+ * data's calibration, switched on: the Bragg vector map is turned at once. */
+export async function setQrRotation(
+  cubeId: string,
+  body: { theta: number; mirror: boolean; how: "com" | "entered"; curl_ratio?: number },
+): Promise<void> {
+  const res = await fetch(`/api/datasets/${cubeId}/4d/calibration/rotation`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

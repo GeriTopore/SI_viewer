@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { colourFrame, fetchArray, fetchFrame, type Frame } from "../api/arrays";
+import { colourFrame, fetchArray, fetchFrame, fetchStackFrame, type Frame } from "../api/arrays";
 import { dataVersion, type DatasetSummary } from "../api/client";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { ImageView, type AxisCal, type Interaction, type Pt, type Transform } from "../components/ImageView";
@@ -29,7 +29,7 @@ import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import {
-  ROW_HEIGHTS, SCAN_MAX, SCAN_MEAN, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, responseLabel, sizeApertures, initialState, latticePoints, moveDetector, newCursor, useFourD,
+  ROW_HEIGHTS, SCAN_BVM, SCAN_MAX, SCAN_MEAN, isScanSource, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, responseLabel, sizeApertures, initialState, latticePoints, moveDetector, newCursor, useFourD,
   type Detector, type DetectorGroup, type FourDState, type Lattice, type OverlayLayer, type PatternSource, type Response, type ScanCursor,
 } from "../state/fourd";
 import { containsPoint, shapeToRegion, useSi, useSiState } from "../state/si";
@@ -411,13 +411,29 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const detOpacity = (g: DetectorGroup) => ovOf(`det:${g.id}`).opacity ?? 1;
   const cursorShown = (c: ScanCursor) => ovOf(`cursor:${c.id}`).visible ?? true;
 
-  // ---------- the image on the scan: live through the detector, or a saved virtual image ----------
+  // ---------- the image on the scan: live through the detector, or a map made from the data ----------
   const files = useDatasets((s) => s.files);
-  const saved = useMemo(
-    () => allDatasets(files).filter((d) => d.origin === "virtual" && d.parent_id === ds.id),
-    [files, ds.id],
-  );
+  // Every image made from this data (at any depth: saved virtual images,
+  // origin and beam-shift maps, DPC, iCOM, masks…) of the scan's shape, in
+  // the dataset pane's order.
+  const saved = useMemo(() => {
+    const all = allDatasets(files);
+    const byId = new Map(all.map((d) => [d.id, d]));
+    const under = (d: DatasetSummary) => {
+      let p = d.parent_id;
+      for (let i = 0; p && i < 8; i++) {
+        if (p === ds.id) return true;
+        p = byId.get(p)?.parent_id ?? null;
+      }
+      return false;
+    };
+    const [w, h] = ds.navigation_shape;
+    return all.filter((d) =>
+      d.kind === "image" && !d.lazy && d.navigation_shape.length === 0 &&
+      d.signal_shape[0] === w && d.signal_shape[1] === h && under(d));
+  }, [files, ds.id, ds.navigation_shape]);
   const shownSaved = saved.find((d) => d.id === st.shown) ?? null;
+  const shownColour = shownSaved?.dpc?.output === "colour";
   // A digital dark field is made again when the disks or the centring change.
   const ddfVersion = useMemo(() => {
     const all = allDatasets(files);
@@ -442,7 +458,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const multi = grid || list || merge;
   const virtual = useLatest(virtualKey, () =>
     shownSaved
-      ? fetchFrame(shownSaved.id)
+      ? fetchStackFrame(shownSaved, {})
       : post(`/api/datasets/${ds.id}/4d/virtual`, sent).then(asVirtualFrame),
   !multi);
   const bad = useFourD((s) => s.bad[ds.id]) ?? null;
@@ -455,8 +471,9 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const { cursors } = st;
   const activeCursor = cursors.find((c) => c.id === st.source) ?? cursors.find((c) => c.id === st.lastCursor) ?? cursors[0];
   const sourceRoi = rois.find((r) => r.id === st.source) ?? null;
-  // A source gone (its region deleted or hidden) falls back to the cursor.
-  const source: PatternSource = sourceRoi || st.source === SCAN_MEAN || st.source === SCAN_MAX ? st.source : activeCursor.id;
+  // A source gone (its region deleted or hidden, the disks no longer found) falls back to the cursor.
+  const source: PatternSource =
+    sourceRoi || st.source === SCAN_MEAN || st.source === SCAN_MAX || (st.source === SCAN_BVM && hasVectors) ? st.source : activeCursor.id;
   // A region selected on the scan (clicked or just drawn) shows its pattern.
   useEffect(() => {
     if (selectedRoi && selectedRoi !== latest.current.source) patch({ source: selectedRoi });
@@ -471,10 +488,14 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // The radial median's centre follows the centring.
   const bgTag = bgOn ? `|bg|${JSON.stringify(bgOpts)}|${ddfVersion}` : "";
   const bgPattern = (spec: object) => post(`/api/datasets/${ds.id}/4d/background/preview`, { options: bgOpts, ...spec }).then(asFrame);
-  const patternKey = `${version}|${
+  // The Bragg vector map (pattern pixels): made again when the disks or the centring change; no background.
+  const bvmKey = `${version}|${SCAN_BVM}|${ddfVersion}`;
+  const bvmPattern = () => fetchArray(`/api/datasets/${ds.id}/4d/bvm-pattern`).then(asFrame);
+  const patternKey = source === SCAN_BVM ? bvmKey : `${version}|${
     sourceRoi ? `roi|${JSON.stringify(sourceRoi.shape)}` : source === SCAN_MEAN || source === SCAN_MAX ? source : `cursor|${activeCursor.x},${activeCursor.y}`
   }${bgTag}`;
   const pattern = useLatest(patternKey, () => {
+    if (source === SCAN_BVM) return bvmPattern();
     if (bgOn) {
       return bgPattern(sourceRoi ? { region: shapeToRegion(sourceRoi.shape) }
         : source === SCAN_MEAN || source === SCAN_MAX ? { scan: source === SCAN_MAX ? "max" : "mean" }
@@ -511,7 +532,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       }),
     multi,
   );
-  const scanSource = source === SCAN_MEAN || source === SCAN_MAX ? source : null;
+  const scanSource = isScanSource(source) ? source : null;
   const dpItems = [
     ...cursors.map((c) => ({
       id: c.id, key: `${version}|cursor|${c.x},${c.y}${bgTag}`,
@@ -523,7 +544,9 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         ? bgPattern({ region: shapeToRegion(r.shape) })
         : post(`/api/datasets/${ds.id}/4d/pattern`, { region: shapeToRegion(r.shape), reduce: "mean" }).then(asFrame)),
     })),
-    ...(scanSource
+    ...(scanSource === SCAN_BVM
+      ? [{ id: scanSource, key: bvmKey, run: bvmPattern }]
+      : scanSource
       ? [{
           id: scanSource, key: `${version}|${scanSource}${bgTag}`,
           run: () => (bgOn
@@ -563,7 +586,11 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     if (id === SCAN_MEAN || id === SCAN_MAX) return { scan: id === SCAN_MAX ? "max" : "mean" };
     return null;
   };
-  const previewSpecs = shownSourceIds.map((id) => ({ id, ...specOf(id) }));
+  // Disks are found on patterns, not on the Bragg vector map.
+  const previewSpecs = shownSourceIds.flatMap((id) => {
+    const spec = specOf(id);
+    return spec ? [{ id, ...spec }] : [];
+  });
   const previewKey = diskPreview ? `${version}|${JSON.stringify(diskOpts)}|${JSON.stringify(previewSpecs)}` : "";
   const [previewDisks, setPreviewDisks] = useState<{ key: string; r: number; disks: Record<string, Disk[]> } | null>(null);
   useEffect(() => {
@@ -1141,7 +1168,9 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const cursorText = `${cursors.length > 1 ? `${cursorName(activeCursor)} ` : ""}${at(activeCursor)}`;
   const patternLabel = sourceRoi
     ? `Mean pattern over ${sourceRoi.name}`
-    : source === SCAN_MEAN || source === SCAN_MAX
+    : source === SCAN_BVM
+      ? `Bragg vector map${ds.calibration?.enabled?.origin ? " (centred)" : ""}`
+      : source === SCAN_MEAN || source === SCAN_MAX
       ? `${source === SCAN_MAX ? "Max" : "Mean"} pattern over the scan`
       : `Pattern at ${cursorText}`;
   const liveLabel = `${group.name} · ${sent.source === "vectors" ?`DDF${group.weight === "count" ? " count" : ""} · ` : ""}${det.shape} · ${detectorText(det, patCal.scale, patCal.units)}${sent.response === "sum" ? "" : ` · ${responseLabel(sent.response)}`}`;
@@ -1169,10 +1198,18 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       }))}
     />
   );
-  // The image on the scan: a group's, live, or a saved virtual image.
+  // Over the whole scan: the mean or max pattern, or the Bragg vector map once the disks are found.
+  const wholeScan = segmented("Whole scan", [
+    { id: SCAN_MEAN, label: "Mean", title: "The mean pattern over the whole scan" },
+    { id: SCAN_MAX, label: "Max", title: "The maximum of every pixel over the whole scan" },
+    ...(hasVectors
+      ? [{ id: SCAN_BVM, label: "BVM", title: "The Bragg vector map on the pattern's pixels (centred when the centring is on)" }]
+      : []),
+  ], source, (v) => setScan({ source: v }));
+  // The image on the scan: a group's, live, or a map made from the data.
   const imagePicker = (
     <ListPicker
-      title="The image on the scan: a detector group's, live, or a saved virtual image"
+      title="The image on the scan: a detector group's, live, or a map made from the data"
       label={shownSaved ? shownSaved.title : group.name}
       color={shownSaved ? undefined : group.color}
       items={[
@@ -1182,7 +1219,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           checked: !shownSaved && g.id === group.id,
           onSelect: () => selectGroup(g.id),
         })),
-        ...(saved.length ? [{ label: "Saved", disabled: true }] : []),
+        ...(saved.length ? [{ label: "Maps", disabled: true }] : []),
         ...saved.map((d) => ({ label: d.title, indent: true, checked: d.id === shownSaved?.id, onSelect: () => patch({ shown: d.id }) })),
       ]}
     />
@@ -1266,7 +1303,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     colormap: visibleGroups[i].color,
   }));
   const dpLabel = (id: string) =>
-    sources.find((s) => s.id === id)?.label ?? (id === SCAN_MAX ? "Max over the scan" : "Mean over the scan");
+    sources.find((s) => s.id === id)?.label ??
+    (id === SCAN_BVM ? "Bragg vector map" : id === SCAN_MAX ? "Max over the scan" : "Mean over the scan");
   const dpStacks: StackLayer[] = dpItems.map((it) => ({
     dataset: ds,
     key: `dp:${it.id}`,
@@ -1558,10 +1596,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         </div>
         <div className="stack-bar fourd-bar fourd-list-bar">
           {sourcePicker}
-          {segmented("Whole scan", [
-            { id: SCAN_MEAN, label: "Mean", title: "The mean pattern over the whole scan" },
-            { id: SCAN_MAX, label: "Max", title: "The maximum of every pixel over the whole scan" },
-          ], source, (v) => setScan({ source: v }))}
+          {wholeScan}
           {segmented("Scale", [{ id: "linear", label: "Linear" }, { id: "log", label: "Log", title: "log10 of the intensity" }], log ? "log" : "linear", (v) => setImageLog(logKey, v === "log"))}
           <label className="field" title="Row height">
             Rows
@@ -1596,12 +1631,12 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           toolButtons={false}
           base={grid || merge ? null : {
             // A colour COM image keeps its own contrast, on the colour wheel.
-            key: shownSaved ? shownSaved.id : `${ds.id}:virtual${sent.response === "com" ? ":com" : ""}`,
+            key: shownSaved ? `${shownSaved.id}${shownColour ? ":com" : ""}` : `${ds.id}:virtual${sent.response === "com" ? ":com" : ""}`,
             label: virtualLabel,
             frame: virtual.frame,
             version: virtual.shownKey,
             source: shownSaved ?? ds,
-            ...(!shownSaved && sent.response === "com" && { colormap: () => "hsv" }),
+            ...((shownSaved ? shownColour : sent.response === "com") && { colormap: () => "hsv" }),
           }}
           images={[]}
           stacks={grid ? viStacks : merge ? mergeStacks : undefined}
@@ -1671,10 +1706,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
             <div className="fourd-footer">
               <div className="stack-bar fourd-bar">
                 {!grid && sourcePicker}
-                {segmented("Whole scan", [
-                  { id: SCAN_MEAN, label: "Mean", title: "The mean pattern over the whole scan" },
-                  { id: SCAN_MAX, label: "Max", title: "The maximum of every pixel over the whole scan" },
-                ], source, (v) => setScan({ source: v }))}
+                {wholeScan}
                 {segmented("Scale", [{ id: "linear", label: "Linear" }, { id: "log", label: "Log", title: "log10 of the intensity" }], log ? "log" : "linear", (v) => setImageLog(logKey, v === "log"))}
               </div>
             </div>

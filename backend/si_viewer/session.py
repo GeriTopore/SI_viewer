@@ -2392,10 +2392,26 @@ class Session:
         self.remake_bragg_map(cube)
         return out
 
+    def set_qr_rotation(self, cube: Dataset, theta: float, mirror: bool, info: dict) -> None:
+        """The rotation (degrees) and mirror turning 4D-STEM data's pattern
+        axes into its scan's (py4DSTEM's QR rotation and flip, in
+        ``processing.dpc.rotate``'s convention: y flipped, then rotated), kept
+        in its calibration with how it was found (``info``) and switched on;
+        the Bragg vector map is made again."""
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if not np.isfinite(theta):
+            raise ValueError("The rotation must be a number")
+        cal = cube.calibration or {}
+        rotation = {**info, "theta": float(theta) % 360.0, "mirror": bool(mirror)}
+        cube.calibration = {**cal, "rotation": rotation, "enabled": {**cal.get("enabled", {}), "rotation": True}}
+        self.remake_bragg_map(cube)
+
     def set_calibration_switches(self, cube: Dataset, enabled: dict | None = None, view: str | None = None) -> None:
         """Switch parts of 4D-STEM data's calibration on or off for its
-        Bragg vectors ("origin", "ellipse", "scale"), and whether its Bragg
-        vector map is shown "raw" or "calibrated"; the map is made again."""
+        Bragg vectors ("origin", "ellipse", "scale", "rotation"), and whether
+        its Bragg vector map is shown "raw" or "calibrated"; the map is made
+        again."""
         cal = dict(cube.calibration or {})
         if enabled:
             cal["enabled"] = {**cal.get("enabled", {}), **{k: bool(v) for k, v in enabled.items()}}
@@ -2447,13 +2463,14 @@ class Session:
         origins = self.centring_origins(cube) if calibrated else None
         ring = cal.get("ring") if calibrated and on.get("ellipse") else None
         scale = cal.get("scale") if calibrated and on.get("scale") else None
+        rotation = cal.get("rotation") if calibrated and on.get("rotation") else None
         shape = tuple(cube.signal.data.shape[2:])
         centre = (ring["cx"], ring["cy"]) if ring else (cal["ring"]["cx"], cal["ring"]["cy"]) if cal.get("ring") else None
-        data, step, offset = disks.map_of(table, shape, origins, centre, ring, scale)
-        raw = origins is None and ring is None and scale is None
+        data, step, offset = disks.map_of(table, shape, origins, centre, ring, scale, rotation=rotation)
+        raw = origins is None and ring is None and scale is None and rotation is None
         units = cal.get("units", "px") if scale else "px"
         info = {"view": "raw" if raw else "calibrated", "origin": origins is not None, "ellipse": ring is not None,
-                "scale": scale is not None, "units": units}
+                "scale": scale is not None, "rotation": rotation is not None, "units": units}
         return self.set_bragg_map(cube, data, step, offset, units, info)
 
     @staticmethod

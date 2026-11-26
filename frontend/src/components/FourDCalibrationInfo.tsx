@@ -4,7 +4,7 @@ import { setCalibrationSwitches } from "../state/calibration";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { formatValue } from "../format";
 
-type Part = "origin" | "ellipse" | "scale";
+type Part = "origin" | "ellipse" | "scale" | "rotation";
 
 /** The 4D-STEM data a dataset belongs to: itself, or the data its Bragg
  * vectors, their map, its origin or beam-shift maps were made from. */
@@ -98,7 +98,18 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
           ) : <span className="muted">not fitted (Calibration process)</span>}
         </dd>
         <dt>QR rotation</dt>
-        <dd className="muted">not measured (with COM)</dd>
+        <dd>
+          {sw("rotation", !!cal.rotation, "The pattern's axes turned into the scan's in the Bragg vectors")}
+          {cal.rotation ? (
+            <>
+              {formatValue(cal.rotation.theta)}°{cal.rotation.mirror ? ", mirrored" : ""}
+              <span className="muted">
+                {" "}· {cal.rotation.how === "com" ? "least curl (DPC / iCOM)" : "entered (DPC / iCOM)"}
+                {cal.rotation.curl_ratio != null && `, curl left ${formatValue(cal.rotation.curl_ratio * 100)} %`}
+              </span>
+            </>
+          ) : <span className="muted">not measured (DPC / iCOM process)</span>}
+        </dd>
       </dl>
       {error && <p className="field-error">{error}</p>}
     </section>

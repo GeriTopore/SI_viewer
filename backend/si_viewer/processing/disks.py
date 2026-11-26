@@ -271,10 +271,12 @@ def ellipse_matrix(ring: dict) -> np.ndarray:
 
 
 def calibrated(table: np.ndarray, origins: np.ndarray | None, centre: tuple[float, float],
-               ellipse: dict | None = None, scale: float = 1.0) -> np.ndarray:
-    """The disks' positions calibrated: relative to their scan position's
-    origin (``origins`` [y, x, 2] of (x, y) px; None: ``centre`` for all),
-    the ellipse made circular, times ``scale``. [n, 2] of (kx, ky)."""
+               ellipse: dict | None = None, scale: float = 1.0, rotation: dict | None = None) -> np.ndarray:
+    """The disks' positions calibrated (in py4DSTEM's order): relative to
+    their scan position's origin (``origins`` [y, x, 2] of (x, y) px; None:
+    ``centre`` for all), the ellipse made circular, times ``scale``, then
+    turned into the scan's frame by the QR ``rotation`` ({"theta": degrees,
+    "mirror"}, as ``processing.dpc.rotate``). [n, 2] of (kx, ky)."""
     x, y = table[:, 3].astype(float), table[:, 2].astype(float)
     if origins is not None:
         iy, ix = np.floor(table[:, 0]).astype(int), np.floor(table[:, 1]).astype(int)
@@ -284,7 +286,12 @@ def calibrated(table: np.ndarray, origins: np.ndarray | None, centre: tuple[floa
     q = np.column_stack([x - ox, y - oy])
     if ellipse is not None:
         q = q @ ellipse_matrix(ellipse).T
-    return q * scale
+    q = q * scale
+    if rotation is not None:
+        from .dpc import rotate
+
+        q = np.column_stack(rotate(q[:, 0], q[:, 1], rotation["theta"], bool(rotation.get("mirror"))))
+    return q
 
 
 def ddf_image(table: np.ndarray, scan_shape: tuple[int, int], detector, response: str = "sum",
@@ -358,18 +365,19 @@ def vector_map_of(q: np.ndarray, weights: np.ndarray, half: float, bins: int) ->
 
 def map_of(table: np.ndarray, shape: tuple[int, int], origins: np.ndarray | None = None,
            centre: tuple[float, float] | None = None, ring: dict | None = None, scale: float | None = None,
-           upsample: int = 2) -> tuple[np.ndarray, float, float]:
+           upsample: int = 2, rotation: dict | None = None) -> tuple[np.ndarray, float, float]:
     """The Bragg vector map of a table on patterns of ``shape`` (h, w),
     ``upsample`` × finer: raw (no calibration given: pattern px, from the
     pattern's corner), or calibrated (relative to ``origins`` per position
-    or ``centre``, the ellipse made circular, × ``scale``; 0 at the centre).
+    or ``centre``, the ellipse made circular, × ``scale``, turned into the
+    scan's frame by ``rotation``; 0 at the centre).
     Returns (map, step, offset) of both axes (the first bin's centre)."""
     h, w = shape
-    if origins is None and ring is None and scale is None:
+    if origins is None and ring is None and scale is None and rotation is None:
         step = 1 / upsample
         return vector_map(table, shape, upsample=upsample), step, step / 2
     s = scale or 1.0
-    q = calibrated(table, origins, centre if centre is not None else (w / 2, h / 2), ring, s)
+    q = calibrated(table, origins, centre if centre is not None else (w / 2, h / 2), ring, s, rotation)
     half = max(w, h) / 2 * s
     bins = upsample * max(w, h)
     step = 2 * half / bins

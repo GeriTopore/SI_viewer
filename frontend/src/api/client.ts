@@ -504,7 +504,9 @@ export interface DatasetSummary {
     ring?: { cx: number; cy: number; a: number; b: number; angle: number; radius: number; ellipticity: number; rms?: number } | null;
     affine?: number[][] | null;
     origin?: { source: "vectors" | "beam"; plane: { mode: "none" | "plane" | "corners"; corners: number }; mean: [number, number]; rms: number };
-    enabled?: { origin?: boolean; ellipse?: boolean; scale?: boolean };
+    /** The QR rotation: the pattern's axes into the scan's (degrees; y flipped first if mirrored). */
+    rotation?: { theta: number; mirror: boolean; how: "com" | "entered"; curl_ratio?: number };
+    enabled?: { origin?: boolean; ellipse?: boolean; scale?: boolean; rotation?: boolean };
     bvm?: "raw" | "calibrated";
   } | null;
   /** An origin map of 4D-STEM data ("Origin x / y", "(fit)"; origin "origin-map"). */

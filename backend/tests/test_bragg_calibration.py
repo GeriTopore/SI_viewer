@@ -80,6 +80,20 @@ def test_calibrated_vectors_make_a_circle(found):
     assert abs(m.sum() - len(q)) < 1e-3
 
 
+def test_qr_rotation_turns_the_vectors(found):
+    _, _, table = found
+    centre = _origin(0, 0)
+    q = disks.calibrated(table, None, centre)
+    # As processing.dpc.rotate: y flipped if mirrored, then counter-clockwise.
+    turned = disks.calibrated(table, None, centre, rotation={"theta": 90, "mirror": False})
+    np.testing.assert_allclose(turned, np.column_stack([-q[:, 1], q[:, 0]]), atol=1e-9)
+    mirrored = disks.calibrated(table, None, centre, rotation={"theta": 0, "mirror": True})
+    np.testing.assert_allclose(mirrored, np.column_stack([q[:, 0], -q[:, 1]]), atol=1e-9)
+    # After the pixel size (py4DSTEM's order): lengths scale, angles don't.
+    both = disks.calibrated(table, None, centre, scale=0.1, rotation={"theta": 30, "mirror": True})
+    np.testing.assert_allclose(np.hypot(*both.T), 0.1 * np.hypot(*q.T), atol=1e-9)
+
+
 def _wait(client, job):
     for _ in range(600):
         job = client.get(f"/api/jobs/{job['id']}").json()
@@ -128,6 +142,21 @@ def test_calibrated_map_through_the_api(tmp_path, found):
     # The map is now origin-corrected (px, 0 at the centre).
     assert bvm_of().disks["map"]["origin"] is True
 
+    # The map on the pattern's pixels (the DP pane's "BVM"): every disk, the
+    # pattern's size, each position moved to the mean origin while centring is on.
+    import json as _json
+
+    r = client.get(f"{url}/4d/bvm-pattern")
+    assert r.status_code == 200
+    shape = tuple(int(v) for v in r.headers["X-Array-Shape"].split(","))
+    meta = _json.loads(r.headers["X-Array-Meta"])
+    assert shape == (N, N) and meta == {"disks": job["result"]["count"], "centred": True}
+    data = np.frombuffer(r.content, "<f4").reshape(shape)
+    assert abs(data.sum() - job["result"]["count"]) < 1e-2
+    # The direct beam lands in one spot at the mean origin (not smeared by the drift).
+    mx, my = np.nanmean(fitted.reshape(-1, 2), axis=0)
+    assert data[int(my) - 1 : int(my) + 2, int(mx) - 1 : int(mx) + 2].sum() >= 0.99 * NY * NX
+
     # The ring fitted on the map (origin-corrected): sharp, the right ellipse.
     ring = client.post(f"{url}/4d/calibration/ring", json={
         "options": {"r_min": 12, "r_max": 26}, "source": "bvm", "origin": {"origin": "direct", "plane": {"mode": "plane"}},
@@ -158,7 +187,27 @@ def test_calibrated_map_through_the_api(tmp_path, found):
     client.post(f"{url}/4d/calibration/switches", json={"view": "raw"})
     assert bvm_of().disks["map"]["view"] == "raw" and bvm_of().signal.axes_manager.signal_axes[0].units == "px"
     client.post(f"{url}/4d/calibration/switches", json={"view": "calibrated", "enabled": {"ellipse": True}})
-    assert bvm_of().disks["map"] == {"view": "calibrated", "origin": True, "ellipse": True, "scale": True, "units": "1/nm"}
+    assert bvm_of().disks["map"] == {"view": "calibrated", "origin": True, "ellipse": True, "scale": True,
+                                     "rotation": False, "units": "1/nm"}
+
+    # The QR rotation (as the DPC / iCOM process finds it): kept, switched on,
+    # the map turned into the scan's frame (its total unchanged; the ellipse
+    # made circular, so the ring stays at 1/d).
+    before = np.asarray(bvm_of().signal.data).copy()
+    r = client.post(f"{url}/4d/calibration/rotation", json={"theta": 90, "mirror": False, "how": "com", "curl_ratio": 0.05})
+    assert r.status_code == 200, r.text
+    cal = session.get_dataset(cube_id).calibration
+    assert cal["rotation"] == {"how": "com", "curl_ratio": 0.05, "theta": 90.0, "mirror": False}
+    assert cal["enabled"]["rotation"] is True and bvm_of().disks["map"]["rotation"] is True
+    turned = np.asarray(bvm_of().signal.data)
+    assert abs(turned.sum() - before.sum()) < 1e-2
+    # 90° counter-clockwise (x right, y down the rows): (x, y) → (−y, x), the map turned as an array.
+    np.testing.assert_allclose(turned, np.rot90(before, k=-1), atol=0.05 * before.max())
+    assert client.post(f"{url}/4d/calibration/rotation", json={"theta": 400}).status_code == 422
+    # Switched off: the map as before.
+    client.post(f"{url}/4d/calibration/switches", json={"enabled": {"rotation": False}})
+    np.testing.assert_allclose(np.asarray(bvm_of().signal.data), before, atol=1e-5)
+    client.post(f"{url}/4d/calibration/switches", json={"enabled": {"rotation": True}})
 
     # Kept with the analysis: the calibration, the origin maps.
     from si_viewer.project import open_project, save_project
@@ -168,4 +217,5 @@ def test_calibrated_map_through_the_api(tmp_path, found):
     open_project(other, saved)
     c2 = other.get_dataset(cube_id)
     assert c2.calibration["enabled"]["origin"] is True and c2.calibration["origin"]["source"] == "vectors"
+    assert c2.calibration["rotation"]["theta"] == 90.0 and c2.calibration["enabled"]["rotation"] is True
     np.testing.assert_allclose(other.origin_maps_of(c2)["fitted"], fitted, atol=1e-5)

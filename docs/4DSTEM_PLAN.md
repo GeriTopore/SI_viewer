@@ -265,10 +265,16 @@ user's data.
   the viewer's own ROIs (rectangle, ellipse, polygon tools), kept per view;
   a click inside one, or drawing it, shows its mean pattern (backend: the
   shared `regions.Region` mask, numpy or dask). *Image*: the live virtual
-  image or any saved virtual image of this dataset.
+  image or, under *Maps* (2026-11-26), any image made from this dataset at
+  any depth with the scan's shape: saved virtual images, origin and
+  beam-shift maps and their fits, DPC (in colour), COM x / y, iCOM, masks.
 - Pattern pane: a list of the cursors and regions (each with its colour) to
   pick the pattern shown, the pattern framed in that colour; *Mean / Max*
-  over the whole scan (no frame); *Linear / Log*.
+  over the whole scan (no frame); *Linear / Log*. Once the disks are found,
+  *BVM* (2026-11-26) shows the Bragg vector map instead, on the pattern's own
+  pixels (`/4d/bvm-pattern`: every disk, each position moved to the mean
+  origin while the centring is on, as DDF does), so the detectors drawn on it
+  are where they are on the patterns; in every layout, no background.
 - One set of tool buttons (line, FFT, rectangle, ellipse, polygon) on the
   scan pane; the tool chosen works on both panes. The pattern pane keeps its
   hide-annotations and loupe buttons (`LayeredViewer` `toolButtons={false}`).
@@ -496,7 +502,16 @@ grid's *Merged* mode with each group's colour), and presets.
   finding the disks, measuring the origin or calibrating). Under the map
   itself, *Raw / Calibrated*. The Disk detection process's earlier "Bragg
   vector map" step is gone (this replaces it).
-- Still to do in this phase: the scan–diffraction rotation (with COM, phase 4).
+- **Built (2026-11-26): scan–diffraction (QR) rotation.** After a DPC /
+  iCOM run, *Set as QR rotation* keeps its θ and mirror (found by the least
+  curl, or as entered) in the calibration (`calibration.rotation`: theta,
+  mirror, how, curl_ratio; `/4d/calibration/rotation`), switched on. The
+  rotation is `processing.dpc.rotate`'s (y flipped if mirrored, then turned
+  by θ), so the Bragg vectors and the DPC deflection share one frame; it is
+  applied last, after the pixel size (py4DSTEM's order), turning the Bragg
+  vector map into the scan's frame. Info tab: *QR rotation* with its switch
+  and how it was found. Saved with the analysis. Not read from py4DSTEM
+  files yet (their flip swaps qx and qy, a different convention).
 - Direct beam position and centring (methods: blur, centre of mass,
   cross-correlation), descan correction (linear plane), shown in the viewer
   before applying.

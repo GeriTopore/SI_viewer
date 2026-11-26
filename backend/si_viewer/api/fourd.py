@@ -58,6 +58,26 @@ def region_pattern(dataset_id: str, body: RegionBody, request: Request) -> Respo
     return array_response(out, positions=n)
 
 
+@router.get("/api/datasets/{dataset_id}/4d/bvm-pattern")
+def bvm_pattern(dataset_id: str, request: Request) -> Response:
+    """The Bragg vector map on the pattern's own pixels (the pattern's size,
+    so detectors drawn on it are where they are on the patterns): every disk
+    found, each position's moved by its origin's offset from the mean origin
+    when the centring is switched on (as a digital dark field does)."""
+    from ..processing import disks
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    table = _table(request, ds)
+    origins = session.centring_origins(ds)
+    if origins is not None:
+        mean = np.nanmean(origins.reshape(-1, 2), axis=0)
+        q = disks.calibrated(table, origins, (0, 0)) + mean
+        table = np.column_stack([table[:, :2], q[:, 1], q[:, 0], table[:, 4]]).astype(np.float32)
+    data = disks.vector_map(table, tuple(ds.signal.data.shape[2:]), upsample=1)
+    return array_response(data, disks=len(table), centred=origins is not None)
+
+
 class VirtualBody(BaseModel):
     detector: fourd.Detector
     response: fourd.Response = "sum"
@@ -796,8 +816,33 @@ class SwitchesBody(BaseModel):
     """Parts of the calibration applied to the Bragg vectors, and whether
     the Bragg vector map shows them ("calibrated") or not ("raw")."""
 
-    enabled: dict[Literal["origin", "ellipse", "scale"], bool] | None = None
+    enabled: dict[Literal["origin", "ellipse", "scale", "rotation"], bool] | None = None
     view: Literal["raw", "calibrated"] | None = None
+
+
+class QrRotationBody(BaseModel):
+    """The QR rotation (degrees, counter-clockwise) and mirror, as the DPC /
+    iCOM process turns the deflection into the scan's frame: from its run
+    ("com", with the curl left) or entered."""
+
+    theta: float = Field(ge=-360, le=360)
+    mirror: bool = False
+    how: Literal["com", "entered"] = "entered"
+    curl_ratio: float | None = None
+
+
+@router.post("/api/datasets/{dataset_id}/4d/calibration/rotation")
+def calibration_rotation(dataset_id: str, body: QrRotationBody, request: Request) -> dict:
+    """Keep the QR rotation in the data's calibration (switched on; the
+    Bragg vector map made again, in the scan's frame). Returns ``file``."""
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    info = {"how": body.how, **({"curl_ratio": body.curl_ratio} if body.curl_ratio is not None else {})}
+    try:
+        session.set_qr_rotation(ds, body.theta, body.mirror, info)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"file": session.file_of(ds).summary(session)}
 
 
 @router.post("/api/datasets/{dataset_id}/4d/calibration/switches")

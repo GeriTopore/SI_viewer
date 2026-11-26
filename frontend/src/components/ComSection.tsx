@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { DatasetSummary } from "../api/client";
+import { setQrRotation } from "../state/calibration";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { comJobRunning, comOptionsOf, useCom } from "../state/com";
 import { formatValue } from "../format";
@@ -18,6 +20,29 @@ export function ComSection({ d }: { d: DatasetSummary }) {
   const running = comJobRunning(job);
   const files = useDatasets((s) => s.files);
   const made = allDatasets(files).some((x) => x.origin === "dpc" && x.dpc?.cube === d.id);
+  const [keeping, setKeeping] = useState(false);
+  const [keepError, setKeepError] = useState<string | null>(null);
+  const stored = (allDatasets(files).find((x) => x.id === d.id) ?? d).calibration?.rotation;
+  const kept = !!result && !!stored && Math.abs(stored.theta - (((result.theta % 360) + 360) % 360)) < 1e-6 && stored.mirror === result.mirror;
+
+  const keep = async () => {
+    if (!result) return;
+    const found = Math.abs(result.theta - result.found.theta) < 1e-9 && result.mirror === result.found.mirror;
+    setKeeping(true);
+    setKeepError(null);
+    try {
+      await setQrRotation(d.id, {
+        theta: result.theta,
+        mirror: result.mirror,
+        how: found ? "com" : "entered",
+        ...(found ? { curl_ratio: result.curl_ratio } : {}),
+      });
+    } catch (e) {
+      setKeepError((e as Error).message);
+    } finally {
+      setKeeping(false);
+    }
+  };
 
   return (
     <section className="q-form virtual-form">
@@ -97,6 +122,23 @@ export function ComSection({ d }: { d: DatasetSummary }) {
           </span>
         </p>
       )}
+      {result && (
+        <div className="process-actions">
+          {kept ? (
+            <span className="muted small">QR rotation in the calibration</span>
+          ) : (
+            <button
+              className="link-button"
+              disabled={keeping}
+              onClick={() => void keep()}
+              title="Keep θ and the mirror as the data's QR rotation (Info tab): the Bragg vectors turned into the scan's frame"
+            >
+              Set as QR rotation
+            </button>
+          )}
+        </div>
+      )}
+      {keepError && <p className="field-error">{keepError}</p>}
       {error && <p className="field-error">{error}</p>}
       {running ? (
         <div className="q-job">

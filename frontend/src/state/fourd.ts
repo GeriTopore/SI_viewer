@@ -129,10 +129,14 @@ export const CURSOR_COLORS = ["#ff9f0a", "#ff453a", "#30d158", "#0a84ff", "#ffff
 export const cursorName = (c: ScanCursor) => `Cursor ${c.id.slice(1)}`;
 
 /** The pattern shown: a cursor's or a region's (their ids; a region's is
- * the mean over it), or the mean or maximum over the whole scan. */
+ * the mean over it), the mean or maximum over the whole scan, or the Bragg
+ * vector map (on the pattern's pixels; once the disks are found). */
 export type PatternSource = string;
 export const SCAN_MEAN = "scan-mean";
 export const SCAN_MAX = "scan-max";
+export const SCAN_BVM = "scan-bvm";
+/** Sources over the whole scan (not a cursor or region). */
+export const isScanSource = (s: string) => s === SCAN_MEAN || s === SCAN_MAX || s === SCAN_BVM;
 
 /** A detector group: one virtual detector (any shape) with its response,
  * name and colour; each gives a virtual image. */

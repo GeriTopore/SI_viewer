@@ -1,7 +1,8 @@
 """Server-side file browser, so the frontend can pick files by path.
 
-The backend binds to localhost and runs as the user, so this exposes nothing
-the user can't already read.
+The backend runs as the user, so this reads whatever they can. On a shared
+machine any user can reach a localhost port, so the server needs its token
+(``auth.py``) unless started with ``--no-token``.
 """
 
 from __future__ import annotations

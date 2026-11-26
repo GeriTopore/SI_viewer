@@ -17,7 +17,8 @@ from ..processing.centring import BeamOptions, PlaneOptions
 from ..processing.com import ComLive, ComOptions
 from ..processing.disks import DiskOptions
 from ..processing.strain import BvmPeakOptions, FitOptions, StrainAxes, StrainLattice
-from ..session import DIFFRACTION4D_IN_MEMORY_LIMIT, DatasetKind
+from .. import session as _session
+from ..session import DatasetKind
 from .datasets import array_response
 
 router = APIRouter(tags=["4dstem"])
@@ -539,7 +540,7 @@ def background_run(dataset_id: str, body: BackgroundBody, request: Request) -> d
 
     session = request.app.state.session
     ds = _cube(request, dataset_id)
-    if ds.lazy and ds.signal.data.nbytes > DIFFRACTION4D_IN_MEMORY_LIMIT:
+    if ds.lazy and ds.signal.data.nbytes > _session.DIFFRACTION4D_IN_MEMORY_LIMIT:
         raise HTTPException(422, f"{ds.title} is too big to process in memory: bin it first")
     centres = _beam_centres(request, ds)
 

@@ -285,6 +285,13 @@ class Dataset:
     # 4D-STEM data; origin "origin-map", pattern px): {"axis", "kind"
     # ("measured" / "fitted"), "source_id"}.
     origin_map: dict | None = None
+    # Strain from 4D-STEM Bragg vectors (processing/strain.py), on its results
+    # (origin "strain-fit": the "Lattice fit" stack and its "Indexed disks" and
+    # "Fit residual" maps): {"source_id" (the 4D data), "output" ("lattice",
+    # "count", "residual"), "lattice" (O, g1, g2 picked on the Bragg vector
+    # map), "options" (FitOptions), "frame" (the calibration applied:
+    # "centred", "ellipse", "rotation"), "components" (the stack's frames)}.
+    strain: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -490,6 +497,7 @@ class Dataset:
             "beam": self.beam,
             "calibration": self.calibration,
             "origin_map": self.origin_map,
+            "strain": self.strain,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -2406,6 +2414,56 @@ class Session:
         rotation = {**info, "theta": float(theta) % 360.0, "mirror": bool(mirror)}
         cube.calibration = {**cal, "rotation": rotation, "enabled": {**cal.get("enabled", {}), "rotation": True}}
         self.remake_bragg_map(cube)
+
+    def set_strain_fit(self, cube: Dataset, result: dict, meta: dict) -> list[Dataset]:
+        """The lattice fitted at every scan position of 4D-STEM data
+        (``processing.strain.fit_lattice``'s ``result``): a "Lattice fit"
+        stack (its components, calibrated pattern px) under the data's Bragg
+        vectors, with "Indexed disks" and "Fit residual" under it, all on the
+        scan's axes; ``meta`` kept in their ``strain``. Made again in place.
+        Returns them (fit, count, residual)."""
+        import hyperspy.api as hs
+
+        from .processing.strain import FIT_COMPONENTS
+
+        vectors = self.bragg_vectors_of(cube)
+        if vectors is None:
+            raise ValueError(f"The disks of {cube.title} haven't been found")
+        with self._lock:
+            earlier = {d.strain["output"]: d for d in self.datasets.values()
+                       if d.origin == "strain-fit" and d.strain and d.strain.get("source_id") == cube.id}
+        made: list[Dataset] = []
+        for output, title, data, quantity in (
+            ("lattice", "Lattice fit", result["fit"], "Lattice (px)"),
+            ("count", "Indexed disks", result["count"], "Disks"),
+            ("residual", "Fit residual", result["residual"], "RMS distance (px)"),
+        ):
+            signal = hs.signals.Signal2D(np.ascontiguousarray(data, dtype=np.float32))
+            for axis, src in zip(signal.axes_manager.signal_axes, cube.signal.axes_manager.navigation_axes):
+                axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
+            if output == "lattice":
+                signal.axes_manager.navigation_axes[0].name = "component"
+            signal.metadata.General.title = title
+            signal.metadata.set_item("Signal.quantity", quantity)
+            info = {**meta, "source_id": cube.id, "output": output,
+                    **({"components": list(FIT_COMPONENTS)} if output == "lattice" else {})}
+            parent = vectors if output == "lattice" else made[0]
+            kind = DatasetKind.STACK if output == "lattice" else DatasetKind.IMAGE
+            ds = earlier.get(output)
+            if ds is not None:
+                ds.replace_signal(signal)
+                ds.strain = info
+                made.append(ds)
+                continue
+            ds = Dataset(id=_new_id(), file_id=cube.file_id, signal=signal, kind=kind, origin="strain-fit",
+                         parent_id=parent.id, strain=info)
+            with self._lock:
+                self.datasets[ds.id] = ds
+                ids = self.files[cube.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == parent.id and i != ds.id]
+                ids.insert(ids.index(after[-1] if after else parent.id) + 1, ds.id)
+            made.append(ds)
+        return made
 
     def set_calibration_switches(self, cube: Dataset, enabled: dict | None = None, view: str | None = None) -> None:
         """Switch parts of 4D-STEM data's calibration on or off for its

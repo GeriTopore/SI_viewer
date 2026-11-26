@@ -1,11 +1,11 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type DragEvent } from "react";
 import type { DatasetSummary } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import type { Disk as FoundDisk } from "../state/disks";
 import { comOptionsOf, useCom } from "../state/com";
 import {
-  defaultDetector, defaultLattice, imageRequest, isComResponse, mergeDetectors, mergeable, newGroup, responseLabel, sizeApertures,
-  type Detector, type DetectorGroup, type Lattice,
+  circleDetector, defaultDetector, defaultLattice, imageRequest, isComResponse, mergeDetectors, mergeable, newGroup, responseLabel,
+  sizeApertures, type Detector, type DetectorGroup, type DisksOptions, type Lattice, type Response,
 } from "../state/fourd";
 import { formatValue } from "../format";
 import { RESPONSES, SHAPES, detectorText, segmented, useFourDState } from "../views/FourDView";
@@ -21,10 +21,13 @@ const LATTICE_FIELDS = [
   ["s2", "g2 shift", "Shift along g2"],
 ] as const;
 
+/** Where a group dragged over another lands: before or after it, or merged into it. */
+type DropAt = { id: string; at: "before" | "after" | "merge" };
+
 /** The detector groups of a 4D-STEM dataset (each a virtual detector with its
- * response, name and colour, giving a virtual image): the list, the selected
- * group's shape, response, apertures and g-vector array, and keeping the
- * images as datasets. The detectors are drawn and dragged on the pattern. */
+ * response, name and colour, giving a virtual image): the list (dragged to
+ * reorder or merge), the selected group's response and sizes, and keeping
+ * the images as datasets. The detectors are drawn and dragged on the pattern. */
 export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   const { patternG, st, patch, group, det, patchGroup } = useFourDState(d);
   const cal = patternG.calX;
@@ -44,7 +47,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
 
-  // The bright-field disk of the mean pattern: sizes the apertures, places the array's origin, BF/ADF presets.
+  // The bright-field disk of the mean pattern: sizes the apertures, places the array's origin.
   const findDisk = async (): Promise<Disk | null> => {
     if (disk) return disk;
     setError(null);
@@ -61,23 +64,16 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   };
   const bfRadius = async () => {
     const found = await findDisk();
-    if (found) setDetector({ ...det, r: found.r });
-  };
-  const toggleLattice = async (on: boolean) => {
-    if (!on) return setDetector({ ...det, lattice: null });
-    const found = await findDisk();
-    setDetector({ ...det, lattice: defaultLattice(found?.cx ?? w / 2, found?.cy ?? h / 2, w) });
+    if (found) setDetector(sizeApertures(det, found.r));
   };
   const setLattice = (p: Partial<Lattice>) => det.lattice && setDetector({ ...det, lattice: { ...det.lattice, ...p } });
 
-  // ---------- apertures from the disks found (the Bragg vectors) ----------
+  // ---------- apertures on the disks found (the Bragg vectors) ----------
   // Those at the cursor shown (or the last one used): only once the disks
   // have been found (Disk detection), as is a digital dark field.
   const files = useDatasets((s) => s.files);
   const vectorsDs = vectorsOf(files);
   const NO_VECTORS = "Find the disks first (Disk detection)";
-  const [brightest, setBrightest] = useState(0);
-  const [withBeam, setWithBeam] = useState(false);
   const [finding, setFinding] = useState(false);
   const disksShown = async (): Promise<{ disks: FoundDisk[]; r: number }> => {
     if (!vectorsDs?.disks) throw new Error(NO_VECTORS);
@@ -87,26 +83,41 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
     if (!res.ok) throw new Error(body.detail ?? res.statusText);
     return { disks: body.disks, r: vectorsDs.disks.template.r };
   };
-  const fromDisks = async () => {
+  /** ``base`` with an aperture on each disk kept; a digital dark field keeps
+   * its radius (the match tolerance), a pixel image takes the disks' size. */
+  const onDisks = async (base: Detector, opts: DisksOptions, keepR: boolean): Promise<Detector> => {
+    const found = await disksShown();
+    let rows = [...found.disks].sort((a, b) => b[2] - a[2]);
+    // The direct beam: the disk on the bright-field disk of the mean pattern.
+    if (!opts.beam) {
+      const bfDisk = await findDisk();
+      if (bfDisk) rows = rows.filter(([ky, kx]) => Math.hypot(kx - bfDisk.cx, ky - bfDisk.cy) > bfDisk.r);
+    }
+    if (opts.brightest > 0) rows = rows.slice(0, opts.brightest);
+    if (!rows.length) throw new Error("No disks in the pattern shown");
+    return { ...base, apertures: rows.map(([ky, kx]) => ({ x: kx, y: ky })), r: keepR ? base.r : found.r };
+  };
+  const finds = async (run: () => Promise<void>) => {
     setFinding(true);
     setError(null);
     try {
-      const found = await disksShown();
-      let rows = [...found.disks].sort((a, b) => b[2] - a[2]);
-      // The direct beam: the disk on the bright-field disk of the mean pattern.
-      if (!withBeam) {
-        const bfDisk = await findDisk();
-        if (bfDisk) rows = rows.filter(([ky, kx]) => Math.hypot(kx - bfDisk.cx, ky - bfDisk.cy) > bfDisk.r);
-      }
-      if (brightest > 0) rows = rows.slice(0, brightest);
-      if (!rows.length) throw new Error("No disks in the pattern shown");
-      // A digital dark field keeps its match radius; a pixel image takes the disks' size.
-      setDetector({ ...det, apertures: rows.map(([ky, kx]) => ({ x: kx, y: ky })), r: group.source === "vectors" ? det.r : found.r });
+      await run();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setFinding(false);
     }
+  };
+  const addFromDisks = () =>
+    finds(async () => {
+      const opts: DisksOptions = { brightest: 0, beam: false };
+      const detector = await onDisks(defaultDetector(w, h, "apertures"), opts, false);
+      add((gs) => [{ ...newGroup(gs, detector), disks: opts }]);
+    });
+  const redoDisks = (opts: DisksOptions) => {
+    const id = group.id;
+    patchGroup(id, { disks: opts });
+    void finds(async () => patchGroup(id, { detector: await onDisks(det, opts, group.source === "vectors"), disks: opts }));
   };
 
   // ---------- the groups ----------
@@ -115,30 +126,26 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
     for (const g of made(groups)) groups.push(g);
     patch({ groups, selectedGroup: groups[groups.length - 1].id, shown: "live" });
   };
-  const bf = (found: Disk): Detector => ({ ...defaultDetector(w, h, "circle"), cx: found.cx, cy: found.cy, r: found.r });
-  const adf = (found: Disk): Detector => ({
-    ...defaultDetector(w, h, "annulus"),
-    cx: found.cx,
-    cy: found.cy,
-    r_inner: found.r,
-    // Out to the nearest edge of the pattern.
-    r: Math.max(found.r + 1, Math.min(found.cx, found.cy, w - found.cx, h - found.cy)),
-  });
-  const preset = async (kind: "bf" | "adf") => {
+  const addArray = async () => {
     const found = await findDisk();
-    if (!found) return;
-    add((gs) => [kind === "bf" ? newGroup(gs, bf(found), "BF") : newGroup(gs, adf(found), "ADF")]);
+    const base = defaultDetector(w, h, "apertures");
+    add((gs) => [newGroup(gs, { ...base, lattice: defaultLattice(found?.cx ?? w / 2, found?.cy ?? h / 2, w) })]);
   };
   const addItems: MenuItem[] = [
-    ...SHAPES.map((s) => ({
-      label: s.label,
-      title: s.title,
-      // Apertures start empty; every shape starts centred on the pattern.
-      onSelect: () => add((gs) => [newGroup(gs, defaultDetector(w, h, s.id))]),
-    })),
-    { label: "BF", title: "A disc on the bright-field disk of the mean pattern", onSelect: () => void preset("bf") },
-    { label: "ADF", title: "An annulus from the bright-field disk to the pattern's edge", onSelect: () => void preset("adf") },
-    { label: `Duplicate ${group.name}`, onSelect: () => duplicate(group) },
+    {
+      label: "Circle",
+      title: "A disc (e.g. bright field); ⌘/Ctrl-click the pattern for more",
+      onSelect: () => add((gs) => [newGroup(gs, circleDetector(w, h))]),
+    },
+    // Every shape starts centred on the pattern.
+    ...SHAPES.map((s) => ({ label: s.label, title: s.title, onSelect: () => add((gs) => [newGroup(gs, defaultDetector(w, h, s.id))]) })),
+    { label: "Aperture array", title: "Apertures at O + i g1 + j g2: drag O, g1 and g2 on the pattern", onSelect: () => void addArray() },
+    {
+      label: "From the disks",
+      title: vectorsDs ? "An aperture on each disk found at the cursor shown" : NO_VECTORS,
+      disabled: !vectorsDs,
+      onSelect: () => void addFromDisks(),
+    },
   ];
   const remove = (id: string) => {
     const groups = st.groups.filter((g) => g.id !== id);
@@ -146,11 +153,11 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
     patch({ groups, ...(st.selectedGroup === id && { selectedGroup: groups[groups.length - 1].id }) });
   };
   const duplicate = (g: DetectorGroup) =>
-    add((gs) => [{ ...newGroup(gs, g.detector, `${g.name} copy`, g.response), source: g.source, weight: g.weight }]);
+    add((gs) => [{ ...newGroup(gs, g.detector, `${g.name} copy`, g.response), source: g.source, weight: g.weight, disks: g.disks }]);
 
   // ---------- merging: one group's apertures added to another's ----------
   // Apertures and circles (a circle: one aperture); each keeps its size.
-  const MERGE_ONLY = "Only aperture and circle groups can be merged";
+  const MERGE_ONLY = "Only circle and array groups can be merged";
   const merge = (sourceId: string, targetId: string) => {
     const src = st.groups.find((g) => g.id === sourceId);
     const tgt = st.groups.find((g) => g.id === targetId);
@@ -158,14 +165,23 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
     const detector = mergeDetectors(tgt.detector, src.detector, w, h);
     if (!detector) return setError(`${MERGE_ONLY} (${src.name}: ${src.detector.shape}, ${tgt.name}: ${tgt.detector.shape})`);
     setError(null);
-    const groups = st.groups.filter((g) => g.id !== src.id).map((g) => (g.id === tgt.id ? { ...g, detector } : g));
+    const groups = st.groups.filter((g) => g.id !== src.id).map((g) => (g.id === tgt.id ? { ...g, detector, disks: undefined } : g));
     patch({ groups, selectedGroup: tgt.id, shown: "live" });
+  };
+  /** Group ``id`` moved to before or after ``targetId``. */
+  const reorder = (id: string, targetId: string, after: boolean) => {
+    const moved = st.groups.find((g) => g.id === id);
+    if (!moved || id === targetId) return;
+    const rest = st.groups.filter((g) => g.id !== id);
+    rest.splice(rest.findIndex((g) => g.id === targetId) + (after ? 1 : 0), 0, moved);
+    patch({ groups: rest });
   };
   const [groupMenu, setGroupMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const groupItems = (g: DetectorGroup): MenuItem[] => {
     const others = st.groups.filter((o) => o.id !== g.id);
     return [
       { label: "Rename", onSelect: () => setRenaming(g.id) },
+      { label: "Duplicate", onSelect: () => duplicate(g) },
       ...(others.length
         ? [
             { label: `Merge ${g.name} into`, disabled: true },
@@ -179,13 +195,22 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
             }),
           ]
         : []),
-      { label: "Duplicate", onSelect: () => duplicate(g) },
       { label: `Delete ${g.name}`, danger: true, disabled: st.groups.length < 2, onSelect: () => remove(g.id) },
     ];
   };
-  // Drag a group onto another: merged into it.
+  // Drag a group: onto another's middle, merged into it (circles and arrays);
+  // onto its upper or lower part, moved before or after it.
   const GROUP_MIME = "application/x-si-viewer-group";
-  const [dropOn, setDropOn] = useState<string | null>(null);
+  const dragging = useRef<string | null>(null);
+  const [dropOn, setDropOn] = useState<DropAt | null>(null);
+  const dropAt = (e: DragEvent<HTMLLIElement>, g: DetectorGroup): DropAt["at"] => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const f = (e.clientY - r.top) / r.height;
+    const src = st.groups.find((x) => x.id === dragging.current);
+    const canMerge = !!src && mergeable(src.detector) && mergeable(g.detector);
+    if (canMerge) return f < 0.3 ? "before" : f > 0.7 ? "after" : "merge";
+    return f < 0.5 ? "before" : "after";
+  };
 
   // ---------- sizes: the radii (or a rectangle's sides), slider and box ----------
   // The box in the pattern's calibrated units, the slider in pixels. The
@@ -234,6 +259,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   // The sliders' starting ranges (pattern px): apertures sit on single
   // disks; a disc or annulus reaches a quarter of the pattern; a rectangle half.
   const small = Math.min(w, h);
+  const placed = (det.apertures ?? []).length;
   const apertureMax = roundUp(Math.max(4, small / 16));
   const discMax = roundUp(small / 4);
   const sideMax = roundUp(small / 2);
@@ -251,8 +277,9 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
       case "apertures":
         return [sizeControl(
           "Radius",
-          ddf ? "Every aperture's radius: the match tolerance of the digital dark field" : "Every aperture's radius (merged ones too)",
-          det.r, apertureMax, (r) => setDetector(sizeApertures(det, Math.max(0.5, r))),
+          ddf ? "Every aperture's radius: the match tolerance of the digital dark field" : "Every circle's radius (merged ones too)",
+          // One circle (no array) as a disc; several, as apertures on disks.
+          det.r, placed <= 1 && !det.lattice ? discMax : apertureMax, (r) => setDetector(sizeApertures(det, Math.max(0.5, r))),
         )];
       case "rectangle": {
         const [cx, cy] = [(det.x0 + det.x1) / 2, (det.y0 + det.y1) / 2];
@@ -301,6 +328,9 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
     }
   };
   const visible = st.groups.filter((g) => g.visible);
+  // A centre of mass is of the pixels, not of the disks found.
+  const response = ddf && isComResponse(group.response) ? "sum" : group.response;
+  const disks = det.shape === "apertures" ? group.disks : undefined;
 
   return (
     <section className="q-form virtual-form">
@@ -308,7 +338,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
         {st.groups.map((g) => (
           <li
             key={g.id}
-            className={`layer-row no-opacity${g.id === group.id ? " active" : ""}${g.visible ? "" : " hidden"}${dropOn === g.id ? " drop-target" : ""}`}
+            className={`layer-row no-opacity${g.id === group.id ? " active" : ""}${g.visible ? "" : " hidden"}${dropOn?.id === g.id ? ` drop-${dropOn.at}` : ""}`}
             onClick={() => g.id !== group.id && patch({ selectedGroup: g.id, shown: "live" })}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -316,22 +346,33 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
             }}
             draggable={renaming !== g.id}
             onDragStart={(e) => {
+              dragging.current = g.id;
               e.dataTransfer.setData(GROUP_MIME, g.id);
               e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {
-              if (!e.dataTransfer.types.includes(GROUP_MIME)) return;
+              if (!e.dataTransfer.types.includes(GROUP_MIME) || dragging.current === g.id) return;
               e.preventDefault();
-              if (dropOn !== g.id) setDropOn(g.id);
+              const at = dropAt(e, g);
+              if (dropOn?.id !== g.id || dropOn.at !== at) setDropOn({ id: g.id, at });
             }}
-            onDragLeave={() => dropOn === g.id && setDropOn(null)}
-            onDragEnd={() => setDropOn(null)}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null) && dropOn?.id === g.id) setDropOn(null);
+            }}
+            onDragEnd={() => {
+              dragging.current = null;
+              setDropOn(null);
+            }}
             onDrop={(e) => {
               e.preventDefault();
+              const id = e.dataTransfer.getData(GROUP_MIME);
+              const at = dropAt(e, g);
               setDropOn(null);
-              merge(e.dataTransfer.getData(GROUP_MIME), g.id);
+              dragging.current = null;
+              if (at === "merge") merge(id, g.id);
+              else reorder(id, g.id, at === "after");
             }}
-            title="Click to edit this group; double-click its name (or right-click) to rename it; drag it onto another group to merge them"
+            title="Click to edit; double-click the name to rename; drag to reorder, or onto another circle or array group to merge; right-click for more"
           >
             <button
               className="layer-eye"
@@ -390,6 +431,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
         <button
           className="secondary"
           aria-haspopup="menu"
+          disabled={finding}
           onMouseDown={(e) => addMenu && e.stopPropagation()}
           onClick={(e) => {
             if (addMenu) return setAddMenu(null);
@@ -397,7 +439,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
             setAddMenu({ x: r.left, y: r.bottom + 4 });
           }}
         >
-          + Group ▾
+          {finding && !disks ? "Finding…" : "+ Group ▾"}
         </button>
         {addMenu && <ContextMenu x={addMenu.x} y={addMenu.y} onClose={() => setAddMenu(null)} items={addItems} />}
       </div>
@@ -415,91 +457,89 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
           },
         ], ddf ? "vectors" : "pixels", (v) => patchGroup(group.id, { source: v }))}
       </div>
-      <div className="virtual-row">
-        {segmented(
-          "Response",
-          // A centre of mass is of the pixels, not of the disks found.
-          RESPONSES.map((r) => (ddf && isComResponse(r.id) ? { ...r, disabled: true, title: `${r.title} (not with Bragg vectors)` } : r)),
-          ddf && isComResponse(group.response) ? "sum" : group.response,
-          (v) => patchGroup(group.id, { response: v }),
-        )}
-        {ddf && segmented("Of", [
-          { id: "intensity", label: "Intensity", title: "The disks' intensity (their correlation score)" },
-          { id: "count", label: "Count", title: "The number of disks" },
-        ], group.weight ?? "intensity", (v) => patchGroup(group.id, { weight: v }))}
-        <span className="muted small fourd-readout">{detectorText(det, cal.scale, cal.units)}</span>
-      </div>
+      <label title={RESPONSES.find((r) => r.id === response)?.title}>
+        <span>Response</span>
+        <select value={response} onChange={(e) => patchGroup(group.id, { response: e.target.value as Response })}>
+          {RESPONSES.map((r) => (
+            <option key={r.id} value={r.id} disabled={ddf && isComResponse(r.id)}>
+              {r.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {ddf && (
+        <div className="virtual-row">
+          {segmented("Of", [
+            { id: "intensity", label: "Intensity", title: "The disks' intensity (their correlation score)" },
+            { id: "count", label: "Count", title: "The number of disks" },
+          ], group.weight ?? "intensity", (v) => patchGroup(group.id, { weight: v }))}
+        </div>
+      )}
       {sizeControls}
+      {disks && (
+        <div className="virtual-row">
+          <label className="field" title="Only the brightest disks (0: all)">
+            Brightest
+            <input
+              type="number"
+              className="cell-input"
+              min={0}
+              max={200}
+              step={1}
+              value={disks.brightest}
+              onChange={(e) => redoDisks({ ...disks, brightest: Math.max(0, Math.min(200, Math.round(Number(e.target.value) || 0))) })}
+            />
+          </label>
+          <label className="q-check-line small" title="Also an aperture on the direct beam">
+            <input type="checkbox" checked={disks.beam} onChange={(e) => redoDisks({ ...disks, beam: e.target.checked })} />
+            Direct beam
+          </label>
+          <button
+            className="secondary"
+            onClick={() => redoDisks(disks)}
+            disabled={finding || !vectorsDs}
+            title={vectorsDs ? "Place them again on the disks at the cursor shown (or the last one used)" : NO_VECTORS}
+          >
+            {finding ? "Finding…" : "At the cursor"}
+          </button>
+        </div>
+      )}
       {det.shape === "apertures" && (
-        <>
-          <div className="virtual-row">
-            <button
-              className="secondary"
-              onClick={() => void fromDisks()}
-              disabled={finding || !vectorsDs}
-              title={vectorsDs ? "Place an aperture on each disk found at the cursor shown (or the last one used)" : NO_VECTORS}
-            >
-              {finding ? "Finding…" : "From the disks"}
-            </button>
-            <label className="field" title="Only the brightest disks (0: all)">
-              Brightest
-              <input
-                type="number"
-                className="cell-input"
-                min={0}
-                max={200}
-                step={1}
-                value={brightest}
-                onChange={(e) => setBrightest(Math.max(0, Math.min(200, Math.round(Number(e.target.value) || 0))))}
-              />
-            </label>
-            <label className="q-check-line small" title="Also an aperture on the direct beam">
-              <input type="checkbox" checked={withBeam} onChange={(e) => setWithBeam(e.target.checked)} />
-              Direct beam
-            </label>
-          </div>
-          <div className="virtual-row">
-            <button className="secondary" onClick={bfRadius} title="Size the apertures as the bright-field disk of the mean pattern">
-              BF radius
-            </button>
-            <button
-              className="secondary"
-              onClick={() => setDetector({ ...det, apertures: [] })}
-              disabled={!(det.apertures ?? []).length}
-              title="Remove the apertures placed by ⌘/Ctrl-click"
-            >
+        <div className="virtual-row">
+          <button className="secondary" onClick={bfRadius} title="Size the circles as the bright-field disk of the mean pattern">
+            BF radius
+          </button>
+          {placed > 1 && (
+            <button className="secondary" onClick={() => setDetector({ ...det, apertures: [] })} title="Remove the circles placed">
               Clear
             </button>
-          </div>
-          <label className="q-check-line small" title="Apertures at O + i g1 + j g2: drag O, g1 and g2 on the pattern">
-            <input type="checkbox" checked={!!det.lattice} onChange={(e) => toggleLattice(e.target.checked)} />
-            g-vector array
-          </label>
-          {det.lattice && (
-            <>
-              {LATTICE_FIELDS.map(([k, label, title]) => (
-                <label key={k} title={title}>
-                  <span>{label}</span>
-                  <input
-                    type="number"
-                    step={k.startsWith("n") ? 1 : 0.5}
-                    min={k.startsWith("n") ? 0 : -1}
-                    max={k.startsWith("n") ? 20 : 1}
-                    value={det.lattice![k]}
-                    onChange={(e) => {
-                      const v = Number(e.target.value);
-                      if (!Number.isFinite(v)) return;
-                      setLattice({ [k]: k.startsWith("n") ? Math.max(0, Math.min(20, Math.round(v))) : Math.max(-1, Math.min(1, v)) });
-                    }}
-                  />
-                </label>
-              ))}
-              <label className="q-check-line small" title="Include the aperture at O itself">
-                <input type="checkbox" checked={det.lattice.origin} onChange={(e) => setLattice({ origin: e.target.checked })} />
-                Origin
-              </label>
-            </>
           )}
+        </div>
+      )}
+      {det.lattice && det.shape === "apertures" && (
+        <>
+          <p className="process-heading small">Array</p>
+          {LATTICE_FIELDS.map(([k, label, title]) => (
+            <label key={k} title={title}>
+              <span>{label}</span>
+              <input
+                type="number"
+                step={k.startsWith("n") ? 1 : 0.5}
+                min={k.startsWith("n") ? 0 : -1}
+                max={k.startsWith("n") ? 20 : 1}
+                value={det.lattice![k]}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (!Number.isFinite(v)) return;
+                  setLattice({ [k]: k.startsWith("n") ? Math.max(0, Math.min(20, Math.round(v))) : Math.max(-1, Math.min(1, v)) });
+                }}
+              />
+            </label>
+          ))}
+          <label className="q-check-line small" title="Include the aperture at O itself">
+            <input type="checkbox" checked={det.lattice.origin} onChange={(e) => setLattice({ origin: e.target.checked })} />
+            Origin
+          </label>
         </>
       )}
       {error && <p className="field-error">{error}</p>}

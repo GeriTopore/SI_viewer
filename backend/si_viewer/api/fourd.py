@@ -15,6 +15,7 @@ from ..processing.calibration import RingOptions
 from ..processing.centring import BeamOptions, PlaneOptions
 from ..processing.com import ComLive, ComOptions
 from ..processing.disks import DiskOptions
+from ..processing.strain import BvmPeakOptions, FitOptions, StrainLattice
 from ..session import DIFFRACTION4D_IN_MEMORY_LIMIT, DatasetKind
 from .datasets import array_response
 
@@ -66,16 +67,173 @@ def bvm_pattern(dataset_id: str, request: Request) -> Response:
     when the centring is switched on (as a digital dark field does)."""
     from ..processing import disks
 
+    ds = _cube(request, dataset_id)
+    table, centred = _centred_table(request, ds)
+    data = disks.vector_map(table, tuple(ds.signal.data.shape[2:]), upsample=1)
+    return array_response(data, disks=len(table), centred=centred)
+
+
+def _centred_table(request: Request, ds) -> tuple[np.ndarray, bool]:
+    """The Bragg vectors table on the pattern's pixels, each position's disks
+    moved by its origin's offset from the mean origin while the centring is
+    on (as a digital dark field does); and whether they were."""
+    from ..processing import disks
+
+    table = _table(request, ds)
+    origins = request.app.state.session.centring_origins(ds)
+    if origins is None:
+        return table, False
+    mean = np.nanmean(origins.reshape(-1, 2), axis=0)
+    q = disks.calibrated(table, origins, (0, 0)) + mean
+    return np.column_stack([table[:, :2], q[:, 1], q[:, 0], table[:, 4]]).astype(np.float32), True
+
+
+class BvmPeaksBody(BaseModel):
+    options: BvmPeakOptions = BvmPeakOptions()
+
+
+@router.post("/api/datasets/{dataset_id}/4d/strain/bvm-peaks")
+def strain_bvm_peaks(dataset_id: str, body: BvmPeaksBody, request: Request) -> dict:
+    """The Bragg vector map's peaks (on the pattern's pixels, as ``bvm-pattern``
+    shows it): ``{peaks: [[x, y, intensity], …] brightest first, lattice:
+    {ox, oy, g1x, g1y, g2x, g2y} proposed (None if it can't be; O at the
+    peak nearest the direct beam: the mean origin while centred, else the
+    mean pattern's bright-field disk), centred}``."""
+    from ..processing import strain
+    from ..processing.frames import get_frame
+
     session = request.app.state.session
     ds = _cube(request, dataset_id)
-    table = _table(request, ds)
+    table, centred = _centred_table(request, ds)
+    peaks = strain.bvm_peaks(table, tuple(ds.signal.data.shape[2:]), body.options)
     origins = session.centring_origins(ds)
     if origins is not None:
-        mean = np.nanmean(origins.reshape(-1, 2), axis=0)
-        q = disks.calibrated(table, origins, (0, 0)) + mean
-        table = np.column_stack([table[:, :2], q[:, 1], q[:, 0], table[:, 4]]).astype(np.float32)
-    data = disks.vector_map(table, tuple(ds.signal.data.shape[2:]), upsample=1)
-    return array_response(data, disks=len(table), centred=origins is not None)
+        centre = tuple(float(v) for v in np.nanmean(origins.reshape(-1, 2), axis=0))
+    else:
+        try:
+            bf = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
+            centre = (bf["cx"], bf["cy"])
+        except ValueError:
+            h, w = ds.signal.data.shape[2:]
+            centre = (w / 2, h / 2)
+    return {
+        "peaks": np.round(peaks, 3).tolist(),
+        "lattice": strain.guess_lattice(peaks, centre),
+        "centred": centred,
+    }
+
+
+class StrainFitBody(BaseModel):
+    lattice: StrainLattice
+    options: FitOptions = FitOptions()
+
+
+def _strain_frame(session, ds) -> tuple[np.ndarray, dict]:
+    """The calibrated frame the lattice is fitted in (the ellipse and the QR
+    rotation where switched on), and what it is."""
+    from ..processing import strain
+
+    cal = ds.calibration or {}
+    on = cal.get("enabled", {})
+    ring = cal.get("ring") if on.get("ellipse") else None
+    rotation = cal.get("rotation") if on.get("rotation") else None
+    return strain.frame_matrix(ring, rotation), {
+        "centred": session.centring_origins(ds) is not None, "ellipse": ring is not None,
+        "rotation": {"theta": rotation["theta"], "mirror": bool(rotation.get("mirror"))} if rotation else None,
+    }
+
+
+@router.post("/api/datasets/{dataset_id}/4d/strain/fit")
+def strain_fit(dataset_id: str, body: StrainFitBody, request: Request) -> dict:
+    """Index every pattern's disks to the lattice and fit it at every scan
+    position (as a job; py4DSTEM's indexing and weighted fit), kept as the
+    "Lattice fit" stack with "Indexed disks" and "Fit residual" under the
+    Bragg vectors. The job's result is ``{file, ids, fitted, positions,
+    indexed, disks}``."""
+    from ..processing import strain
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    table, _ = _centred_table(request, ds)
+    frame, how = _strain_frame(session, ds)
+    ny, nx = ds.signal.data.shape[:2]
+
+    def run(job) -> dict:
+        job.report(0.1, "Indexing the disks and fitting the lattice")
+        try:
+            result = strain.fit_lattice(table, (ny, nx), body.lattice, body.options, frame)
+        except ValueError as e:
+            raise RuntimeError(str(e))
+        job.report(0.9, "Making the maps")
+        meta = {"lattice": body.lattice.model_dump(), "options": body.options.model_dump(), "frame": how}
+        made = session.set_strain_fit(ds, result, meta)
+        fitted = int(np.isfinite(result["fit"][0]).sum())
+        return {"file": session.file_of(ds).summary(session), "ids": [d.id for d in made], "fitted": fitted,
+                "positions": int(ny * nx), "indexed": int(result["count"].sum()), "disks": int(len(table))}
+
+    return request.app.state.jobs.submit("strain-fit", f"Lattice fit of {ds.title}", run).summary()
+
+
+class StrainPreviewBody(BaseModel):
+    lattice: StrainLattice
+    options: FitOptions = FitOptions()
+    # Scan positions (px) whose patterns are shown.
+    positions: list[tuple[int, int]] = Field(default_factory=list, max_length=64)
+
+
+@router.post("/api/datasets/{dataset_id}/4d/strain/preview")
+def strain_preview(dataset_id: str, body: StrainPreviewBody, request: Request) -> dict:
+    """The indexing and fit at a few scan positions, on their own patterns
+    (pattern px, not centred): ``{"x,y": {"disks": [[x, y, h, k, indexed], …],
+    "points": [[x, y, h, k], …] the fitted lattice, "count", "residual"}}``
+    (no "points" where it can't be fitted)."""
+    from ..processing import strain
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    table, _ = _centred_table(request, ds)
+    raw = _table(request, ds)
+    frame, _ = _strain_frame(session, ds)
+    ny, nx = ds.signal.data.shape[:2]
+    h, w = ds.signal.data.shape[2:]
+    inv = np.linalg.inv(frame)
+    lat = body.lattice
+    out = {}
+    for x, y in body.positions:
+        if not (0 <= x < nx and 0 <= y < ny):
+            continue
+        sel = (np.floor(table[:, 0]) == y) & (np.floor(table[:, 1]) == x)
+        rows, rows_raw = table[sel], raw[sel]
+        # Where this pattern's disks are on the map, less where they are on the pattern.
+        shift = (np.column_stack([rows_raw[:, 3], rows_raw[:, 2]]) - np.column_stack([rows[:, 3], rows[:, 2]])).mean(
+            axis=0) if len(rows) else np.zeros(2)
+        entry: dict = {"disks": [], "count": 0, "residual": None}
+        if len(rows):
+            try:
+                _, hk, ok = strain.index_disks(rows, lat, body.options.tolerance, frame)
+            except ValueError as e:
+                raise HTTPException(422, str(e))
+            entry["disks"] = [[round(float(r[3]), 2), round(float(r[2]), 2), int(a), int(b), bool(k)]
+                              for r, (a, b), k in zip(rows_raw, hk, ok)]
+            one = rows.copy()
+            one[:, 0], one[:, 1] = 0, 0
+            res = strain.fit_lattice(one, (1, 1), lat, body.options, frame)
+            entry["count"] = int(res["count"][0, 0])
+            fit = res["fit"][:, 0, 0]
+            if np.isfinite(fit).all():
+                entry["residual"] = float(res["residual"][0, 0])
+                g = np.array([[fit[0], fit[2]], [fit[1], fit[3]]])
+                o = np.array([fit[4], fit[5]])
+                hks = sorted({(int(a), int(b)) for a, b in hk[ok]})
+                pts = []
+                for a in range(min(p[0] for p in hks) - 1, max(p[0] for p in hks) + 2):
+                    for b in range(min(p[1] for p in hks) - 1, max(p[1] for p in hks) + 2):
+                        p = inv @ (o + g @ (a, b)) + (lat.ox, lat.oy) + shift
+                        if 0 <= p[0] <= w and 0 <= p[1] <= h:
+                            pts.append([round(float(p[0]), 2), round(float(p[1]), 2), a, b])
+                entry["points"] = pts
+        out[f"{x},{y}"] = entry
+    return out
 
 
 class VirtualBody(BaseModel):

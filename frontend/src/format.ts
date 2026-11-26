@@ -78,6 +78,7 @@ export function kindLabel(d: DatasetSummary): string {
   if (d.origin === "bragg-map") return "BVM";
   if (d.origin === "beam-shift") return "Shift";
   if (d.origin === "origin-map") return "Origin";
+  if (d.origin === "strain-fit") return d.strain?.output === "lattice" ? "Lattice" : d.strain?.output === "count" ? "Disks" : "Resid";
   if (d.origin === "fitted" || d.origin === "curve-fit") return "Fit";
   const t = hasTechnique(d) ? d.technique : null;
   // EELS spectrum images say whether they are low loss or core loss.

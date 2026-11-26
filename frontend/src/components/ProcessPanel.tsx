@@ -13,6 +13,7 @@ import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
 import { PatternBackgroundSection } from "./PatternBackgroundSection";
 import { ComSection } from "./ComSection";
+import { StrainSection } from "./StrainSection";
 import { CalibrationSection } from "./CalibrationSection";
 import { CentringSection } from "./CentringSection";
 import { DiskDetectionSection } from "./DiskDetectionSection";
@@ -282,9 +283,11 @@ export function ProcessPanel() {
   const d = useProcessTarget();
   const split = useUi((s) => s.processSplit);
   const files = useDatasets((s) => s.files);
+  // Other kinds have no processes, except Bragg vectors (their Calibration).
+  const processable = (x: DatasetSummary) => x.kind !== "other" || x.origin === "disks";
   const main = !d ? (
     <p className="muted">Select a dataset to filter it.</p>
-  ) : d.kind === "other" ? (
+  ) : !processable(d) ? (
     <p className="muted">{d.title} can't be filtered.</p>
   ) : (
     <ProcessTarget key={d.id} d={d} />
@@ -293,7 +296,7 @@ export function ProcessPanel() {
   const pinned = split?.image ? allDatasets(files).find((x) => x.id === split.image) : undefined;
   const target = pinned ?? d;
   const second =
-    split && target && target.kind !== "other" ? (
+    split && target && processable(target) ? (
       <ProcessTarget key={`split:${target.id}`} d={target} only={split.id} pinned={!!pinned} />
     ) : split ? (
       <SplitHeaderOnly id={split.id} />
@@ -508,6 +511,8 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   const otherMaps = d.is_element_map
     ? allDatasets(files).filter((x) => x.file_id === d.file_id && x.is_element_map && !x.parent_id && x.id !== d.id)
     : [];
+  // Bragg vectors: their 4D data (the calibration they are calibrated with is the data's).
+  const braggCube = d.origin === "disks" ? allDatasets(files).find((x) => x.id === d.parent_id && x.kind === "4dstem") : undefined;
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
   const mode = useUi((s) => s.processMode);
@@ -543,11 +548,6 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       body: <CentringSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
-      id: "calibration", title: "Calibration",
-      tip: "The pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
-      body: <CalibrationSection key={d.id} d={d} />,
-    },
-    d.kind === "4dstem" && {
       id: "com", title: "DPC / iCOM",
       tip: "Every pattern's centre of mass, less the descan, rotated into the scan's frame (the least curl): DPC (direction and magnitude) and iCOM",
       body: <ComSection key={d.id} d={d} />,
@@ -556,6 +556,16 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       id: "disks", title: "Disk detection",
       tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
       body: <DiskDetectionSection key={d.id} d={d} />,
+    },
+    braggCube && {
+      id: "calibration", title: "Calibration",
+      tip: "The Bragg vectors' calibration: each position's origin, the pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
+      body: <CalibrationSection key={braggCube.id} d={braggCube} />,
+    },
+    d.kind === "4dstem" && {
+      id: "strain", title: "Strain",
+      tip: "Strain from the Bragg vectors: the lattice (O, g1, g2) placed on the Bragg vector map, every pattern's disks indexed and fitted to it",
+      body: <StrainSection key={d.id} d={d} />,
     },
     canRebin(d) && d.origin !== "pca" && {
       id: "rebin", title: "Rebin", tip: "Sum neighbouring pixels or channels; overwrites the loaded data",

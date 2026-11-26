@@ -574,8 +574,10 @@ button.primary:disabled {
 .calibration-switch { margin: 0 6px 0 0; vertical-align: -2px; }
 .group-list { list-style: none; margin: 0; padding: 0; }
 .group-list .cell-input { min-width: 0; }
-/* A group dragged over another: dropped, it merges into it. */
-.group-list .layer-row.drop-target { outline: 1px dashed var(--accent); outline-offset: -1px; }
+/* A group dragged over another: merged into it, or moved before or after it. */
+.group-list .layer-row.drop-merge { outline: 1px dashed var(--accent); outline-offset: -1px; }
+.group-list .layer-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.group-list .layer-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 /* A detector's size: slider and box (calibrated units). */
 .size-control { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .size-control input[type="range"] { flex: 1; min-width: 60px; }

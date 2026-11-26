@@ -224,6 +224,8 @@ export function StackView({ ds, images, others = [] }: {
   }, [n, projection]);
 
   const isPca = ds.origin === "pca" && !!ds.pca;
+  // A strain lattice fit: named frames (g1 x … O y) of different quantities.
+  const fitParts = ds.strain?.output === "lattice" ? ds.strain.components : undefined;
   const pcaKept = usePca((s) => (isPca ? keptOf(ds, s.kept[ds.id]) : 0));
   // A PCA's kept components side by side: a panel per component (the first
   // as the base), each a frame of this stack with its own contrast.
@@ -260,6 +262,8 @@ export function StackView({ ds, images, others = [] }: {
   const activeRequest = useMemo(() => (showGrid ? { key: componentKey(index) } : null), [showGrid, index]); // eslint-disable-line react-hooks/exhaustive-deps
   const frameLabel = isPca && projection === "frame"
     ? `Component ${index + 1} / ${n}${pctOf(index)}`
+    : fitParts && projection === "frame"
+    ? `${fitParts[index] ?? `Frame ${index + 1}`} (${index + 1} / ${n})`
     : (projection === "frame" ? `Frame ${index + 1} / ${n}` : `${projection} of ${n} frames`) +
       (alignment?.active ? " · aligned" : "");
 
@@ -282,7 +286,8 @@ export function StackView({ ds, images, others = [] }: {
       <span className="stack-index">
         {index + 1} / {n}
       </span>
-      <div className="segmented" role="group" aria-label="Projection">
+      {/* A lattice fit's frames are different quantities: no mean or sum. */}
+      {!fitParts && <div className="segmented" role="group" aria-label="Projection">
         {(["frame", "mean", "sum"] as Projection[]).map((p) => (
           <button
             key={p}
@@ -293,7 +298,7 @@ export function StackView({ ds, images, others = [] }: {
             {p === "frame" ? "Frame" : p === "mean" ? "Mean" : "Sum"}
           </button>
         ))}
-      </div>
+      </div>}
       {isPca && (
         <button
           className={showGrid ? "active" : undefined}
@@ -343,8 +348,8 @@ export function StackView({ ds, images, others = [] }: {
                 key: `${ds.id}:${projection}`,
                 label: ds.title,
                 frame,
-                // A PCA's maps differ in range: each is auto-contrasted as it is shown.
-                version: isPca && projection === "frame" ? `${ds.filter_rev}:${shown?.index ?? index}` : String(ds.filter_rev),
+                // A PCA's maps (and a lattice fit's components) differ in range: each is auto-contrasted as it is shown.
+                version: (isPca || fitParts) && projection === "frame" ? `${ds.filter_rev}:${shown?.index ?? index}` : String(ds.filter_rev),
                 colormap: () => initialColormap(ds),
                 source: ds,
               }

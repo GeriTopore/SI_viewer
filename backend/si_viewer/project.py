@@ -55,7 +55,7 @@ FIELDS = (
     "thickness", "deconvolution", "quantity", "source_frame", "map_options", "rebinned", "zlp_aligned",
     "ops", "copied_at", "filters", "alignment", "technique_source", "eels_role", "eels_role_source",
     "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope", "curve_model", "atomic", "mask",
-    "virtual", "disks", "beam", "calibration", "origin_map",
+    "virtual", "disks", "beam", "calibration", "origin_map", "strain",
 )
 # Bytes of a raw file hashed for its fingerprint.
 FINGERPRINT_BYTES = 1 << 20

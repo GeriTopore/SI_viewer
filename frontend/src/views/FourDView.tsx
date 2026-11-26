@@ -24,6 +24,7 @@ import { ImageToolButtons, LayeredViewer, type ExtraLayers, type StackLayer } fr
 import { useLayersTab } from "../state/layersTab";
 import { backgroundOptionsOf, usePatternBackground } from "../state/patternBackground";
 import { comOptionsOf, useCom } from "../state/com";
+import { bvmVersion, fitOf, latticeGrid, nearestPeak, peaksOnLattice, toleranceOf, useStrain, type StrainLattice } from "../state/strain";
 import { formatValue } from "../format";
 import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
@@ -56,13 +57,24 @@ const STEP = 1;
 const SHIFT_STEP = 5;
 
 export const SHAPES: { id: Detector["shape"]; label: string; title: string }[] = [
-  { id: "circle", label: "Circle", title: "A disc: e.g. bright field" },
   { id: "annulus", label: "Annulus", title: "A ring: e.g. annular dark field" },
   { id: "rectangle", label: "Rectangle", title: "A rectangle" },
   { id: "point", label: "Point", title: "One pixel" },
-  { id: "apertures", label: "Apertures", title: "Discs placed by ⌘/Ctrl-click on the pattern, and a g-vector array: their sum" },
 ];
+
+/** A detector's kind as written in labels: discs (apertures) are a circle,
+ * circles, an array, or circles with an array. */
+export function shapeLabel(d: Detector): string {
+  if (d.shape !== "apertures") return d.shape;
+  const k = (d.apertures ?? []).length;
+  return d.lattice ? (k ? "circles + array" : "array") : k > 1 ? "circles" : "circle";
+}
 const LATTICE_COLOR = "#8cff5a";
+// The strain lattice on the Bragg vector map: its points (tolerance circles),
+// the map's peaks on it and off it.
+const STRAIN_COLOR = "#5ac8fa";
+const PEAK_ON_COLOR = "#ffffff";
+const PEAK_OFF_COLOR = "#ff9f0a";
 /** Detectors' areas are filled in their group's colour, this opaque. */
 const DETECTOR_FILL = 0.25;
 const BAD_COLOR = "#ff3b30";
@@ -362,8 +374,10 @@ export function detectorText(d: Detector, scale: number, units: string): string 
       return `${n(d.r_inner)}–${n(d.r)} ${units}`;
     case "rectangle":
       return `${n(Math.abs(d.x1 - d.x0))} × ${n(Math.abs(d.y1 - d.y0))} ${units}`;
-    case "apertures":
-      return `${(d.apertures ?? []).length} placed${d.lattice ? " + array" : ""} · r ${n(d.r)} ${units}`;
+    case "apertures": {
+      const k = (d.apertures ?? []).length;
+      return `${k > 1 ? `${k} placed · ` : ""}r ${n(d.r)} ${units}`;
+    }
     default:
       return `pixel (${Math.floor(d.cx)}, ${Math.floor(d.cy)})`;
   }
@@ -569,6 +583,45 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // Bragg vectors shows them.
   const diskProcessShown = useProcessShown("disks");
   const focused = useDatasets((s) => s.focusId === ds.id);
+  // ---------- the Strain process: its lattice on the Bragg vector map ----------
+  const strainShown = useProcessShown("strain") && focused && hasVectors;
+  const strainLattice = useStrain((s) => s.lattice[ds.id]);
+  const strainPeaks = useStrain((s) => s.peaks[ds.id]?.list);
+  const strainTol = useStrain((s) => toleranceOf(s, ds.id));
+  // Opening it shows the map in the pattern pane (where the lattice is placed).
+  useEffect(() => {
+    if (strainShown && latest.current.source !== SCAN_BVM) patch({ source: SCAN_BVM });
+  }, [strainShown]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The indexing and the fit tried at the cursors, drawn on their patterns.
+  const strainFit = useStrain((s) => fitOf(s, ds.id));
+  const strainPreviewOn = useStrain((s) => s.preview[ds.id] ?? true) && strainShown && !!strainLattice;
+  const strainCursors = cursors.map((c) => [c.x, c.y] as [number, number]);
+  const strainPreviewKey = strainPreviewOn
+    ? `${bvmVersion(files, ds)}|${ds.calibration ? JSON.stringify(ds.calibration.enabled ?? {}) : ""}|${JSON.stringify([strainLattice, strainTol, strainFit, strainCursors])}`
+    : "";
+  type StrainAt = { disks: [number, number, number, number, boolean][]; points?: [number, number, number, number][]; count: number; residual: number | null };
+  const [strainPreview, setStrainPreview] = useState<{ key: string; at: Record<string, StrainAt> } | null>(null);
+  useEffect(() => {
+    if (!strainPreviewKey) return;
+    let stale = false;
+    const id = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/datasets/${ds.id}/4d/strain/preview`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lattice: strainLattice, options: { tolerance: strainTol, ...strainFit }, positions: strainCursors }),
+        });
+        const body = await res.json();
+        if (!stale && res.ok) setStrainPreview({ key: strainPreviewKey, at: body });
+      } catch {
+        /* the next change tries again */
+      }
+    }, 150);
+    return () => {
+      stale = true;
+      clearTimeout(id);
+    };
+  }, [strainPreviewKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const diskOpen = diskProcessShown && focused;
   const diskPreview = useDisks((s) => s.preview[ds.id] ?? true) && diskOpen;
   const disksLayer = ovOf("disks");
@@ -710,7 +763,12 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
 
   // ---------- the ring, while the Calibration process is shown ----------
   // The annulus searched (dashed), the ellipse fitted and the points on it.
-  const calibrationShown = useProcessShown("calibration") && focused;
+  // The Calibration process is the Bragg vectors': shown while they (of this data) are focused.
+  const braggFocused = useDatasets((s) => {
+    const f = s.focusId ? allDatasets(s.files).find((x) => x.id === s.focusId) : undefined;
+    return f?.origin === "disks" && f.parent_id === ds.id;
+  });
+  const calibrationShown = useProcessShown("calibration") && (focused || braggFocused);
   const ringSearch = useCalibration((s) => s.search[ds.id]);
   const ringGuess = useCalibration((s) => s.guess[ds.id]);
   const fittedRing = useCalibration((s) => s.ring[ds.id] ?? null);
@@ -1037,6 +1095,101 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     },
   };
 
+  // ---------- the strain lattice: O, g1 and g2 dragged on the Bragg vector map ----------
+  // A tip let go near a peak snaps to it (Alt: no snapping).
+  const strainDrag = useRef<string | null>(null);
+  const strainMarkers = (l: StrainLattice): Handle[] => [
+    { id: "o", x: l.ox, y: l.oy },
+    { id: "g1", x: l.ox + l.g1x, y: l.oy + l.g1y },
+    { id: "g2", x: l.ox + l.g2x, y: l.oy + l.g2y },
+  ];
+  const strainHit = (p: Pt, t: Transform) =>
+    strainLattice ? strainMarkers(strainLattice).find((h) => Math.hypot(p.x - h.x, p.y - h.y) <= HANDLE_PX / t.zoom) ?? null : null;
+  const strainInteraction: Interaction = {
+    cursor: patternCursor,
+    onHover(p, t) {
+      if (!p || !t) return setPatternCursor("default");
+      setPatternCursor(strainHit(p, t) ? "grab" : "default");
+    },
+    onDown(p, _e, t) {
+      const h = strainHit(p, t);
+      if (!h) return false;
+      strainDrag.current = h.id;
+      setPatternCursor("grabbing");
+      return true;
+    },
+    onMove(p, e, t) {
+      const id = strainDrag.current;
+      const l = useStrain.getState().lattice[ds.id];
+      if (!id || !l) return;
+      const peaks = useStrain.getState().peaks[ds.id]?.list ?? [];
+      const snap = e.altKey ? null : nearestPeak(peaks, p.x, p.y, Math.max(strainTol, HANDLE_PX / t.zoom));
+      const x = snap ? snap[0] : p.x;
+      const y = snap ? snap[1] : p.y;
+      useStrain.getState().setLattice(ds.id, id === "o"
+        ? { ...l, ox: x, oy: y }
+        : id === "g1" ? { ...l, g1x: x - l.ox, g1y: y - l.oy } : { ...l, g2x: x - l.ox, g2y: y - l.oy });
+    },
+    onUp() {
+      strainDrag.current = null;
+      setPatternCursor("grab");
+    },
+  };
+  const strainOverlay = (t: Transform): ReactNode => {
+    const l = strainLattice;
+    const peaks = strainPeaks ?? [];
+    const points = l ? latticeGrid(l, patternG.width, patternG.height) : [];
+    const on = peaksOnLattice(peaks, points, strainTol);
+    const z = t.zoom;
+    return (
+      <g className="fourd-overlay">
+        {points.map((q) => {
+          const [x, y] = t.toScreen(q.x, q.y);
+          return <circle key={`${q.h},${q.k}`} cx={x} cy={y} r={Math.max(3, strainTol * z)} fill="none" stroke={STRAIN_COLOR} strokeWidth={1} strokeDasharray="3 2" opacity={0.9} />;
+        })}
+        {peaks.map(([px, py], i) => {
+          const [x, y] = t.toScreen(px, py);
+          return <circle key={`p${i}`} cx={x} cy={y} r={2.5} fill={on.has(i) ? PEAK_ON_COLOR : PEAK_OFF_COLOR} stroke="#000" strokeWidth={0.5} />;
+        })}
+        {l && (() => {
+          const [ox, oy] = t.toScreen(l.ox, l.oy);
+          return strainMarkers(l).slice(1).map((h) => {
+            const [x, y] = t.toScreen(h.x, h.y);
+            return <line key={`v${h.id}`} x1={ox} y1={oy} x2={x} y2={y} stroke={STRAIN_COLOR} strokeWidth={2} />;
+          });
+        })()}
+        {l && strainMarkers(l).map((h) => {
+          const [x, y] = t.toScreen(h.x, h.y);
+          return (
+            <g key={h.id}>
+              <circle cx={x} cy={y} r={5} fill={STRAIN_COLOR} stroke="#000" strokeWidth={0.75} />
+              <text x={x + 7} y={y - 7} fill={STRAIN_COLOR} fontSize={11} fontWeight={600}>{h.id === "o" ? "O" : h.id}</text>
+            </g>
+          );
+        })}
+      </g>
+    );
+  };
+
+  // At a cursor: its disks, indexed (white) or not (orange), and the lattice fitted to them (crosses).
+  const strainAtOverlay = (t: Transform, at: StrainAt): ReactNode => (
+    <g className="fourd-overlay">
+      {(at.points ?? []).map(([px, py, h, k]) => {
+        const [x, y] = t.toScreen(px, py);
+        return (
+          <g key={`f${h},${k}`} stroke={STRAIN_COLOR} strokeWidth={1.5}>
+            <line x1={x - 5} x2={x + 5} y1={y} y2={y} />
+            <line x1={x} x2={x} y1={y - 5} y2={y + 5} />
+          </g>
+        );
+      })}
+      {at.disks.map(([px, py, , , on], i) => {
+        const [x, y] = t.toScreen(px, py);
+        return <circle key={`d${i}`} cx={x} cy={y} r={Math.max(4, strainTol * t.zoom)} fill="none" stroke={on ? PEAK_ON_COLOR : PEAK_OFF_COLOR} strokeWidth={1.25} />;
+      })}
+    </g>
+  );
+
   // ---------- overlays ----------
   /** A frame around an image in ``color`` (``w`` × ``h`` image pixels). */
   const frame = (t: Transform, w: number, h: number, color: string | null | undefined): ReactNode => {
@@ -1133,16 +1286,29 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         .map((g) => <g key={g.id} opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1)}</g>)}
     </g>
   );
-  const patternOverlay = (t: Transform, key?: string): ReactNode => (
-    <>
-      {sourceBorder(t, key)}
-      {disksOverlay(t, grid && key ? key.replace(/^dp:/, "") : source)}
-      {beamOverlay(t, grid && key ? key.replace(/^dp:/, "") : source)}
-      {ringOverlay(t)}
-      {othersOverlay(t)}
-      {detectorOverlay(t)}
-    </>
-  );
+  const patternOverlay = (t: Transform, key?: string): ReactNode => {
+    const id = grid && key ? key.replace(/^dp:/, "") : source;
+    // The strain lattice on the Bragg vector map, without the detectors (they'd hide it).
+    if (strainShown && id === SCAN_BVM) return <>{sourceBorder(t, key)}{strainOverlay(t)}</>;
+    // The last preview stays until the next arrives (no flicker while dragging).
+    const at = strainPreviewOn && strainPreview
+      ? (() => {
+          const c = cursors.find((k) => k.id === id);
+          return c ? strainPreview.at[`${c.x},${c.y}`] : undefined;
+        })()
+      : undefined;
+    if (at) return <>{sourceBorder(t, key)}{strainAtOverlay(t, at)}</>;
+    return (
+      <>
+        {sourceBorder(t, key)}
+        {disksOverlay(t, id)}
+        {beamOverlay(t, id)}
+        {ringOverlay(t)}
+        {othersOverlay(t)}
+        {detectorOverlay(t)}
+      </>
+    );
+  };
   const detectorOverlay = (t: Transform): ReactNode => {
     const d = det;
     // Its layer hidden: not drawn (still moved by its keys and the process).
@@ -1173,7 +1339,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       : source === SCAN_MEAN || source === SCAN_MAX
       ? `${source === SCAN_MAX ? "Max" : "Mean"} pattern over the scan`
       : `Pattern at ${cursorText}`;
-  const liveLabel = `${group.name} · ${sent.source === "vectors" ?`DDF${group.weight === "count" ? " count" : ""} · ` : ""}${det.shape} · ${detectorText(det, patCal.scale, patCal.units)}${sent.response === "sum" ? "" : ` · ${responseLabel(sent.response)}`}`;
+  const liveLabel = `${group.name} · ${sent.source === "vectors" ?`DDF${group.weight === "count" ? " count" : ""} · ` : ""}${shapeLabel(det)} · ${detectorText(det, patCal.scale, patCal.units)}${sent.response === "sum" ? "" : ` · ${responseLabel(sent.response)}`}`;
   const virtualLabel = shownSaved ? shownSaved.title : liveLabel;
   // The cursors and regions: a list to pick the pattern shown.
   const sources = [
@@ -1425,7 +1591,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     rows: [
       ...st.groups.map((g) => ({
         id: `fd:det:${g.id}`,
-        label: `${g.name} · ${g.detector.shape}`,
+        label: `${g.name} · ${shapeLabel(g.detector)}`,
         visible: detShown(g),
         opacity: detOpacity(g),
         display: undefined,
@@ -1697,7 +1863,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           error={grid ? dpSet.error : pattern.error}
           overlays={false}
           toolButtons={false}
-          interaction={det.shape === "apertures" ? aperturesInteraction : patternInteraction}
+          interaction={strainShown && source === SCAN_BVM ? strainInteraction : det.shape === "apertures" ? aperturesInteraction : patternInteraction}
           renderOverlay={patternOverlay}
           imageMenu={(p) => (det.shape === "apertures" && apertureAt(det, p) >= 0 ? [] : openInSingle)}
           layersSection="Diffraction pattern"

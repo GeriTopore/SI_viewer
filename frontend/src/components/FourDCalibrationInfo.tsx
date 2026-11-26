@@ -69,7 +69,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
               {cal.how?.standard && <span className="muted"> · {cal.how.standard} {cal.how.hkl}</span>}
               {cal.how?.camera_length && <span className="muted"> · {cal.how.camera_length} mm, {cal.how.kv} kV</span>}
             </>
-          ) : <span className="muted">not calibrated (Calibration process)</span>}
+          ) : <span className="muted">not calibrated (Bragg vectors: Calibration)</span>}
         </dd>
         <dt>R pixel size</dt>
         <dd>
@@ -85,7 +85,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
               {cal.origin.plane.mode !== "none" && `, ${cal.origin.plane.mode === "plane" ? "plane" : "corner plane"} (${formatValue(cal.origin.rms)} px RMS)`}
               <span className="muted"> · mean ({formatValue(cal.origin.mean[0])}, {formatValue(cal.origin.mean[1])}) px</span>
             </>
-          ) : <span className="muted">not measured (Calibration process)</span>}
+          ) : <span className="muted">not measured (Bragg vectors: Calibration)</span>}
         </dd>
         <dt>Ellipse</dt>
         <dd>
@@ -95,7 +95,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
               a {formatValue(cal.ring.a)}, b {formatValue(cal.ring.b)} px, θ {deg(cal.ring.angle)}°
               <span className="muted"> · {formatValue(cal.ring.ellipticity * 100)} %</span>
             </>
-          ) : <span className="muted">not fitted (Calibration process)</span>}
+          ) : <span className="muted">not fitted (Bragg vectors: Calibration)</span>}
         </dd>
         <dt>QR rotation</dt>
         <dd>

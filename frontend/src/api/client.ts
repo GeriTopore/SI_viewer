@@ -469,7 +469,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map" | "beam-shift" | "centred" | "origin-map";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map" | "beam-shift" | "centred" | "origin-map" | "strain-fit";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -508,6 +508,17 @@ export interface DatasetSummary {
     rotation?: { theta: number; mirror: boolean; how: "com" | "entered"; curl_ratio?: number };
     enabled?: { origin?: boolean; ellipse?: boolean; scale?: boolean; rotation?: boolean };
     bvm?: "raw" | "calibrated";
+  } | null;
+  /** Strain from 4D-STEM Bragg vectors (origin "strain-fit": the "Lattice fit"
+   * stack, "Indexed disks", "Fit residual"): the 4D data, which output, the
+   * lattice picked and the fit settings, the calibration it was fitted in. */
+  strain?: {
+    source_id: string;
+    output: "lattice" | "count" | "residual";
+    lattice: { ox: number; oy: number; g1x: number; g1y: number; g2x: number; g2y: number };
+    options: { tolerance: number; min_disks: number; weighted: boolean };
+    frame: { centred: boolean; ellipse: boolean; rotation: { theta: number; mirror: boolean } | null };
+    components?: string[];
   } | null;
   /** An origin map of 4D-STEM data ("Origin x / y", "(fit)"; origin "origin-map"). */
   origin_map?: { axis: "x" | "y"; kind: "measured" | "fitted"; source_id: string } | null;

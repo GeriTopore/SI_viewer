@@ -153,6 +153,15 @@ export interface DetectorGroup {
   source?: ImageSource;
   /** Digital dark field: the disks' intensity (default), or their number. */
   weight?: "intensity" | "count";
+  /** Made from the disks found (apertures on them): which are kept. */
+  disks?: DisksOptions;
+}
+
+/** Apertures on the disks found at a cursor: the brightest ``brightest``
+ * (0: all), the direct beam's too if ``beam``. */
+export interface DisksOptions {
+  brightest: number;
+  beam: boolean;
 }
 
 export type ImageSource = "pixels" | "vectors";
@@ -234,11 +243,17 @@ export function defaultDetector(w: number, h: number, shape: Detector["shape"] =
   };
 }
 
+/** A circle: one aperture at the pattern's centre (⌘/Ctrl-click adds more). */
+export function circleDetector(w: number, h: number): Detector {
+  const r = Math.max(1, Math.min(w, h) / 8);
+  return { ...defaultDetector(w, h, "apertures"), r, apertures: [{ x: w / 2, y: h / 2 }] };
+}
+
 export function initialState(scan: [number, number], pattern: [number, number]): FourDState {
   const [sw, sh] = scan;
   const [pw, ph] = pattern;
   return {
-    groups: [newGroup([], defaultDetector(pw, ph))],
+    groups: [newGroup([], circleDetector(pw, ph))],
     selectedGroup: "g1",
     cursors: [newCursor([], Math.floor(sw / 2), Math.floor(sh / 2))],
     lastCursor: "c1",

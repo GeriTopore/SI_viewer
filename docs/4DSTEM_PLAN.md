@@ -259,6 +259,17 @@ user's data.
   apertures (*BF radius*, *Clear*, *g-vector array* with n1/s1/n2/s2 and
   *Origin*) and *Save image*. The detector is still drawn and dragged on the
   pattern.
+- Panel tidied (2026-11-26): *+ Group* offers Circle, Annulus, Rectangle,
+  Point, *Aperture array* (an apertures group with the g-vector array, O at
+  the BF disk) and *From the disks* (apertures on the disks at the cursor,
+  its *Brightest* / *Direct beam* / *At the cursor* row kept with the group,
+  `DetectorGroup.disks`). Circle and the ⌘/Ctrl-click apertures are one mode:
+  a circle is an apertures detector with one disc (`circleDetector`), ⌘-click
+  adds more; labels read circle / circles / array (`shapeLabel`). The BF, ADF
+  and Duplicate entries are gone from the menu (Duplicate stays on
+  right-click); the array toggle is gone (merge an array group in instead).
+  Response is a dropdown. Groups are dragged to reorder (upper or lower part
+  of a row) or merged (its middle, circle and array groups only).
 - Scan pane: any number of cursors (⌘/Ctrl-click adds one, a press on one
   grabs it, elsewhere moves the active one; right-click or Delete removes
   one; arrows move the active one), each coloured and numbered. Regions are
@@ -437,7 +448,11 @@ grid's *Merged* mode with each group's colour), and presets.
   dm4: finding 0.3 s, centring 1.4 s; after centring with the plane, a plane
   fitted again is at the centre to 0.02 px.
 - **Built (2026-11-26): Calibration process** (`processing/calibration.py`,
-  `/4d/calibration*`, `CalibrationSection`), in three steps. (1) *Fit a
+  `/4d/calibration*`, `CalibrationSection`). Since 2026-11-26 a process of
+  the **Bragg vectors** (selecting them shows the 4D view; the ring is drawn
+  on the patterns as before), not of the 4D data: its calibration is applied
+  to the vectors and their map. It still calibrates the 4D data (its record
+  and pattern axes). In three steps. (1) *Fit a
   ring* of the max or mean pattern in an annulus (inner/outer radius around
   the bright-field disk's centre): at each of 180 directions the
   intensity-weighted radius, then a direct least-squares ellipse fit
@@ -606,6 +621,64 @@ grid's *Merged* mode with each group's colour), and presets.
   py4DSTEM-style); Bragg vectors from py4DSTEM files.
 - Lattice vectors, strain maps (exx, eyy, exy, rotation) with the same display
   and conventions as kemstem's strain; snap g-vector arrays to peaks.
+
+**Strain from the Bragg vectors (planned 2026-11-26).** A *Strain* process
+on 4D data in four guided steps, py4DSTEM's workflow with pyxem's maths
+(`DiffractionVectors.filter_basis` → `get_DisplacementGradientMap` →
+`get_strain_maps`, `StrainMap.rotate_strain_basis`): (1) the lattice on the
+BVM; (2) index every pattern's disks to the lattice points within the
+tolerance (calibrated: origin, ellipse, QR rotation as switched) and fit g1,
+g2 per position (a job; "Indexed disks" and "Fit residual" maps); (3) the
+reference (median over the scan or a scan region) and the strain axes (the
+scan's via the QR rotation, an angle, or along g1); (4) εxx, εyy, εxy, θ under
+the data, displayed as kemstem's strain. Checked against pyxem's simulated
+strain example (known field) and a backend test with a known strain.
+
+- **Built (2026-11-26): step 1, the lattice.** Opening *Strain* shows the
+  BVM in the pattern pane. Its peaks (`processing/strain.py` `bvm_peaks`,
+  `/4d/strain/bvm-peaks`): the map on the pattern's pixels (centred as DDF),
+  2 × finer, Gaussian blur, HyperSpy's `find_local_max` (threshold × the
+  brightest, spacing), centre-of-mass refinement; found live as the settings
+  or the map change. O, g1, g2 proposed (`guess_lattice`): O the peak
+  nearest the direct beam (the mean origin while centred, else the mean
+  pattern's BF disk; the map counts disks, so the beam needn't be the
+  brightest), g1 the nearest peak, g2 the nearest ≥ 30° off it, g2
+  counter-clockwise on screen; *Propose again*. Drawn on the BVM: lattice
+  points with tolerance circles, peaks on (white) and off (orange) the
+  lattice, O, g1, g2 (the detectors hidden meanwhile); O, g1, g2 dragged,
+  snapping to the nearest peak within the tolerance (Alt: free). Readout:
+  peaks and how many are on the lattice; |g| in px, in the pattern's
+  reciprocal units (calibration, else the pattern axes) and d in Å; angles
+  and g1 ∠ g2. The lattice and settings are kept in the browser (not yet
+  with the analysis). Checked on pyxem's *Strained disks*: 29 peaks, O at
+  the centre, g1, g2 at ∓45° (52.7 px, d 1.898 Å), 89.7° apart; a drag
+  snapped exactly onto a peak.
+- **Built (2026-11-26): step 2, index and fit.** py4DSTEM's algorithm in
+  numpy (`processing/strain.py` `index_disks`, `fit_lattice`; pyxem's
+  `filter_basis` + `get_DisplacementGradientMap` has no origin term and no
+  weights): every disk (on the BVM's pixels, centred as the map) offset from
+  O and taken into the calibrated frame (`frame_matrix`: the ellipse made
+  circular, then the QR rotation, each where switched on; lengths in pattern
+  px) is indexed to the nearest lattice point h g1 + k g2 within the
+  tolerance; per position, weighted least squares (by the correlation, or
+  unweighted) of q = O' + h g1 + k g2 through batched normal equations,
+  where there are at least *Min disks* not all on one line. A job
+  (`/4d/strain/fit`) makes, under the Bragg vectors, a **Lattice fit** stack
+  (origin "strain-fit"; frames g1 x, g1 y, g2 x, g2 y, O x, O y, calibrated
+  px; NaN where not fitted; its frames named and each auto-contrasted as
+  shown, no Mean / Sum) with **Indexed disks** and **Fit residual** (RMS
+  px) under it; `strain` keeps the lattice, settings and frame; made again
+  in place; saved with the analysis, and reopening restores the lattice and
+  settings in the process. While tuning, *Show on the patterns*
+  (`/4d/strain/preview`): at each cursor, its disks ringed white (indexed)
+  or orange (not) and the lattice fitted there as crosses, on its own
+  pattern. Process: *Min disks*, *Weighted*, *Fit every pattern / Fit
+  again*, a summary (positions fitted, disks indexed). Checked: backend test
+  with a known strain (3 % exx, rotation, descan) recovered to 0.03 px per
+  position, end to end through the API with save and reopen; on pyxem's
+  *Strained disks* (tolerance 15 px for the streaks): 1024 of 1024
+  positions fitted, 19 871 of 20 724 disks indexed, |g1| 52.1 px at the
+  edges rising to 55 px at the centre.
 
 ### Phase 7: orientation and phase mapping
 - Template matching against diffsims simulations from CIF structures (the

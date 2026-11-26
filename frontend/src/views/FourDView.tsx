@@ -1225,12 +1225,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     removable: false,
     geometry: patternG,
   }));
-  const layoutSwitch = segmented("Layout", [
-    { id: "single", label: "Single", title: "One virtual image and one pattern" },
-    { id: "grid", label: "Grid", title: "A virtual image per visible group, a pattern per cursor and region" },
-    { id: "merge", label: "Merge", title: "The visible groups' virtual images as one colour composite, each in its group's colour" },
-    { id: "list", label: "List", title: "A row per visible group: the pattern with its detector, and its virtual image (the wheel zooms; ⌘ + wheel or the scroll bar scrolls)" },
-  ], st.layout, (v) => {
+  const setLayout = (v: FourDState["layout"]) => {
     // The other layout's panels are another size: they open fitted.
     useDisplay.setState((s) => {
       const views = { ...s.views };
@@ -1238,7 +1233,16 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       return { views };
     });
     patch({ layout: v });
-  });
+  };
+  const layoutSwitch = segmented("Layout", [
+    { id: "single", label: "Single", title: "One virtual image and one pattern" },
+    { id: "grid", label: "Grid", title: "A virtual image per visible group, a pattern per cursor and region" },
+    { id: "merge", label: "Merge", title: "The visible groups' virtual images as one colour composite, each in its group's colour" },
+    { id: "list", label: "List", title: "A row per visible group: the pattern with its detector, and its virtual image (the wheel zooms; ⌘ + wheel or the scroll bar scrolls)" },
+  ], st.layout, setLayout);
+  // Right-click a grid panel: open it in Single (the press made its group,
+  // or its cursor or region, the one shown).
+  const openInSingle: MenuItem[] = grid ? [{ label: "Open in Single", onSelect: () => setLayout("single") }] : [];
 
   // ---------- the list: a row per visible group ----------
   const displays = useDisplay((s) => s.display);
@@ -1547,7 +1551,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           error={grid || merge ? viSet.error : virtual.error}
           overlays={false}
           interaction={scanInteraction}
-          imageMenu={scanMenu}
+          imageMenu={(p) => [...openInSingle, ...scanMenu(p)]}
           renderOverlay={scanOverlay}
           layersSection="Virtual image"
           extraLayers={viExtra}
@@ -1596,6 +1600,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           toolButtons={false}
           interaction={det.shape === "apertures" ? aperturesInteraction : patternInteraction}
           renderOverlay={patternOverlay}
+          imageMenu={(p) => (det.shape === "apertures" && apertureAt(det, p) >= 0 ? [] : openInSingle)}
           layersSection="Diffraction pattern"
           extraLayers={dpExtra}
           footer={

@@ -125,10 +125,31 @@ def _bind(host: str, port: int) -> socket.socket:
     return sock
 
 
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _prune_session_files() -> None:
+    """Delete the files of servers no longer running (killed, so their
+    ``finally`` never ran)."""
+    if sys.platform == "win32":  # os.kill(pid, 0) there sends Ctrl-C
+        return
+    for path in SESSIONS_DIR.glob("*.json"):
+        if path.stem.isdigit() and not _alive(int(path.stem)):
+            path.unlink(missing_ok=True)
+
+
 def _write_session_file(info: dict) -> Path:
     """``SESSIONS_DIR/<pid>.json``, readable by its user only (it holds the token)."""
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(SESSIONS_DIR, 0o700)
+    _prune_session_files()
     path = SESSIONS_DIR / f"{info['pid']}.json"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:

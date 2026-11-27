@@ -137,6 +137,11 @@ const safeStorage: StateStorage = {
 /** The choices (templates, polar patterns, Match orientation, template
  * scale, structure views) are kept across reloads in this browser; results
  * and jobs aren't. */
+/** ``fetchMapAt``'s queue: maps with a request running, and the newest
+ * positions wanted next for each. */
+const mapAtBusy = new Set<string>();
+const mapAtWanted = new Map<string, { omapId: string; positions: number[][] }>();
+
 export const useOrientation = create<OrientationState>()(persist((set, get) => {
   /** Run a job to its end, kept in ``jobs`` under ``id``; ``done`` with its result. */
   const follow = async (id: string, start: () => Promise<JobSummary>, done: (job: JobSummary) => void) => {
@@ -192,15 +197,27 @@ export const useOrientation = create<OrientationState>()(persist((set, get) => {
   },
   mapAtCache: {},
   fetchMapAt: async (key, omapId, positions) => {
-    const have = get().mapAtCache[key] ?? {};
-    const missing = positions.filter(([x, y]) => !have[`${x},${y}`]);
-    if (!missing.length) return;
+    // One request at a time per map; while one runs only the newest wanted
+    // positions wait (dragging a cursor wants every pixel it crosses).
+    mapAtWanted.set(key, { omapId, positions });
+    if (mapAtBusy.has(key)) return;
+    mapAtBusy.add(key);
     try {
-      const r = await api.mapAt(omapId, missing);
-      const found = Object.fromEntries(r.matches.map((m) => [`${m.x},${m.y}`, m]));
-      set((s) => ({ mapAtCache: { ...s.mapAtCache, [key]: { ...s.mapAtCache[key], ...found } } }));
-    } catch {
-      /* the map gone or changed: nothing drawn */
+      for (let w = mapAtWanted.get(key); w; w = mapAtWanted.get(key)) {
+        mapAtWanted.delete(key);
+        const have = get().mapAtCache[key] ?? {};
+        const missing = w.positions.filter(([x, y]) => !have[`${x},${y}`]);
+        if (!missing.length) continue;
+        try {
+          const r = await api.mapAt(w.omapId, missing);
+          const found = Object.fromEntries(r.matches.map((m) => [`${m.x},${m.y}`, m]));
+          set((s) => ({ mapAtCache: { ...s.mapAtCache, [key]: { ...s.mapAtCache[key], ...found } } }));
+        } catch {
+          /* the map gone or changed: nothing drawn */
+        }
+      }
+    } finally {
+      mapAtBusy.delete(key);
     }
   },
   followMatch: false,

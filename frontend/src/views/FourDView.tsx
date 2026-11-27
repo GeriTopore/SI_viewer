@@ -51,6 +51,33 @@ const BEAM_PLANE_COLOR = "#00e5ff";
 const RING_COLOR = "#ffd60a";
 const RING_FIT_COLOR = "#30d158";
 const ZONE_COLOR = "#ff6bd6";
+
+/** How a position is marked on a pattern (Layers tab → Mark). */
+type MarkStyle = "circle" | "cross" | "dot";
+
+/** A position marked as a circle of radius ``r``, a "+" of that half-size,
+ * or a filled dot (``dotR``). */
+function mark(style: MarkStyle, x: number, y: number, r: number, colour: string, width: number, key: string | number, title?: ReactNode, dotR = 3) {
+  if (style === "cross") {
+    return <path key={key} d={`M${x - r},${y}H${x + r}M${x},${y - r}V${y + r}`} stroke={colour} strokeWidth={width} strokeLinecap="round">{title}</path>;
+  }
+  if (style === "dot") return <circle key={key} cx={x} cy={y} r={dotR} fill={colour} stroke="#000" strokeWidth={0.5}>{title}</circle>;
+  return <circle key={key} cx={x} cy={y} r={r} fill="none" stroke={colour} strokeWidth={width}>{title}</circle>;
+}
+
+/** The Layers tab's Mark choice of a position layer. */
+function markChoice(value: MarkStyle, title: string, onChange: (v: MarkStyle) => void, dot = false) {
+  return {
+    label: "Mark",
+    control: (
+      <select className="layer-choice" value={value} title={title} onChange={(e) => onChange(e.target.value as MarkStyle)}>
+        <option value="circle">Circle</option>
+        <option value="cross">Cross</option>
+        {dot && <option value="dot">Dot</option>}
+      </select>
+    ),
+  };
+}
 // The frames around the virtual image and the pattern in their group's / source's colour.
 const FRAME_WIDTH = 2;
 const FRAME_OPACITY = 0.6;
@@ -540,7 +567,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     return fetchArray(`/api/datasets/${ds.id}/4d/pattern?x=${activeCursor.x}&y=${activeCursor.y}`).then(asFrame);
   }, !grid);
   const logKey = `${ds.id}:pattern`;
-  const log = useDisplay((s) => s.imageLog[logKey]) ?? true;
+  // Linear unless switched to Log (per dataset).
+  const log = useDisplay((s) => s.imageLog[logKey]) ?? false;
   const setImageLog = useDisplay((s) => s.setImageLog);
   const drawnPattern = useMemo(() => pattern.frame && (log ? logFrame(pattern.frame) : pattern.frame), [pattern.frame, log]);
 
@@ -727,16 +755,14 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     const found = disksOf(id);
     if (!found) return null;
     const colour = disksLayer.colour ?? DISK_COLOR;
-    // A circle of the disk's size, or a dot at its position.
-    const dot = disksLayer.style === "dot";
+    // A circle or "+" of the disk's size, or a dot at its position.
+    const style = (disksLayer.style ?? "circle") as MarkStyle;
     const dotR = DOT_PX * (disksLayer.size ?? 1);
     return (
       <g className="fourd-overlay" opacity={disksLayer.opacity ?? 1}>
         {found.disks.map(([ky, kx], i) => {
           const [x, y] = t.toScreen(kx, ky);
-          return dot
-            ? <circle key={i} cx={x} cy={y} r={dotR} fill={colour} stroke="#000" strokeWidth={0.5} />
-            : <circle key={i} cx={x} cy={y} r={Math.max(3, found.r * t.zoom)} fill="none" stroke={colour} strokeWidth={1.25} />;
+          return mark(style, x, y, Math.max(3, found.r * t.zoom), colour, 1.25, i, undefined, dotR);
         })}
       </g>
     );
@@ -797,6 +823,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const templateVisible = !!templatesDs && (templateLayer.visible ?? true) && perAngstrom(ds) !== null;
   const viewPattern = useViewTemplate(templatesDs?.id ?? null, templateStructure?.id ?? null, templateVisible);
   const templateColour = templateLayer.colour ?? ZONE_COLOR;
+  const templateStyle: MarkStyle = templateLayer.style === "cross" ? "cross" : "circle";
   const templateScale = useOrientation((s) => s.scale[ds.id] ?? 1);
   const zoneOverlay = (t: Transform): ReactNode => {
     const z = templateVisible ? viewPattern : null;
@@ -817,11 +844,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
                 (f * Math.hypot(x, z.y[i]) / per - ky.offset) / ky.scale + 0.5,
               )
             : t.toScreen((f * x / per - kx.offset) / kx.scale + 0.5, (-f * z.y[i] / per - ky.offset) / ky.scale + 0.5);
-          return (
-            <circle key={i} cx={sx} cy={sy} r={2 + 5 * Math.sqrt(z.intensity[i])} fill="none" stroke={templateColour} strokeWidth={1.25}>
-              <title>{z.hkl[i].join(" ")}</title>
-            </circle>
-          );
+          return mark(templateStyle, sx, sy, 2 + 5 * Math.sqrt(z.intensity[i]), templateColour, 1.25, i, <title>{z.hkl[i].join(" ")}</title>);
         })}
       </g>
     );
@@ -833,7 +856,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const matchTemplates = useOrientation((s) => chosenFor(s, ds));
   const matchLayer = ovOf("match");
   const matchVisible = matchLayer.visible ?? true;
-  const matchStyle = matchLayer.style === "cross" ? "cross" : "circle";
+  const matchStyle: MarkStyle = matchLayer.style === "cross" ? "cross" : "circle";
   // The polar patterns matched against (chosen in Orientation mapping; polar
   // patterns themselves): their matches, by position, shared with them.
   const matchPolar = useOrientation((s) => polarFor(s, allDatasets(files), ds));
@@ -870,16 +893,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         {points.map(([px, py], i) => {
           const [sx, sy] = t.toScreen(px, py);
           const r = 2.5 + 4 * Math.sqrt(m.vectors.intensity[i] ?? 0);
-          const title = <title>{m.vectors.hkl[i]?.join(" ")}</title>;
-          if (matchStyle === "cross") {
-            return (
-              <path key={i} d={`M${sx - r},${sy}H${sx + r}M${sx},${sy - r}V${sy + r}`}
-                stroke={colour} strokeWidth={1.5} strokeLinecap="round">{title}</path>
-            );
-          }
-          return (
-            <circle key={i} cx={sx} cy={sy} r={r} fill="none" stroke={colour} strokeWidth={1.5}>{title}</circle>
-          );
+          return mark(matchStyle, sx, sy, r, colour, 1.5, i, <title>{m.vectors.hkl[i]?.join(" ")}</title>);
         })}
       </g>
     );
@@ -899,7 +913,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   }, [omapKey, cursorKeys.join(";")]); // eslint-disable-line react-hooks/exhaustive-deps
   const omapLayer = ovOf("omap");
   const omapVisible = !!omap && (omapLayer.visible ?? true);
-  const omapStyle = omapLayer.style === "cross" ? "cross" : "circle";
+  const omapStyle: MarkStyle = omapLayer.style === "cross" ? "cross" : "circle";
   const omapLabels = omapLayer.labels ?? true;
   const omapInset = omapLayer.inset ?? true;
   const omapColour = omapLayer.colour ?? OMAP_COLOR;
@@ -950,9 +964,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           const hkl = m.vectors.hkl[i];
           return (
             <g key={i}>
-              {omapStyle === "cross"
-                ? <path d={`M${sx - r},${sy}H${sx + r}M${sx},${sy - r}V${sy + r}`} stroke={omapColour} strokeWidth={1.5} strokeLinecap="round" />
-                : <circle cx={sx} cy={sy} r={r} fill="none" stroke={omapColour} strokeWidth={1.5} />}
+              {mark(omapStyle, sx, sy, r, omapColour, 1.5, "m")}
               {omapLabels && hkl && (
                 <text x={sx} y={sy - r - 2} className="omap-label" fill={omapColour} textAnchor="middle">{hklLabel(hkl)}</text>
               )}
@@ -972,16 +984,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     removable: false,
     colour: omapColour,
     properties: [
-      {
-        label: "Mark",
-        control: (
-          <select className="layer-choice" value={omapStyle} title="How each spot of the map's template is marked"
-            onChange={(e) => setOverlay(ds.id, "omap", { style: e.target.value as "circle" | "cross" })}>
-            <option value="circle">Circle</option>
-            <option value="cross">Cross</option>
-          </select>
-        ),
-      },
+      markChoice(omapStyle, "How each spot of the map's template is marked", (v) => setOverlay(ds.id, "omap", { style: v })),
       {
         label: "hkl",
         control: <input type="checkbox" checked={omapLabels} title="Label each reflection"
@@ -1002,16 +1005,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     display: undefined,
     removable: false,
     colour: matchLayer.colour ?? "#ff9f0a",
-    properties: [{
-      label: "Mark",
-      control: (
-        <select className="layer-choice" value={matchStyle} title="How each spot of the best template is marked"
-          onChange={(e) => setOverlay(ds.id, "match", { style: e.target.value as "circle" | "cross" })}>
-          <option value="circle">Circle</option>
-          <option value="cross">Cross</option>
-        </select>
-      ),
-    }],
+    properties: [markChoice(matchStyle, "How each spot of the best template is marked",
+      (v) => setOverlay(ds.id, "match", { style: v }))],
   }] : [];
   const matchTabs = matchOn ? [{
     id: "match" as const,
@@ -1031,6 +1026,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     display: undefined,
     removable: false,
     colour: templateColour,
+    properties: [markChoice(templateStyle, "How each reflection of the template is marked",
+      (v) => setOverlay(ds.id, "template", { style: v }))],
   }] : [];
   const structureTabs = templateStructure ? [{
     id: "structure" as const,
@@ -1832,20 +1829,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     removable: false,
     colour: disksLayer.colour ?? DISK_COLOR,
     properties: [
-      {
-        label: "Mark",
-        control: (
-          <select
-            className="layer-choice"
-            value={disksStyle}
-            title="A circle of the disk's size, or a dot at its position"
-            onChange={(e) => setOverlay(ds.id, "disks", { style: e.target.value as "circle" | "dot" })}
-          >
-            <option value="circle">Circle</option>
-            <option value="dot">Dot</option>
-          </select>
-        ),
-      },
+      markChoice(disksStyle as MarkStyle, "A circle or \"+\" of the disk's size, or a dot at its position",
+        (v) => setOverlay(ds.id, "disks", { style: v }), true),
       ...(disksStyle === "dot"
         ? [{
             label: "Size",

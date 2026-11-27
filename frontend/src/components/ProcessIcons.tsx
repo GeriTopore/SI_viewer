@@ -197,6 +197,118 @@ const ICONS: Record<string, () => ReactNode> = {
       )}
     </>
   ),
+  // ---------- 4D-STEM ----------
+  // A diffraction pattern and an annular detector over it.
+  "virtual-image": () => (
+    <>
+      <circle cx="24" cy="24" r="19" />
+      <path d="M11 24a13 13 0 1 0 26 0a13 13 0 1 0 -26 0ZM16 24a8 8 0 1 0 16 0a8 8 0 1 0 -16 0Z"
+        fillRule="evenodd" fill={ACCENT} fillOpacity="0.3" stroke={ACCENT} strokeWidth="1.5" />
+      <circle cx="24" cy="24" r="3" fill="currentColor" />
+      {[[24, 8], [24, 40], [8, 24], [40, 24]].map(([x, y]) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.8" fill="currentColor" />)}
+    </>
+  ),
+  // A detector's pixels, a hot one crossed out.
+  "bad-pixels": () => (
+    <>
+      <Cells x={6} y={6} n={4} cell={9} />
+      <rect x="24" y="15" width="9" height="9" fill="currentColor" />
+      <path d="M21 12L36 27M36 12L21 27" stroke={ACCENT} strokeWidth="2.5" />
+    </>
+  ),
+  // The direct beam off the centre (descan) brought back onto it.
+  centring: () => (
+    <>
+      <path d="M24 4V44M4 24H44" strokeWidth="1.2" strokeDasharray="2 3" />
+      <circle cx="35" cy="13" r="6" strokeDasharray="3 2" />
+      <path d="M31 17L28 20M28 16V20H32" />
+      <circle cx="24" cy="24" r="6" stroke={ACCENT} fill={ACCENT} fillOpacity="0.3" />
+    </>
+  ),
+  // A pattern's rings unrolled into lines (angle across, radius down).
+  polar: () => (
+    <>
+      <circle cx="13" cy="24" r="10" />
+      <circle cx="13" cy="24" r="5" strokeWidth="1.5" />
+      <circle cx="13" cy="24" r="1.5" fill="currentColor" />
+      <HArrow x1={25} x2={31} y={24} />
+      <rect x="33" y="12" width="11" height="24" rx="1" />
+      <path d="M33 18H44M33 29H44" stroke={ACCENT} />
+    </>
+  ),
+  // Diffraction disks, found ones ringed.
+  disks: () => (
+    <>
+      {[10, 24, 38].flatMap((y) => [10, 24, 38].map((x) => (
+        <circle key={`${x}-${y}`} cx={x} cy={y} r={x === 24 && y === 24 ? 3.5 : 2.5} fill="currentColor" />
+      )))}
+      {[[24, 10], [10, 24], [38, 24], [24, 38]].map(([x, y]) => (
+        <circle key={`r${x}-${y}`} cx={x} cy={y} r="6" stroke={ACCENT} />
+      ))}
+    </>
+  ),
+  // A crystal (a cell) and the pattern simulated from it.
+  templates: () => (
+    <>
+      <path d="M5 11H17V23H5ZM11 5H23V17H11ZM5 11L11 5M17 11L23 5M17 23L23 17M5 23L11 17" strokeWidth="1.5" />
+      <circle cx="32" cy="32" r="2.2" fill="currentColor" />
+      {[0, 60, 120, 180, 240, 300].map((a) => {
+        const r = (a * Math.PI) / 180;
+        return <circle key={a} cx={32 + 9 * Math.cos(r)} cy={32 + 9 * Math.sin(r)} r="2.4" fill={ACCENT} stroke="none" />;
+      })}
+    </>
+  ),
+  // Grains, each with its crystal turned its own way: one picked out.
+  orientation: () => (
+    <>
+      <path d="M5 22L20 18L28 30L22 43H5Z" fill={ACCENT} fillOpacity="0.3" stroke="none" />
+      <rect x="5" y="5" width="38" height="38" rx="2" />
+      <path d="M5 22L20 18L24 5M20 18L28 30L43 26M28 30L22 43" strokeWidth="1.5" />
+      {([[12, 12, 20], [33, 14, -15], [14, 32, 40], [35, 35, 5]] as const).map(([x, y, a], i) => (
+        <rect key={i} x="-3.5" y="-3.5" width="7" height="7" transform={`translate(${x} ${y}) rotate(${a})`}
+          strokeWidth="1.5" stroke={i === 2 ? ACCENT : "currentColor"} />
+      ))}
+    </>
+  ),
+  // Spots, their spacing measured against a ruler.
+  calibration: () => (
+    <>
+      {[10, 24, 38].map((x) => <circle key={x} cx={x} cy="14" r="3" fill="currentColor" />)}
+      <path d="M10 24H38M10 20V28M38 20V28" stroke={ACCENT} />
+      <rect x="4" y="34" width="40" height="8" rx="1" />
+      <path d="M10 34V38M17 34V37M24 34V38M31 34V37M38 34V38" strokeWidth="1.5" />
+    </>
+  ),
+  // The vectors' lengths as a histogram: its peaks the reflections' rings.
+  "vector-magnitudes": () => (
+    <>
+      <path d="M6 6V42H44" />
+      {[[11, 4], [16, 22], [21, 8], [26, 4], [31, 28], [36, 9], [41, 3]].map(([x, h]) => (
+        <path key={x} d={`M${x} 42V${42 - h}`} strokeWidth="3.5" strokeLinecap="butt" stroke={h > 20 ? ACCENT : "currentColor"} />
+      ))}
+    </>
+  ),
+  // A pattern with its Bragg spots masked.
+  "vector-mask": () => (
+    <>
+      <circle cx="24" cy="24" r="19" />
+      <circle cx="24" cy="24" r="3" fill="currentColor" />
+      {[[24, 12], [24, 36], [12, 24], [36, 24]].map(([x, y]) => (
+        <g key={`${x}-${y}`}>
+          <circle cx={x} cy={y} r="5" stroke={ACCENT} fill={ACCENT} fillOpacity="0.35" />
+          <circle cx={x} cy={y} r="1.6" fill="currentColor" />
+        </g>
+      ))}
+    </>
+  ),
+  // A cell of the lattice (dashed) stretched and sheared.
+  strain: () => (
+    <>
+      <rect x="7" y="12" width="26" height="26" strokeDasharray="3 3" />
+      <path d="M7 38L13 10H43L37 38Z" stroke={ACCENT} />
+      <path d="M33 25H41M38 22L41 25L38 28" strokeWidth="1.5" />
+    </>
+  ),
   // A peak with plural-scattering bumps made single.
   deconvolution: () => (
     <>

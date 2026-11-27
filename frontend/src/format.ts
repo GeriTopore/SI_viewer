@@ -74,6 +74,13 @@ export function kindLabel(d: DatasetSummary): string {
   if (d.atomic?.kind === "cage") return "Disp";
   if (d.atomic) return ATOMIC_LABEL[d.atomic.output];
   if (d.origin === "mask") return "Mask";
+  if (d.structure) return "Structure";
+  if (d.origin === "templates") return "Templates";
+  if (d.signal_type === "polar_diffraction") return "Polar";
+  if (d.orientation?.output === "map") return "Orient";
+  if (d.orientation?.output === "correlation") return "Corr";
+  if (d.orientation?.output === "ipf") return "IPF";
+  if (d.orientation?.output === "phase") return "Phase";
   if (d.origin === "disks") return "Bragg";
   if (d.origin === "bragg-map") return "BVM";
   if (d.origin === "beam-shift") return "Shift";
@@ -95,7 +102,9 @@ export function kindLabel(d: DatasetSummary): string {
 /** e.g. "EELS spectrum image" (the technique is left out when unknown). */
 export function kindName(d: DatasetSummary): string {
   const t = hasTechnique(d) && d.technique ? `${d.technique} ` : "";
-  const name = isLineScan(d)
+  const name = d.signal_type === "polar_diffraction"
+    ? "polar patterns"
+    : isLineScan(d)
     ? "LineScan"
     : isInsituView(d)
       ? "in-situ spectrum image"

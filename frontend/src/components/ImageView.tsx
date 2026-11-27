@@ -82,8 +82,6 @@ interface Props {
   children?: ReactNode;
   /** Interactive panel drawn top-right (e.g. the layer list). */
   panel?: ReactNode;
-  /** Hint shown in the readout bar when the pointer is outside the image. */
-  hint?: string;
   /** Message shown when there are no layers to draw. */
   empty?: string | null;
   interaction?: Interaction;
@@ -169,7 +167,7 @@ const valueAt = (frame: Frame, ix: number, iy: number) => {
 let hoveredView: string | null = null;
 
 export function ImageView({
-  viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, hint, empty,
+  viewKey, layers, fullWidth, fullHeight, calX, calY, loading, error, children, panel, empty,
   interaction, renderOverlay, analysisKey, publish: publishes = true, scaleBar = true, fftView, loupeGroup,
   readout = true, follow = false, hoverChip = false, onSave, controlRef, scanFactor = 1, wheelZoom = "always", blend = "add",
 }: Props) {
@@ -243,8 +241,11 @@ export function ImageView({
   // Switching to a different view key: restore its saved view, or fit.
   useEffect(() => {
     const saved = useDisplay.getState().views[viewKey];
-    fitted.current = !saved;
     imageSize.current = { w: fullWidth, h: fullHeight };
+    // No saved view and the panel already sized: fit now (the size effect
+    // below won't run again, and nothing is drawn without a view).
+    if (!saved && size.w && fullWidth) return fit();
+    fitted.current = !saved;
     viewRef.current = saved ?? null;
     setViewState(saved ?? null);
   }, [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -594,11 +595,7 @@ export function ImageView({
                 ))}
             </>
           ) : (
-            <span className="muted">
-              {fullWidth} × {fullHeight} px
-              {(layers[0]?.frame?.bin ?? 1) > 1 && ` · preview binned ×${layers[0].frame!.bin}`}
-              {hint && ` · ${hint}`}
-            </span>
+            (layers[0]?.frame?.bin ?? 1) > 1 && <span className="muted">Preview binned ×{layers[0].frame!.bin}</span>
           )}
         </span>
         <span className="readout-zoom">
@@ -617,7 +614,7 @@ export function ImageView({
             className="link-button"
             onClick={saveImage}
             disabled={!anyFrame}
-            title="Save the whole image as shown (layers, colours, contrast) at full resolution, with a scale bar, as PNG"
+            title="Save the image as shown, at full resolution, as PNG"
           >
             Save PNG
           </button>

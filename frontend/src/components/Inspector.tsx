@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { CurveModelInfo } from "./CurveModelInfo";
 import { FourDCalibrationInfo } from "./FourDCalibrationInfo";
+import { StructureInfo } from "./StructureInfo";
 import { api, type DatasetSummary, type EelsRole, type MicroscopeInfo, type Technique } from "../api/client";
 import { useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
@@ -69,13 +70,28 @@ export function Inspector() {
             </dd>
           </>
         )}
-        <dt>Shape</dt>
-        <dd>{shapeLabel(d)}</dd>
-        <dt>Data</dt>
-        <dd>
-          {d.dtype}, {bytesLabel(d.nbytes)}
-          <span className="muted"> · {d.lazy ? "on disk" : "in memory"}</span>
-        </dd>
+        {d.templates && (
+          <>
+            <dt>Phase</dt>
+            <dd>{d.templates.name}</dd>
+            <dt>Templates</dt>
+            <dd>
+              {d.templates.templates}
+              <span className="muted"> · {formatValue(d.templates.options.resolution)}°, {formatValue(d.templates.options.reciprocal_radius)} 1/Å, {formatValue(d.templates.options.kv)} kV</span>
+            </dd>
+          </>
+        )}
+        {d.structure ? <StructureInfo s={d.structure} /> : d.templates ? null : (
+          <>
+            <dt>Shape</dt>
+            <dd>{shapeLabel(d)}</dd>
+            <dt>Data</dt>
+            <dd>
+              {d.dtype}, {bytesLabel(d.nbytes)}
+              <span className="muted"> · {d.lazy ? "on disk" : "in memory"}</span>
+            </dd>
+          </>
+        )}
         {d.microscope && (
           <>
             <dt>Microscope</dt>
@@ -99,7 +115,7 @@ export function Inspector() {
         {filterLabel(d.filters) && (
           <>
             <dt>Filtered</dt>
-            <dd title="Applied when the data is shown (Process tab); the loaded data is unchanged">
+            <dd title="Applied when shown; the loaded data is unchanged">
               {filterLabel(d.filters)}
             </dd>
           </>
@@ -109,7 +125,7 @@ export function Inspector() {
       <FourDCalibrationInfo d={d} />
       {d.insitu?.view && <SeriesInfo d={d} />}
       {d.origin === "curve-model" && <CurveModelInfo key={d.id} d={d} />}
-      <AxesTable key={d.id} d={d} />
+      {!d.structure && !d.templates && <AxesTable key={d.id} d={d} />}
       <SaveButtons d={d} />
     </div>
   );
@@ -137,7 +153,7 @@ function MicroscopeRow({ d }: { d: DatasetSummary }) {
           {v(m.beam_energy)} kV · α {v(m.convergence_angle)} · β {v(m.collection_angle)} mrad
         </span>
       )}
-      <button className="link-button" onClick={() => setEditing(true)} title="Set the beam energy and the convergence and collection angles">
+      <button className="link-button" onClick={() => setEditing(true)} title="Set beam energy, convergence and collection angles">
         Edit…
       </button>
       {editing && <MicroscopeDialog d={d} onClose={() => setEditing(false)} />}

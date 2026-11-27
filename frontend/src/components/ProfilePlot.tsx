@@ -204,12 +204,7 @@ export function ProfilePlot({ tables, xUnits, onPick, picked, onHover }: Props) 
               ),
             )}
           </>
-        ) : (
-          <span className="muted">
-            Drag to zoom · double-click resets
-            {onPick && " · Shift-click or shift-drag marks the image"}
-          </span>
-        )}
+        ) : null}
       </div>
       <div ref={wrapRef} className="profile-canvas" />
     </div>

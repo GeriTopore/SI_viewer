@@ -21,6 +21,9 @@ export function autoContrast(key: string, frame: Frame, version = "", colormap?:
   // circle. A phase (cmocean's phase map): 0–2π, as kemstem plots it.
   // Diverging maps (strain): symmetric about 0.
   let [lo, hi] = frame.shade ? [-180, 180] : cmap === "phase" ? [0, 2 * Math.PI] : autoRange(sorted);
+  // Colours darkened by a value (an orientation map's IPF images, by the
+  // correlation): from 0, so the shading is a fraction of the best.
+  if (frame.rgb) lo = 0;
   if (cmap === "rdbu" && !frame.shade) {
     const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
     [lo, hi] = [-m, m];

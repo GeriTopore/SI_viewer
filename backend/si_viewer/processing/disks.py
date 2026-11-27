@@ -217,6 +217,37 @@ def vectors_at(vectors, x: float, y: float) -> np.ndarray:
     return out.astype(np.float32)
 
 
+def magnitude_histogram(vectors, bins: int = 100) -> tuple[np.ndarray, np.ndarray]:
+    """pyxem's histogram of the vectors' magnitudes (their distance from the
+    pattern axes' 0, in their units): (bin centres, counts)."""
+    with _quiet():
+        hist = vectors.get_magnitude_histogram(bins=bins)
+    axis = hist.axes_manager.signal_axes[0]
+    return np.asarray(axis.axis, dtype=float), np.asarray(hist.data, dtype=float)
+
+
+def vector_mask(vectors, cube, disk_r: float) -> np.ndarray:
+    """pyxem's mask of the vectors (``DiffractionVectors.to_mask``): at each
+    scan position, discs of ``disk_r`` pattern px at its vectors. bool, the
+    data's shape [y, x, ky, kx]."""
+    ky_ax, kx_ax = cube.axes_manager.signal_axes[::-1]
+    peaks = vectors.metadata.get_item("Peaks") if vectors.metadata.has_item("Peaks") else None
+    had = peaks is not None and peaks.has_item("signal_axes")
+    old = peaks.signal_axes if had else None
+    # The pattern's axes, in the vectors' column order (ky, kx).
+    vectors.metadata.set_item("Peaks.signal_axes", [ky_ax, kx_ax])
+    try:
+        with _quiet():
+            mask = vectors.to_mask(disk_r=disk_r)
+        out = np.asarray(mask.data.compute() if hasattr(mask.data, "compute") else mask.data, dtype=bool)
+    finally:
+        if had:
+            vectors.metadata.Peaks.signal_axes = old
+        else:
+            del vectors.metadata.Peaks.signal_axes
+    return out.reshape(cube.data.shape)
+
+
 def table_of(vectors) -> np.ndarray:
     """``DiffractionVectors`` (``to_vectors``) back as a Bragg vectors table
     (``VECTOR_FIELDS``, pattern pixels)."""

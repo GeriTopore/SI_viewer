@@ -13,6 +13,7 @@ import { LineScanView } from "./LineScanView";
 import { SpectrumImageView } from "./SpectrumImageView";
 import { SpectrumView } from "./SpectrumView";
 import { StackView } from "./StackView";
+import { StructureView } from "../components/StructureInfo";
 
 /** Shows exactly the highlighted datasets: one spectrum image, stack or
  * spectrum (if any) with the highlighted images overlaid in colour. */
@@ -57,6 +58,12 @@ export function MainView() {
   if (primary?.origin === "disks") {
     const cube = byId.get(primary.parent_id ?? "");
     if (cube?.kind === "4dstem") return <FourDView key={`${cube.id}@${cube.revision}`} ds={cube} vectors />;
+  }
+  if (primary?.structure) return <StructureView key={primary.id} d={primary} />;
+  // A Structure's templates: the Structure, its Templates tab on them.
+  if (primary?.origin === "templates" && primary.templates) {
+    const structure = byId.get(primary.parent_id ?? "");
+    if (structure?.structure) return <StructureView key={structure.id} d={structure} templatesId={primary.id} />;
   }
   switch (primary?.kind) {
     case "spectrum_image":

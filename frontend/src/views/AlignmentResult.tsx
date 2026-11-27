@@ -122,7 +122,7 @@ export function ResultStep({ ds, a }: { ds: DatasetSummary; a: Alignment }) {
             className="secondary small-button"
             onClick={() => patch(ds.id, { badFrames: [...a.badFrames, frame].sort((x, y) => x - y) })}
             disabled={frames.length <= 2}
-            title="Leave this frame out: the shifts are corrected and the frames averaged again without it"
+            title="Leave this frame out and average again"
           >
             Mark bad
           </button>

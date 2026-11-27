@@ -272,7 +272,7 @@ export function FftPanel() {
             className={`fft-mask-toggle${compare ? " active" : ""}`}
             aria-pressed={compare}
             onClick={() => setCompare(!compare)}
-            title="The FFTs of the view and of each FFT box, side by side beside the image"
+            title="FFTs of the view and each FFT box, beside the image"
           >
             View in main window
           </button>

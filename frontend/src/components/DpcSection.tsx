@@ -117,7 +117,7 @@ export function DpcSection({ d }: { d: DatasetSummary }) {
         </span>
       </label>
       <div className="process-actions">
-        <label className="q-check" title="Flip the detector's y axis (its segments run the other way round)">
+        <label className="q-check" title="Flip the detector's y axis">
           <input type="checkbox" checked={s.mirror} onChange={(e) => set({ mirror: e.target.checked })} />
           Mirror
         </label>
@@ -128,7 +128,7 @@ export function DpcSection({ d }: { d: DatasetSummary }) {
               setNote(null);
             }}
             disabled={busy}
-            title="The detector rotation recorded in the file (as Velox uses it)"
+            title="The detector rotation recorded in the file"
           >
             Recorded
           </button>

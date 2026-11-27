@@ -1,0 +1,433 @@
+import { create } from "zustand";
+import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import { api, dataVersion, type DatasetSummary, type JobSummary, type MatchResult, type RankedMatch, type TemplateOptions } from "../api/client";
+import { useDatasets } from "./datasets";
+import { useLayers } from "./layers";
+import { jobRunning } from "./centring";
+import { runJob } from "./strain";
+import type { SceneOrientation } from "../components/StructureScene";
+
+/** A Structure's templates: the defaults of pyxem's SPED-Ag tutorial. */
+export const DEFAULT_TEMPLATES: TemplateOptions = {
+  kv: 200,
+  resolution: 2,
+  zone_axes: [],
+  reciprocal_radius: 1.5,
+  max_excitation_error: 0.001,
+  precession_angle: 1,
+  minimum_intensity: 1e-5,
+};
+
+/** The polar transform of the patterns (pyxem's ``get_azimuthal_integral2d``),
+ * then a gamma: the backend's ``PolarOptions``. */
+export interface PolarOptions {
+  /** Radial points. */
+  npt: number;
+  /** Azimuthal points. */
+  npt_azim: number;
+  /** Radial range (1/Å); r_max null: the whole pattern. */
+  r_min: number;
+  r_max: number | null;
+  /** 1: none. */
+  gamma: number;
+  /** Make the ring circular with the calibration's ellipse. */
+  ellipse: boolean;
+}
+
+export const DEFAULT_POLAR: PolarOptions = { npt: 112, npt_azim: 360, r_min: 0, r_max: null, gamma: 1, ellipse: true };
+
+/** A template picked in a Templates object. */
+export interface PickedTemplate {
+  /** The Templates object. */
+  id: string;
+  index: number;
+}
+
+interface OrientationState {
+  /** The Templates process of each Structure: settings changed from the defaults. */
+  options: Record<string, Partial<TemplateOptions>>;
+  /** The Templates object each 4D-STEM data uses (drawn on its patterns, matched against). */
+  chosen: Record<string, string | null>;
+  /** More phases matched with it (a phase map): Templates objects of other
+   * Structures, per 4D-STEM data. */
+  others: Record<string, string[]>;
+  setOthers: (cubeId: string, ids: string[]) => void;
+  /** The template drawn on each 4D-STEM data's patterns, scaled by this
+   * (1: at the pattern's calibrated pixel size). */
+  scale: Record<string, number>;
+  /** How each Structure is seen now (its 3D view, wherever shown). */
+  views: Record<string, SceneOrientation>;
+  /** Templates objects whose Templates tab follows the Structure's view. */
+  linked: Record<string, boolean>;
+  /** The template picked in each Templates object (by its id). */
+  picked: Record<string, number>;
+  /** The template picked last. */
+  shown: PickedTemplate | null;
+  /** The Polar transform process of each 4D-STEM data: settings changed. */
+  polar: Record<string, Partial<PolarOptions>>;
+  /** The running or last job of each Structure. */
+  jobs: Record<string, JobSummary | undefined>;
+  errors: Record<string, string | null>;
+  setOptions: (id: string, patch: Partial<TemplateOptions>) => void;
+  choose: (cubeId: string, id: string | null) => void;
+  setScale: (cubeId: string, scale: number) => void;
+  /** Matches (pyxem's get_orientation), by ``matchKey`` (the polar patterns
+   * matched and the templates), then by scan position "x,y": shared by the
+   * 4D-STEM data and its polar patterns. */
+  matchCache: Record<string, Record<string, MatchResult>>;
+  matchBusy: Record<string, boolean>;
+  matchErrors: Record<string, string | null>;
+  /** Match ``dsId`` (4D-STEM data, or polar patterns: ``polar`` null) at
+   * ``positions`` ([x, y]) against ``templates``; kept under ``key``. */
+  runMatch: (key: string, dsId: string, templates: string, polar: string | null, positions: number[][]) => Promise<void>;
+  /** The match shown at a position (``pickKey``): its rank in the match's
+   * ranked list (none: the best). */
+  matchPick: Record<string, number>;
+  /** Ranked matches described (their reflections), by ``describedKey``. */
+  described: Record<string, MatchResult>;
+  /** Show the match of ``rank`` at ``pos`` ("x,y") of matches ``key``
+   * (``templates``: the ids matched, joined by commas). */
+  pickMatch: (key: string, pos: string, rank: number, templates: string) => Promise<void>;
+  /** Orientation maps at scan positions (the tutorial's markers), by
+   * ``mapKey`` then "x,y". */
+  mapAtCache: Record<string, Record<string, MatchResult>>;
+  fetchMapAt: (key: string, omapId: string, positions: number[][]) => Promise<void>;
+  /** "Match orientation" in the Structure view: it turns to the match at the active cursor. */
+  followMatch: boolean;
+  setFollowMatch: (on: boolean) => void;
+  /** The whole scan matched (a job), per 4D-STEM data: its orientation map. */
+  mapJobs: Record<string, JobSummary | undefined>;
+  mapErrors: Record<string, string | null>;
+  /** The fraction of the templates fully matched after the fast pass (the tutorial's 0.5). */
+  fracKeep: Record<string, number>;
+  runMap: (dsId: string, templates: string, polar: string | null) => Promise<void>;
+  cancelMap: (dsId: string) => Promise<void>;
+  /** The polar patterns matched against, per 4D-STEM data (else ``polarFor``'s default). */
+  polarChoice: Record<string, string>;
+  choosePolar: (cubeId: string, polarId: string) => void;
+  setView: (structureId: string, o: SceneOrientation) => void;
+  setLinked: (id: string, on: boolean) => void;
+  pick: (id: string, index: number) => void;
+  setPolar: (id: string, patch: Partial<PolarOptions>) => void;
+  /** The polar transform of every pattern (a job): a copy under the data, or in place. */
+  transform: (id: string, options: PolarOptions, inPlace: boolean) => Promise<void>;
+  /** Simulate a Structure's templates (a job): a new Templates object under it. */
+  makeTemplates: (id: string, options: TemplateOptions) => Promise<void>;
+  cancel: (id: string) => Promise<void>;
+}
+
+export { jobRunning };
+
+export const templateOptionsOf = (changed: Partial<TemplateOptions> | undefined): TemplateOptions => ({ ...DEFAULT_TEMPLATES, ...changed });
+
+/** Browser storage that may be missing or refuse (private windows, blocked
+ * site data): then nothing is kept. */
+const safeStorage: StateStorage = {
+  getItem: (name) => {
+    try {
+      return localStorage.getItem(name);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name, value) => {
+    try {
+      localStorage.setItem(name, value);
+    } catch {
+      /* not kept */
+    }
+  },
+  removeItem: (name) => {
+    try {
+      localStorage.removeItem(name);
+    } catch {
+      /* nothing to remove */
+    }
+  },
+};
+
+/** The choices (templates, polar patterns, Match orientation, template
+ * scale, structure views) are kept across reloads in this browser; results
+ * and jobs aren't. */
+/** ``fetchMapAt``'s queue: maps with a request running, and the newest
+ * positions wanted next for each. */
+const mapAtBusy = new Set<string>();
+const mapAtWanted = new Map<string, { omapId: string; positions: number[][] }>();
+
+export const useOrientation = create<OrientationState>()(persist((set, get) => {
+  /** Run a job to its end, kept in ``jobs`` under ``id``; ``done`` with its result. */
+  const follow = async (id: string, start: () => Promise<JobSummary>, done: (job: JobSummary) => void) => {
+    const setJob = (job: JobSummary) => set((s) => ({ jobs: { ...s.jobs, [id]: job } }));
+    set((s) => ({ errors: { ...s.errors, [id]: null } }));
+    try {
+      let job = await start();
+      setJob(job);
+      while (jobRunning(job)) {
+        await new Promise((r) => setTimeout(r, 300));
+        try {
+          job = await api.getJob(job.id);
+          setJob(job);
+        } catch {
+          /* backend busy or restarted: try again */
+        }
+      }
+      if (job.status === "done" && job.result) done(job);
+    } catch (e) {
+      set((s) => ({ errors: { ...s.errors, [id]: (e as Error).message } }));
+    }
+  };
+  return {
+  options: {},
+  chosen: {},
+  others: {},
+  setOthers: (cubeId, ids) => set((s) => ({ others: { ...s.others, [cubeId]: ids } })),
+  scale: {},
+  views: {},
+  linked: {},
+  picked: {},
+  shown: null,
+  polar: {},
+  jobs: {},
+  errors: {},
+  setOptions: (id, patch) => set((s) => ({ options: { ...s.options, [id]: { ...s.options[id], ...patch } } })),
+  choose: (cubeId, id) => set((s) => ({ chosen: { ...s.chosen, [cubeId]: id } })),
+  setScale: (cubeId, scale) => set((s) => ({ scale: { ...s.scale, [cubeId]: scale } })),
+  polarChoice: {},
+  choosePolar: (cubeId, polarId) => set((s) => ({ polarChoice: { ...s.polarChoice, [cubeId]: polarId } })),
+  matchCache: {},
+  matchBusy: {},
+  matchErrors: {},
+  runMatch: async (key, dsId, templates, polar, positions) => {
+    set((s) => ({ matchBusy: { ...s.matchBusy, [key]: true }, matchErrors: { ...s.matchErrors, [key]: null } }));
+    try {
+      const r = await api.matchAt(dsId, templates, positions, polar);
+      const found = Object.fromEntries(r.matches.map((m) => [`${m.x},${m.y}`, m]));
+      set((s) => ({ matchCache: { ...s.matchCache, [key]: { ...s.matchCache[key], ...found } } }));
+    } catch (e) {
+      set((s) => ({ matchErrors: { ...s.matchErrors, [key]: (e as Error).message } }));
+    } finally {
+      set((s) => ({ matchBusy: { ...s.matchBusy, [key]: false } }));
+    }
+  },
+  matchPick: {},
+  described: {},
+  pickMatch: async (key, pos, rank, templates) => {
+    set((s) => ({ matchPick: { ...s.matchPick, [pickKey(key, pos)]: rank } }));
+    const row = get().matchCache[key]?.[pos]?.ranked?.[rank];
+    if (!rank || !row) return;
+    const id = templates.split(",")[row.phase];
+    const k = describedKey(id, row);
+    if (!id || get().described[k]) return;
+    try {
+      const d = await api.describeTemplate(id, row);
+      set((s) => ({ described: { ...s.described, [k]: d } }));
+    } catch (e) {
+      set((s) => ({ matchErrors: { ...s.matchErrors, [key]: (e as Error).message } }));
+    }
+  },
+  mapAtCache: {},
+  fetchMapAt: async (key, omapId, positions) => {
+    // One request at a time per map; while one runs only the newest wanted
+    // positions wait (dragging a cursor wants every pixel it crosses).
+    mapAtWanted.set(key, { omapId, positions });
+    if (mapAtBusy.has(key)) return;
+    mapAtBusy.add(key);
+    try {
+      for (let w = mapAtWanted.get(key); w; w = mapAtWanted.get(key)) {
+        mapAtWanted.delete(key);
+        const have = get().mapAtCache[key] ?? {};
+        const missing = w.positions.filter(([x, y]) => !have[`${x},${y}`]);
+        if (!missing.length) continue;
+        try {
+          const r = await api.mapAt(w.omapId, missing);
+          const found = Object.fromEntries(r.matches.map((m) => [`${m.x},${m.y}`, m]));
+          set((s) => ({ mapAtCache: { ...s.mapAtCache, [key]: { ...s.mapAtCache[key], ...found } } }));
+        } catch {
+          /* the map gone or changed: nothing drawn */
+        }
+      }
+    } finally {
+      mapAtBusy.delete(key);
+    }
+  },
+  followMatch: false,
+  setFollowMatch: (on) => set({ followMatch: on }),
+  mapJobs: {},
+  mapErrors: {},
+  fracKeep: {},
+  runMap: async (dsId, templates, polar) => {
+    set((s) => ({ mapErrors: { ...s.mapErrors, [dsId]: null } }));
+    try {
+      const job = await runJob(
+        `/api/datasets/${dsId}/4d/orientation/map`,
+        { templates, polar, options: { n_best: 1, frac_keep: get().fracKeep[dsId] ?? 0.5 } },
+        (j) => set((s) => ({ mapJobs: { ...s.mapJobs, [dsId]: j } })),
+      );
+      if (job.status === "done" && job.result) {
+        useDatasets.getState().replaceFile(job.result.file);
+        useLayers.getState().notify("Orientation map added under the data: its correlation and IPF-x, y, z.");
+      }
+    } catch (e) {
+      set((s) => ({ mapErrors: { ...s.mapErrors, [dsId]: (e as Error).message } }));
+    }
+  },
+  cancelMap: async (dsId) => {
+    const job = get().mapJobs[dsId];
+    if (job) set((s) => ({ mapJobs: { ...s.mapJobs, [dsId]: undefined } })), await api.cancelJob(job.id);
+  },
+  setView: (structureId, o) => set((s) => ({ views: { ...s.views, [structureId]: o } })),
+  setLinked: (id, on) => set((s) => ({ linked: { ...s.linked, [id]: on } })),
+  pick: (id, index) => set((s) => ({ picked: { ...s.picked, [id]: index }, shown: { id, index } })),
+  setPolar: (id, patch) => set((s) => ({ polar: { ...s.polar, [id]: { ...s.polar[id], ...patch } } })),
+  transform: (id, options, inPlace) => follow(id, () => api.polarTransform(id, options, inPlace), (job) => {
+    useDatasets.getState().replaceFile(job.result!.file);
+    if (!inPlace && job.result!.id) useDatasets.getState().select(job.result!.id);
+    useLayers.getState().notify(inPlace ? "Patterns transformed to polar." : "Polar transform added to the dataset pane.");
+  }),
+  makeTemplates: async (id, options) => {
+    const setJob = (job: JobSummary) => set((s) => ({ jobs: { ...s.jobs, [id]: job } }));
+    set((s) => ({ errors: { ...s.errors, [id]: null } }));
+    try {
+      let job = await api.makeTemplates(id, options);
+      setJob(job);
+      while (jobRunning(job)) {
+        await new Promise((r) => setTimeout(r, 300));
+        try {
+          job = await api.getJob(job.id);
+          setJob(job);
+        } catch {
+          /* backend busy or restarted: try again */
+        }
+      }
+      if (job.status === "done" && job.result) {
+        useDatasets.getState().replaceFile(job.result.file);
+        useLayers.getState().notify(`${job.result.templates ?? 0} templates made.`);
+      }
+    } catch (e) {
+      set((s) => ({ errors: { ...s.errors, [id]: (e as Error).message } }));
+    }
+  },
+  cancel: async (id) => {
+    const job = get().jobs[id];
+    if (job) {
+      set((s) => ({ jobs: { ...s.jobs, [id]: undefined } }));
+      await api.cancelJob(job.id);
+    }
+  },
+  };
+}, {
+  name: "si-viewer:orientation",
+  storage: createJSONStorage(() => safeStorage),
+  partialize: (s) => ({
+    chosen: s.chosen, others: s.others, polarChoice: s.polarChoice, followMatch: s.followMatch, scale: s.scale, views: s.views, linked: s.linked,
+    fracKeep: s.fracKeep,
+  }),
+}));
+
+/** 1/Å per unit of the pattern's axis (null: not calibrated). */
+export function perAngstrom(d: DatasetSummary): number | null {
+  const units = d.axes.find((a) => !a.navigate)?.units ?? "";
+  return units === "1/Å" || units === "1/A" ? 1 : units === "1/nm" ? 0.1 : null;
+}
+
+export const polarOptionsOf = (changed: Partial<PolarOptions> | undefined): PolarOptions => ({ ...DEFAULT_POLAR, ...changed });
+
+/** The Templates objects open (under their Structures). */
+export const templatesOf = (all: DatasetSummary[]) => all.filter((x) => x.origin === "templates" && x.templates);
+
+/** Whether ``d`` is a polar transform (made by Polar transform). */
+export const isPolar = (d: DatasetSummary) => d.signal_type === "polar_diffraction";
+
+const scanOf = (d: DatasetSummary) => d.axes.filter((a) => a.navigate).map((a) => a.size).join("×");
+
+/** The polar patterns ``d`` (4D-STEM data) can be matched against: those of
+ * its file with the same scan (its own, or a copy's such as the vector-masked
+ * data's), newest first. */
+export const polarsFor = (all: DatasetSummary[], d: DatasetSummary): DatasetSummary[] =>
+  all.filter((x) => isPolar(x) && x.id !== d.id && x.file_id === d.file_id && scanOf(x) === scanOf(d)).reverse();
+
+/** The polar patterns matched for ``d``: itself if it is some, else the one
+ * chosen, else its own newest, else the newest it can use. */
+export function polarFor(s: { polarChoice: Record<string, string> }, all: DatasetSummary[], d: DatasetSummary): DatasetSummary | null {
+  if (isPolar(d)) return d;
+  const options = polarsFor(all, d);
+  return options.find((x) => x.id === s.polarChoice[d.id]) ?? options.find((x) => x.parent_id === d.id) ?? options[0] ?? null;
+}
+
+/** Whether polar patterns were made at another pattern calibration than their
+ * source's now (its radius scale then out of date). */
+export function polarStale(polar: DatasetSummary, all: DatasetSummary[]): boolean {
+  const source = polar.polar?.source ? all.find((x) => x.id === polar.polar!.source) : undefined;
+  if (!source || !polar.polar) return false;
+  const now = source.axes.filter((a) => !a.navigate);
+  return polar.polar.axes.some((a, i) => !now[i] || Math.abs(now[i].scale - a.scale) > 1e-9 * Math.abs(a.scale)
+    || Math.abs(now[i].offset - a.offset) > 1e-9 * Math.max(1, Math.abs(a.offset)) || now[i].units !== a.units);
+}
+
+/** Where an orientation map's positions are kept. */
+export const mapKey = (omap: DatasetSummary) => `${omap.id}|${dataVersion(omap)}`;
+
+/** The orientation map drawn on ``d``'s patterns: one made from it or from
+ * its polar patterns (by ``polar``), the one matching its choices first. */
+export function mapFor(all: DatasetSummary[], d: DatasetSummary, polar: DatasetSummary | null, templates: string | null) {
+  const maps = all.filter((x) => x.orientation?.output === "map"
+    && (x.parent_id === d.id || x.orientation.polar === d.id || (polar && x.orientation.polar === polar.id)));
+  return maps.find((x) => x.orientation!.polar === polar?.id && x.orientation!.templates === templates) ?? maps[maps.length - 1] ?? null;
+}
+
+/** Where the matches of polar patterns ``polar`` against ``templates`` are kept. */
+export const matchKey = (polar: DatasetSummary, templates: string) => `${polar.id}|${dataVersion(polar)}|${templates}`;
+
+/** A position of matches ``key``: the match shown there (``matchPick``). */
+export const pickKey = (key: string, pos: string) => `${key}#${pos}`;
+/** A ranked match of Templates ``id`` (``described``). */
+export const describedKey = (id: string, r: RankedMatch) => `${id}|${r.index}|${r.rotation}|${r.mirror}`;
+
+/** The match shown at ``pos`` of matches ``key`` (``templates``: the ids
+ * matched, joined by commas): the one picked in the Match tab's list, once
+ * described, else the best. */
+export function shownMatch(
+  s: Pick<OrientationState, "matchCache" | "matchPick" | "described">, key: string, pos: string, templates: string,
+): MatchResult | undefined {
+  const m = s.matchCache[key]?.[pos];
+  const rank = s.matchPick[pickKey(key, pos)] ?? 0;
+  const row = rank ? m?.ranked?.[rank] : undefined;
+  if (!m || !row) return m;
+  const id = templates.split(",")[row.phase];
+  const d = id ? s.described[describedKey(id, row)] : undefined;
+  if (!d) return m;
+  return {
+    ...m, best: { ...d.best, correlation: row.correlation }, vectors: d.vectors, polar: d.polar,
+    templates: m.templates !== undefined ? id : undefined, phase_index: row.phase, phase: m.phases?.[row.phase]?.name ?? m.phase,
+  };
+}
+
+/** The Templates object chosen for ``d``: its own, or (polar patterns) their
+ * data's, or that of data matching against them. */
+export const chosenFor = (
+  s: { chosen: Record<string, string | null>; polarChoice: Record<string, string> }, d: DatasetSummary,
+): string | null => {
+  if (s.chosen[d.id] || !isPolar(d)) return s.chosen[d.id] ?? null;
+  const user = Object.keys(s.polarChoice).find((id) => s.polarChoice[id] === d.id && s.chosen[id]);
+  return (d.parent_id ? s.chosen[d.parent_id] : null) ?? (user ? s.chosen[user] : null) ?? null;
+};
+
+/** The other phases matched for ``d`` (its own, or its data's for polar patterns). */
+const NO_OTHERS: string[] = [];
+export const othersFor = (s: { others: Record<string, string[]> }, d: DatasetSummary): string[] =>
+  s.others[d.id] ?? (isPolar(d) && d.parent_id ? s.others[d.parent_id] : undefined) ?? NO_OTHERS;
+
+/** What ``d`` is matched against: the Templates chosen, then those of the
+ * other phases that are open, joined by commas (one phase: its id). */
+export const phasesFor = (
+  s: { chosen: Record<string, string | null>; polarChoice: Record<string, string>; others: Record<string, string[]> },
+  d: DatasetSummary, all: DatasetSummary[],
+): string | null => {
+  const main = chosenFor(s, d);
+  if (!main) return null;
+  const open = new Set(templatesOf(all).map((x) => x.id));
+  return [main, ...othersFor(s, d).filter((id) => id !== main && open.has(id))].join(",");
+};
+
+/** A phase map's colours, in the order of its phases (the backend's, matplotlib's tab10). */
+export const PHASE_COLOURS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"];

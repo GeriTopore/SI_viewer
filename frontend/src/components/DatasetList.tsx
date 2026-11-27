@@ -32,7 +32,7 @@ function countUnder(id: string, tree: FileTree): number {
 const pairStyle = (colour: number) => ({ "--pair": `var(--pair-${colour})` }) as CSSProperties;
 
 export const badgeClass = (d: DatasetSummary) =>
-  `badge badge-${d.origin === "curve-model" ? "model" : d.origin === "mask" ? "mask" : d.atomic ? "atomic" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.kind}`;
+  `badge badge-${d.origin === "curve-model" ? "model" : d.origin === "mask" ? "mask" : d.atomic ? "atomic" : d.origin === "pca" || d.origin === "pca-factors" ? "pca" : d.dpc?.output === "colour" || d.dpc?.output === "idpc" ? "dpc" : isWindowMap(d) ? "window" : isBackgroundRemoved(d) ? "background" : isDeconvolved(d) ? "deconvolved" : isThickness(d) ? "thickness" : isZlpShift(d) ? "shift" : d.survey ? "survey" : d.is_element_map || d.origin === "curve-fit" ? "map" : d.signal_type === "polar_diffraction" ? "polar" : d.kind}`;
 
 const deleteTitle = (d: DatasetSummary) =>
   d.origin === "mask"
@@ -43,8 +43,10 @@ const deleteTitle = (d: DatasetSummary) =>
     ? `Delete this ${isLineScan(d) ? "LineScan" : "spectrum image"} (and what was made from it)`
     : d.origin === "fitted" || d.origin === "curve-fit" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
       ? "Delete this map"
-      : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
-        (d.origin === "file" ? ". The file on disk is not changed." : "");
+      : d.is_element_map
+      ? `Delete this map (unticks ${elementOf(d)})` +
+        (d.origin === "file" ? "; the file on disk is unchanged" : "")
+      : "Delete (and what was made from it)";
 
 export function DatasetList() {
   const { files, selection, focusId, clickDataset, toggleSelect, showOnly, closeFile, deleteDataset, enterWorkspace } = useDatasets();

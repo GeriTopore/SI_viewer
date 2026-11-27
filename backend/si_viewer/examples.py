@@ -244,9 +244,11 @@ def pyxem_cached(filename: str) -> bool:
     return Dataset(filename).is_in_cache
 
 
-def _pyxem(name: str, title: str, recorded: bool = False, **kwargs):
+def _pyxem(name: str, title: str, recorded: bool = False, centre: bool = False, **kwargs):
     """One of pyxem's datasets (``pyxem.data.<name>``): a simulation, or a
-    recorded dataset (downloaded by pyxem on first use)."""
+    recorded dataset (downloaded by pyxem on first use). ``centre``: patterns
+    drawn centred whose axes start at 0 get their 0 at the middle (pyxem's
+    ``calibration.center = None``, as its tutorials do before integrating)."""
     def load() -> list:
         import pyxem.data
 
@@ -258,6 +260,8 @@ def _pyxem(name: str, title: str, recorded: bool = False, **kwargs):
         s.metadata.General.title = title
         for ax in s.axes_manager.signal_axes:
             ax.units = _PYXEM_UNITS.get(ax.units, ax.units)
+        if centre and all(ax.offset == 0 for ax in s.axes_manager.signal_axes):
+            s.calibration.center = None
         return [s]
 
     return load
@@ -266,6 +270,8 @@ def _pyxem(name: str, title: str, recorded: bool = False, **kwargs):
 # pyxem's reciprocal units (LaTeX and others) as the app writes them.
 _PYXEM_UNITS = {"$\\AA^{-1}$": "1/Å", "$A^{-1}$": "1/Å", "k_A^-1": "1/Å", "A^-1": "1/Å", "nm^-1": "1/nm", "k_nm^-1": "1/nm"}
 
+
+ORIENTATION_GROUP = "4D-STEM: orientation and phase"
 
 # (id, pyxem function, title, group, description, keyword arguments)
 _PYXEM_SIMULATED = [
@@ -339,7 +345,8 @@ def _pyxem_examples() -> list[Example]:
     except ImportError:
         return []
     return [
-        *(Example(i, title, desc, _pyxem(f, title, **kw), group) for i, f, title, group, desc, kw in _PYXEM_SIMULATED),
+        *(Example(i, title, desc, _pyxem(f, title, centre=group == ORIENTATION_GROUP, **kw), group)
+          for i, f, title, group, desc, kw in _PYXEM_SIMULATED),
         *(Example(i, title, desc, _pyxem(f, title, recorded=True), group, (file, mb))
           for i, f, file, mb, title, group, desc in _PYXEM_RECORDED),
     ]

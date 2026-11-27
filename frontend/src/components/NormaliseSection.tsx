@@ -44,7 +44,7 @@ export function NormaliseSection({ d }: { d: DatasetSummary }) {
         </div>
       </label>
       {s.mode === "value" && (
-        <label title="The energy each spectrum is divided by its value at (drag the line on the spectrum)">
+        <label title="Energy whose value each spectrum is divided by">
           <span>Energy</span>
           <span className="q-inline bg-range">
             <EnergyInput value={s.lo ?? 0} step={range?.step ?? 1} label="Energy" onCommit={(v) => set({ lo: snap(v) })} />
@@ -53,7 +53,7 @@ export function NormaliseSection({ d }: { d: DatasetSummary }) {
         </label>
       )}
       {s.mode === "mean" && (
-        <label title="The window each spectrum is divided by its mean over (drag the band on the spectrum)">
+        <label title="Window whose mean each spectrum is divided by">
           <span>
             <i className="bg-swatch" style={{ background: NORM_COLOUR }} />
             Window
@@ -66,7 +66,7 @@ export function NormaliseSection({ d }: { d: DatasetSummary }) {
           </span>
         </label>
       )}
-      <label className="q-check" title="Show the spectra normalised (also the toggle on the spectrum)">
+      <label className="q-check" title="Show the normalised spectra">
         <input type="checkbox" checked={s.on} onChange={(e) => set({ on: e.target.checked })} />
         Normalised ({normText(s, range?.units)})
       </label>
@@ -104,7 +104,7 @@ export function NormaliseToggle({ d }: { d: DatasetSummary }) {
   const s = useNormSettings(d);
   const units = energyRange(d)?.units;
   return (
-    <label className="field" title={`Normalise each spectrum: ${normText(s, units)} (chosen in the Process tab)`}>
+    <label className="field" title={`Normalise each spectrum: ${normText(s, units)}`}>
       <input type="checkbox" checked={s.on} onChange={(e) => useNorm.getState().set(d, { on: e.target.checked })} />
       Normalised
     </label>

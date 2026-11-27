@@ -61,11 +61,11 @@ export function BadPixelSection({ d }: { d: DatasetSummary }) {
   const count = found ? found.hot.length + found.dead.length : 0;
   return (
     <section className="q-form">
-      <label title="Hot: brighter than the median of the 8 pixels around by more than this × the mean pattern's mean intensity (0: off); the bright-field disk is left out">
+      <label title="Hot: brighter than its neighbours by this × the mean (0: off)">
         <span>Hot (× mean)</span>
         <input type="number" min={0} step={1} value={hot} onChange={(e) => setHot(Math.max(0, Number(e.target.value) || 0))} />
       </label>
-      <label title="Dead: dimmer than this × the median of the 8 pixels around (0: off)">
+      <label title="Dead: dimmer than this × its neighbours (0: off)">
         <span>Dead (×)</span>
         <input type="number" min={0} max={1} step={0.05} value={dead} onChange={(e) => setDead(Math.min(1, Math.max(0, Number(e.target.value) || 0)))} />
       </label>

@@ -53,7 +53,7 @@ export function PldSection({ d }: { d: DatasetSummary }) {
         <input type="number" min={0.02} max={0.5} step={0.05} value={s.within} onChange={(e) => set({ within: Math.max(0.02, Math.min(0.5, num(e.target.value, s.within))) })} />
       </label>
       <div className="process-actions">
-        <button className="primary" disabled={busy} onClick={() => detectPeaks(d)} title="Find the FFT's peaks, index them in the lattice and group the others by their offset from it">
+        <button className="primary" disabled={busy} onClick={() => detectPeaks(d)} title="Find the FFT peaks and group them by lattice offset">
           {st.busy === "Detecting" ? "Finding…" : "Find peaks"}
         </button>
         {st.peaks.length > 0 && (
@@ -74,7 +74,7 @@ export function PldSection({ d }: { d: DatasetSummary }) {
           ))}
         </div>
       )}
-      <label className="q-check-line small" title="Clicks on the FFT add a peak (with its conjugate), or switch a peak between damped and not; right-click removes one">
+      <label className="q-check-line small" title="Click the FFT to add a peak or toggle damping; right-click removes">
         <input type="checkbox" checked={st.picking} onChange={(e) => patch({ picking: e.target.checked })} />
         Pick on the FFT
         <input type="checkbox" checked={s.conjugates} onChange={(e) => set({ conjugates: e.target.checked })} style={{ marginLeft: 10 }} />
@@ -87,12 +87,12 @@ export function PldSection({ d }: { d: DatasetSummary }) {
       )}
 
       <h4 className="process-heading">Reference</h4>
-      <label title="Each damped peak is set to its background within this radius (FFT px)">
+      <label title="Damping radius round each peak (FFT px)">
         <span>Radius (px)</span>
         <input type="number" min={1} step={1} value={s.radius} onChange={(e) => set({ radius: Math.max(0.5, num(e.target.value, s.radius)) })} />
       </label>
       <div className="process-actions">
-        <button className="primary" disabled={busy || !damped} onClick={() => makeReference(d)} title="The image without the damped peaks: PLD reference (and difference) under it">
+        <button className="primary" disabled={busy || !damped} onClick={() => makeReference(d)} title="The image without the damped peaks, as the reference">
           {st.busy === "Damping" ? "Damping…" : reference ? "Make again" : "Make reference"}
         </button>
       </div>
@@ -104,7 +104,7 @@ export function PldSection({ d }: { d: DatasetSummary }) {
         </p>
       ) : (
         <>
-          <label title="How far (px) a column may have moved between the reference and the image">
+          <label title="How far (px) a column may have moved">
             <span>Within (px)</span>
             <input type="number" min={0.05} step={0.1} value={s.threshold} onChange={(e) => set({ threshold: Math.max(0.01, num(e.target.value, s.threshold)) })} />
           </label>
@@ -119,7 +119,7 @@ export function PldSection({ d }: { d: DatasetSummary }) {
             </div>
           ) : (
             <div className="process-actions">
-              <button className="primary" disabled={busy || !reference} onClick={() => measureDisplacements(d, columns)} title={reference ? "Fit the columns again in the reference and measure how far each moved" : "Make the reference first"}>
+              <button className="primary" disabled={busy || !reference} onClick={() => measureDisplacements(d, columns)} title={reference ? "Measure how far each column moved from the reference" : "Make the reference first"}>
                 {displacements ? "Measure again" : "Measure"}
               </button>
             </div>

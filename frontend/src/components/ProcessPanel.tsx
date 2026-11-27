@@ -3,7 +3,6 @@ import { create } from "zustand";
 import type { DatasetSummary, Filters, SpatialFilter, SpectralFilter } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { applyFilters } from "../state/filters";
-import { useAlignment } from "../state/alignment";
 import { PANE_SIZES, useUi, type SplitSide } from "../state/ui";
 import { Splitter } from "./Splitter";
 import { followProcess } from "./ProcessLink";
@@ -13,8 +12,12 @@ import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
 import { PatternBackgroundSection } from "./PatternBackgroundSection";
 import { StrainSection } from "./StrainSection";
+import { VectorMagnitudesSection, VectorMaskSection } from "./VectorMaskSection";
 import { CalibrationSection } from "./CalibrationSection";
 import { CentringSection } from "./CentringSection";
+import { OrientationSection } from "./OrientationSection";
+import { PolarSection } from "./PolarSection";
+import { TemplatesSection } from "./TemplatesSection";
 import { DiskDetectionSection } from "./DiskDetectionSection";
 import { VirtualImageSection } from "./VirtualImageSection";
 import { AlignSection } from "./AlignSection";
@@ -37,14 +40,13 @@ import { PldSection } from "./PldSection";
 import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
-import { GridIcon, ListIcon } from "./DatasetList";
 
 const SPATIAL: { id: SpatialFilter; label: string; title: string }[] = [
   { id: "none", label: "None", title: "No spatial filter" },
   { id: "gaussian", label: "Gaussian", title: "Gaussian blur" },
   { id: "median", label: "Median", title: "Median filter: removes outliers, keeps edges" },
   { id: "mean", label: "Mean", title: "Mean (box) filter" },
-  { id: "bandpass", label: "Bandpass", title: "Fourier bandpass: removes structures smaller than Small and larger than Large" },
+  { id: "bandpass", label: "Bandpass", title: "Fourier bandpass: keeps structures between Small and Large" },
 ];
 
 const SPECTRAL: { id: SpectralFilter; label: string; title: string }[] = [
@@ -125,7 +127,7 @@ interface Process {
 const SECTION_ORDER = ["Pre-processing", "Analysis"];
 
 /** ``processes`` sorted by section (``SECTION_ORDER``, then as they come),
- * keeping their order within each, so the numbers run through. */
+ * keeping their order within each. */
 function bySection(processes: Process[]): Process[] {
   const first = new Map<string, number>();
   processes.forEach((p, i) => first.set(p.section ?? "General", first.get(p.section ?? "General") ?? i));
@@ -137,15 +139,14 @@ function bySection(processes: Process[]): Process[] {
   return processes.map((p, i) => ({ p, i })).sort((a, b) => rank(a.p) - rank(b.p) || a.i - b.i).map(({ p }) => p);
 }
 
-/** The processes by section, in order of their first process; numbered
- * through. */
-function sectionsOf(processes: Process[]): { name: string; items: { p: Process; n: number }[] }[] {
-  const out: { name: string; items: { p: Process; n: number }[] }[] = [];
-  processes.forEach((p, i) => {
+/** The processes by section, in order of their first process. */
+function sectionsOf(processes: Process[]): { name: string; items: Process[] }[] {
+  const out: { name: string; items: Process[] }[] = [];
+  processes.forEach((p) => {
     const name = p.section ?? "General";
     let s = out.find((x) => x.name === name);
     if (!s) out.push((s = { name, items: [] }));
-    s.items.push({ p, n: i + 1 });
+    s.items.push(p);
   });
   return out;
 }
@@ -167,7 +168,7 @@ function SectionHeader({ name, count }: { name: string; count: number }) {
 }
 
 /** The processes in sections (headed when there are several). */
-function Sections({ processes, render }: { processes: Process[]; render: (items: { p: Process; n: number }[]) => ReactNode }) {
+function Sections({ processes, render }: { processes: Process[]; render: (items: Process[]) => ReactNode }) {
   const sections = sectionsOf(processes);
   const collapsed = useUi((s) => s.processCollapsed);
   if (sections.length < 2) return <>{render(sections[0]?.items ?? [])}</>;
@@ -183,57 +184,12 @@ function Sections({ processes, render }: { processes: Process[]; render: (items:
   );
 }
 
-/** List view: every process as a card whose title folds it away,
- * remembered per browser. */
-function ProcessList({ processes }: { processes: Process[] }) {
-  return (
-    <Sections
-      processes={processes}
-      render={(items) => (
-        <div className="process-list">
-          {items.map(({ p, n }) => (
-            <ProcessGroup key={p.id} p={p} n={n} />
-          ))}
-        </div>
-      )}
-    />
-  );
-}
-
-function ProcessGroup({ p, n }: { p: Process; n: number }) {
-  const collapsed = useUi((s) => s.processCollapsed.includes(p.id));
-  const toggle = useUi((s) => s.toggleProcess);
-  return (
-    <div className={`process-group${collapsed ? " collapsed" : ""}`} data-process={p.id}>
-      <h3 className="process-group-title">
-        <button
-          className="process-group-toggle"
-          aria-expanded={!collapsed}
-          onClick={() => toggle(p.id)}
-          title={`${p.tip}\nDrag onto the tab to show it beside the others`}
-          {...dragProps(p.id)}
-        >
-          <span className="process-chevron" aria-hidden="true" />
-          <ProcessIcon id={p.id} size={20} />
-          {n}. {p.title}
-        </button>
-        {collapsed && p.summary && <span className="muted small">{p.summary}</span>}
-      </h3>
-      {!collapsed && (
-        <div className="process-group-body" onPointerDownCapture={() => followProcess(p.id)}>
-          {p.body}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Icon view: a tile per process; a tile opens its process in the tab. */
+/** A tile per process; a tile opens its process in the tab (dragged onto
+ * the tab, beside the others). */
 function ProcessGrid({ processes }: { processes: Process[] }) {
   const openId = useUi((s) => s.processOpen);
   const setOpen = useUi((s) => s.setProcessOpen);
-  const i = processes.findIndex((p) => p.id === openId);
-  const open = processes[i];
+  const open = processes.find((p) => p.id === openId);
   if (open)
     return (
       <div className="process-group process-open">
@@ -241,9 +197,9 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
           <button className="link-button process-back" onClick={() => setOpen(null)} title="All processes">
             ‹ All
           </button>
-          <span className="process-drag-handle" title={`${open.tip}\nDrag onto the tab to show it beside the others`} {...dragProps(open.id)}>
+          <span className="process-drag-handle" title={`${open.tip}\nDrag to show beside the others`} {...dragProps(open.id)}>
             <ProcessIcon id={open.id} size={20} />
-            {i + 1}. {open.title}
+            {open.title}
           </span>
         </h3>
         <div className="process-group-body" onPointerDownCapture={() => followProcess(open.id)}>
@@ -256,7 +212,7 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
       processes={processes}
       render={(items) => (
         <div className="process-grid">
-          {items.map(({ p, n }) => (
+          {items.map((p) => (
             <button
               key={p.id}
               className="process-tile"
@@ -264,10 +220,9 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
                 setOpen(p.id);
                 followProcess(p.id);
               }}
-              title={`${p.tip}\nDrag onto the tab to show it beside the others`}
+              title={`${p.tip}\nDrag to show beside the others`}
               {...dragProps(p.id)}
             >
-              <span className="process-tile-n">{n}</span>
               <ProcessIcon id={p.id} />
               <span className="process-tile-name">{p.title}</span>
               {p.summary && <span className="process-tile-summary">{p.summary}</span>}
@@ -279,21 +234,6 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
   );
 }
 
-function ProcessModeToggle() {
-  const mode = useUi((s) => s.processMode);
-  const setMode = useUi((s) => s.setProcessMode);
-  return (
-    <div className="segmented" role="group" aria-label="Process view">
-      <button className={mode === "list" ? "active" : undefined} aria-pressed={mode === "list"} title="List view" onClick={() => setMode("list")}>
-        <ListIcon />
-      </button>
-      <button className={mode === "grid" ? "active" : undefined} aria-pressed={mode === "grid"} title="Icon view" onClick={() => setMode("grid")}>
-        <GridIcon />
-      </button>
-    </div>
-  );
-}
-
 /** Process tab, in workflow order: rebinning (spectrum images), then
  * non-destructive filters. */
 export function ProcessPanel() {
@@ -301,7 +241,7 @@ export function ProcessPanel() {
   const split = useUi((s) => s.processSplit);
   const files = useDatasets((s) => s.files);
   // Other kinds have no processes, except Bragg vectors (their Calibration).
-  const processable = (x: DatasetSummary) => x.kind !== "other" || x.origin === "disks";
+  const processable = (x: DatasetSummary) => x.kind !== "other" || x.origin === "disks" || !!x.structure;
   const main = !d ? (
     <p className="muted">Select a dataset to filter it.</p>
   ) : !processable(d) ? (
@@ -431,7 +371,7 @@ function SplitHeader({ id, title, tip, on, pinned }: {
         <button
           className={`icon-toggle${pinned ? " active" : ""}`}
           aria-pressed={!!pinned}
-          title={pinned ? `Stays on ${on.title} (click to follow the dataset clicked)` : "Follows the dataset clicked (click to keep it on this one)"}
+          title={pinned ? `Stays on ${on.title} (click to follow)` : "Follows the dataset clicked (click to keep it on this one)"}
           onClick={() => {
             const ui = useUi.getState();
             const cur = ui.processSplit;
@@ -468,8 +408,6 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   const [draft, setDraft] = useState<Filters>(d.filters);
   const [error, setError] = useState<string | null>(null);
   const [rebinOpen, setRebinOpen] = useState(false);
-  // No dataset name while its alignment workspace is open.
-  const aligning = useAlignment((s) => s.openId) === d.id;
 
   // Follow changes made elsewhere (e.g. "Apply to all maps" from another map).
   const sent = useRef(JSON.stringify(d.filters));
@@ -532,13 +470,16 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   const braggCube = d.origin === "disks" ? allDatasets(files).find((x) => x.id === d.parent_id && x.kind === "4dstem") : undefined;
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
-  const mode = useUi((s) => s.processMode);
   // The processes that apply, in workflow order.
   const rebinBody = (
     <button className="process-rebin" onClick={() => setRebinOpen(true)}>
       Rebin…
     </button>
   );
+  // Polar patterns (a polar transform) are 4D-STEM data with radius × angle
+  // patterns: only virtual imaging and orientation mapping apply to them.
+  const polarPatterns = d.kind === "4dstem" && d.signal_type === "polar_diffraction";
+  const cartesian4d = d.kind === "4dstem" && !polarPatterns;
   const processes = bySection(([
     d.kind === "stack" && d.origin !== "pca" && {
       id: "align", title: "Align frames", tip: "Register the frames to remove drift, then average them",
@@ -546,47 +487,72 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     canMakeDpc(d) && {
       id: "dpc", title: "DPC / iDPC",
-      tip: "Differential phase contrast from the four quadrants of a segmented detector, and its integral",
+      tip: "Differential phase contrast and its integral",
       body: <DpcSection d={d} />,
     },
     // 4D-STEM data: Pre-processing (Rebin first), then Analysis.
-    canRebin(d) && d.kind === "4dstem" && {
-      id: "rebin", title: "Rebin", section: "Pre-processing", tip: "Sum neighbouring scan positions or pattern pixels; overwrites the loaded data",
+    canRebin(d) && cartesian4d && {
+      id: "rebin", title: "Rebin", section: "Pre-processing", tip: "Sum neighbouring pixels; overwrites the loaded data",
       body: rebinBody,
     },
     d.kind === "4dstem" && {
       id: "virtual-image", title: "Virtual imaging", section: "Analysis",
-      tip: "The virtual detector drawn on the pattern: its shape, response, apertures; keep the image as a dataset",
+      tip: "Virtual detector on the pattern; keep the image as a dataset",
       body: <VirtualImageSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
       id: "bad-pixels", title: "Remove bad pixels", section: "Pre-processing",
-      tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
+      tip: "Repair hot and dead detector pixels",
       body: <BadPixelSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
       id: "background", title: "Background", section: "Pre-processing",
-      tip: "Diffuse scattering subtracted from every pattern (pyxem: median kernel, difference of Gaussians, radial median, h-dome), tried on the patterns shown",
+      tip: "Subtract diffuse scattering from every pattern",
       body: <PatternBackgroundSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
       id: "centring", title: "Fix descan", section: "Pre-processing",
-      tip: "The direct beam found in every pattern, the descan as a plane, and every pattern shifted so the beam is at its centre",
+      tip: "Centre the direct beam in every pattern",
       body: <CentringSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
+      id: "polar", title: "Polar transform", section: "Pre-processing",
+      tip: "Every pattern as radius × azimuth",
+      body: <PolarSection key={d.id} d={d} />,
+    },
+    cartesian4d && {
       id: "disks", title: "Disk detection", section: "Analysis",
-      tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
+      tip: "Find the Bragg disks in every pattern",
       body: <DiskDetectionSection key={d.id} d={d} />,
+    },
+    d.structure && {
+      id: "templates", title: "Templates",
+      tip: "Diffraction templates of this structure",
+      body: <TemplatesSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "orientation", title: "Orientation mapping", section: "Analysis",
+      tip: "Orientation and phase maps from template matching",
+      body: <OrientationSection key={d.id} d={d} />,
     },
     braggCube && {
       id: "calibration", title: "Calibration",
-      tip: "The Bragg vectors' calibration: each position's origin (descan), the QR rotation (least curl), the pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
+      tip: "Calibrate the Bragg vectors: origin, rotation, pixel size, ellipticity",
       body: <CalibrationSection key={braggCube.id} d={braggCube} />,
     },
     braggCube && {
+      id: "vector-magnitudes", title: "Magnitudes",
+      tip: "Histogram of the vectors' distances from the centre",
+      body: <VectorMagnitudesSection key={braggCube.id} d={braggCube} vectors={d} />,
+    },
+    braggCube && {
+      id: "vector-mask", title: "Vector mask",
+      tip: "Keep only the diffraction spots in the data",
+      body: <VectorMaskSection key={braggCube.id} d={braggCube} />,
+    },
+    braggCube && {
       id: "strain", title: "Strain mapping",
-      tip: "Strain from the Bragg vectors: the lattice (O, g1, g2) placed on the Bragg vector map, every pattern's disks indexed and fitted to it, then εxx, εyy, εxy and ωxy against a reference",
+      tip: "Strain maps from the Bragg vectors",
       body: <StrainSection key={braggCube.id} d={braggCube} />,
     },
     canRebin(d) && d.origin !== "pca" && d.kind !== "4dstem" && {
@@ -595,17 +561,17 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     isInsituView(d) && d.kind === "spectrum_image" && !isLineScan(d) && {
       id: "aligned-sum", title: "Aligned sum",
-      tip: "Register every frame with the measured drift and sum them; makes a new spectrum image",
+      tip: "Drift-corrected sum; makes a new spectrum image",
       body: <InsituAlignSection d={d} />,
     },
     canEstimateThickness(d) && {
       id: "zlp", title: "ZLP alignment",
-      tip: "Shift every spectrum so its zero-loss peak is at 0 eV; linked core losses follow. Without a low loss: shift by hand",
+      tip: "Shift each spectrum's zero-loss peak to 0 eV",
       body: <ZlpSection d={d} />,
     },
     // Not on Bragg vectors (a table: nothing to filter).
-    d.origin !== "disks" && {
-      id: "filters", title: "Filters", tip: "Applied whenever the data is shown; the loaded data is unchanged",
+    d.origin !== "disks" && !d.structure && {
+      id: "filters", title: "Filters", tip: "Applied on display; the loaded data is unchanged",
       ...(d.kind === "4dstem" && { section: "Pre-processing" }),
       summary: active,
       body: (
@@ -779,42 +745,42 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     canNormalise(d) && {
       id: "normalise", title: "Normalisation",
-      tip: "Normalise the spectra on the plot: to 0–1, a value at an energy or a mean over a window",
+      tip: "Normalise the spectra on the plot",
       body: <NormaliseSection d={d} />,
     },
     canRemoveBackground(d) && {
       id: "background", title: "Background removal",
-      tip: "Fit and subtract the background under an edge; makes a new spectrum image",
+      tip: "Subtract the background under an edge; makes a new spectrum image",
       body: <BackgroundSection d={d} />,
     },
     canEstimateThickness(d) && {
       id: "thickness", title: "Thickness",
-      tip: "Thickness of the low loss from the share of its counts in the zero-loss peak; makes a new map",
+      tip: "Thickness from the low loss; makes a new map",
       body: <ThicknessSection d={d} />,
     },
     canDeconvolve(d) && {
       id: "deconvolution", title: "Deconvolution",
-      tip: "Remove plural scattering (or sharpen) with the low loss; makes a new spectrum image",
+      tip: "Remove plural scattering; makes a new spectrum image",
       body: <DeconvolutionSection d={d} />,
     },
     (d.kind === "spectrum" || d.kind === "spectrum_image") && {
       id: "curvefit", title: "Curve fitting",
-      tip: "Fit a model of HyperSpy's components (peaks, backgrounds, steps) to a spectrum",
+      tip: "Fit peaks and backgrounds to a spectrum",
       body: <CurveFitPanel key={d.id} ds={d} />,
     },
     canMakeMask(d) && {
       id: "mask", title: "Masks",
-      tip: "Masks of the image's pixels between thresholds, for other processes (e.g. sublattices)",
+      tip: "Masks of pixels between thresholds",
       body: <MaskSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
       id: "fourier", title: "Fourier filtering", section: "kemstem",
-      tip: "Pick FFT peaks, then filter round them: amplitude, phase and strain maps (kemstem)",
+      tip: "Amplitude, phase and strain maps from FFT peaks",
       body: <AtomicSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
       id: "columns", title: "Atomic columns", section: "kemstem",
-      tip: "Find the atomic columns and fit each with a 2D Gaussian (kemstem)",
+      tip: "Find atomic columns and fit each with a 2D Gaussian",
       body: <ColumnsSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
@@ -824,30 +790,29 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     canAnalyseAtomic(d) && {
       id: "neighbourhoods", title: "Neighbourhoods", section: "kemstem",
-      tip: "Vectors to each column's nearest neighbours, their clusters, and bonds along lattice vectors picked from them",
+      tip: "Vectors to nearest neighbours, clusters and bonds",
       body: <NeighbourhoodSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
       id: "pld", title: "Lattice displacements", section: "kemstem",
-      tip: "Periodic lattice displacements: damp the superlattice peaks into a reference, then measure how far each column moved",
+      tip: "How far each column moved from the periodic lattice",
       body: <PldSection key={d.id} d={d} />,
     },
     hasPcaSection(d) && {
       id: "pca", title: "Decomposition and denoising",
       tip: d.origin === "pca"
-        ? "Rebuild the spectrum image from its first components; makes a new spectrum image"
-        : "Decompose over an energy window (HyperSpy): the components' maps and spectra",
+        ? "Rebuild from the first components; makes a new spectrum image"
+        : "Decompose over an energy window",
       body: <PcaSection d={d} />,
     },
   ] as (Process | false)[]).filter((x): x is Process => !!x));
 
   if (only) {
-    const k = processes.findIndex((p) => p.id === only);
-    const p = processes[k];
+    const p = processes.find((x) => x.id === only);
     return (
       <div className="quantify process">
         <div className="process-group process-open">
-          <SplitHeader id={only} title={p ? `${k + 1}. ${p.title}` : only} tip={p?.tip} on={d} pinned={pinned} />
+          <SplitHeader id={only} title={p ? p.title : only} tip={p?.tip} on={d} pinned={pinned} />
           {p ? (
             <div className="process-group-body" onPointerDownCapture={() => followProcess(only)}>
               {p.body}
@@ -862,13 +827,7 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   }
   return (
     <div className="quantify process">
-      {!aligning && (
-        <section className="process-header">
-          <span className="panel-tabs-spacer" />
-          <ProcessModeToggle />
-        </section>
-      )}
-      {mode === "grid" ? <ProcessGrid processes={processes} /> : <ProcessList processes={processes} />}
+      <ProcessGrid processes={processes} />
       {rebinOpen && <RebinDialog d={d} onClose={() => setRebinOpen(false)} />}
     </div>
   );

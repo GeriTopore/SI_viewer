@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { colourFrame, fetchArray, fetchFrame, fetchStackFrame, type Frame } from "../api/arrays";
-import { dataVersion, type DatasetSummary } from "../api/client";
+import { api, dataVersion, type DatasetSummary, type MatchResult, type TemplatesIpf } from "../api/client";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { ImageView, type AxisCal, type Interaction, type Pt, type Transform } from "../components/ImageView";
 import { AnnotationsToggle } from "../components/AnnotationsToggle";
@@ -11,6 +11,10 @@ import { LineOverlay } from "../components/LineOverlay";
 import { RoiOverlay } from "../components/RoiOverlay";
 import { useCalibration } from "../state/calibration";
 import { planeOf, useCentring } from "../state/centring";
+import { chosenFor, isPolar, mapFor, mapKey, matchKey, perAngstrom, phasesFor, polarFor, shownMatch, useOrientation } from "../state/orientation";
+import { MatchPanel } from "../components/MatchPanel";
+import { useViewTemplate } from "../state/viewTemplate";
+import { StructureScene } from "../components/StructureScene";
 import { diskOptionsOf, useDisks, type Disk } from "../state/disks";
 import { useLayers } from "../state/layers";
 import { useProfiles } from "../state/profiles";
@@ -29,7 +33,7 @@ import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import {
-  ROW_HEIGHTS, SCAN_BVM, SCAN_MAX, SCAN_MEAN, isScanSource, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, responseLabel, sizeApertures, initialState, latticePoints, moveDetector, newCursor, useFourD,
+  ROW_HEIGHTS, SCAN_BVM, SCAN_MAX, SCAN_MEAN, isScanSource, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, responseLabel, sizeApertures, initialState, latticePoints, moveDetector, newCursor, scanKey, useFourD,
   type Detector, type DetectorGroup, type FourDState, type Lattice, type OverlayLayer, type PatternSource, type Response, type ScanCursor,
 } from "../state/fourd";
 import { containsPoint, shapeToRegion, useSi, useSiState } from "../state/si";
@@ -46,6 +50,34 @@ const BEAM_PLANE_COLOR = "#00e5ff";
 // Calibration: the annulus searched and the points found (yellow), the ellipse fitted (green).
 const RING_COLOR = "#ffd60a";
 const RING_FIT_COLOR = "#30d158";
+const ZONE_COLOR = "#ff6bd6";
+
+/** How a position is marked on a pattern (Layers tab → Mark). */
+type MarkStyle = "circle" | "cross" | "dot";
+
+/** A position marked as a circle of radius ``r``, a "+" of that half-size,
+ * or a filled dot (``dotR``). */
+function mark(style: MarkStyle, x: number, y: number, r: number, colour: string, width: number, key: string | number, title?: ReactNode, dotR = 3) {
+  if (style === "cross") {
+    return <path key={key} d={`M${x - r},${y}H${x + r}M${x},${y - r}V${y + r}`} stroke={colour} strokeWidth={width} strokeLinecap="round">{title}</path>;
+  }
+  if (style === "dot") return <circle key={key} cx={x} cy={y} r={dotR} fill={colour} stroke="#000" strokeWidth={0.5}>{title}</circle>;
+  return <circle key={key} cx={x} cy={y} r={r} fill="none" stroke={colour} strokeWidth={width}>{title}</circle>;
+}
+
+/** The Layers tab's Mark choice of a position layer. */
+function markChoice(value: MarkStyle, title: string, onChange: (v: MarkStyle) => void, dot = false) {
+  return {
+    label: "Mark",
+    control: (
+      <select className="layer-choice" value={value} title={title} onChange={(e) => onChange(e.target.value as MarkStyle)}>
+        <option value="circle">Circle</option>
+        <option value="cross">Cross</option>
+        {dot && <option value="dot">Dot</option>}
+      </select>
+    ),
+  };
+}
 // The frames around the virtual image and the pattern in their group's / source's colour.
 const FRAME_WIDTH = 2;
 const FRAME_OPACITY = 0.6;
@@ -81,12 +113,17 @@ export const RESPONSES: { id: Response; label: string; title: string }[] = [
   { id: "sum", label: "Sum", title: "The total intensity inside the detector" },
   { id: "mean", label: "Mean", title: "The mean intensity inside the detector" },
   { id: "max", label: "Max", title: "The brightest pixel inside the detector" },
-  { id: "com", label: "COM", title: "The centre of mass of the pixels inside the detector from the pattern's centre, as in the data (no descan or rotation), in colour: the direction round the colour wheel, the magnitude as brightness" },
-  { id: "com_x", label: "COM x", title: "The centre of mass of the pixels inside the detector along the pattern's x, from its centre, as in the data" },
-  { id: "com_y", label: "COM y", title: "The centre of mass of the pixels inside the detector along the pattern's y, from its centre, as in the data" },
-  { id: "icom", label: "iCOM", title: "The centre of mass of the pixels inside the detector, integrated (the projected potential, up to scale, once the data is centred and in the scan's frame)" },
+  { id: "com", label: "COM", title: "Centre of mass: direction as hue, size as brightness" },
+  { id: "com_x", label: "COM x", title: "Centre of mass along x" },
+  { id: "com_y", label: "COM y", title: "Centre of mass along y" },
+  { id: "icom", label: "iCOM", title: "Integrated centre of mass: the projected potential" },
 ];
 
+const TURN = 2 * Math.PI;
+/** The orientation map's marks on the patterns. */
+const OMAP_COLOR = "#64d2ff";
+/** Miller indices with bars over the negative ones. */
+const hklLabel = (hkl: number[]) => hkl.map((v) => (v < 0 ? `${-v}\u0305` : `${v}`)).join("");
 const asFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame => ({ data, height: shape[0], width: shape[1], bin: 1 });
 /** A virtual image: a colour one ("com": direction and magnitude, [2, h, w]) drawn as a DPC object is. */
 const asVirtualFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame =>
@@ -391,9 +428,23 @@ export function useFourDState(ds: DatasetSummary) {
     () => initialState([scanG.width, scanG.height], [patternG.width, patternG.height]),
     [ds.id, scanG.width, scanG.height, patternG.width, patternG.height], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const st: FourDState = useFourD((s) => s.byId[ds.id]) ?? init;
+  // The cursors are shared with the file's other 4D-STEM data of the same scan.
+  const sharedKey = scanKey(ds);
+  const own: FourDState = useFourD((s) => s.byId[ds.id]) ?? init;
+  const shared = useFourD((s) => s.scans[sharedKey]);
+  const st: FourDState = useMemo(
+    () => (shared ? { ...own, cursors: shared.cursors, lastCursor: shared.lastCursor } : own),
+    [own, shared],
+  );
   const patchStore = useFourD((s) => s.patch);
-  const patch = useCallback((p: Partial<FourDState>) => patchStore(ds.id, init, p), [patchStore, ds.id, init]);
+  const patch = useCallback((p: Partial<FourDState>) => {
+    patchStore(ds.id, init, p);
+    if (p.cursors || p.lastCursor) {
+      const s = useFourD.getState();
+      const cur = s.scans[sharedKey] ?? (s.byId[ds.id] ?? init);
+      s.shareScan(sharedKey, { cursors: p.cursors ?? cur.cursors, lastCursor: p.lastCursor ?? cur.lastCursor });
+    }
+  }, [patchStore, ds.id, init, sharedKey]);
   /** Group ``id`` changed (from the store's latest state, so quick changes add up). */
   const patchGroup = useCallback(
     (id: string, p: Partial<DetectorGroup>) => {
@@ -516,7 +567,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     return fetchArray(`/api/datasets/${ds.id}/4d/pattern?x=${activeCursor.x}&y=${activeCursor.y}`).then(asFrame);
   }, !grid);
   const logKey = `${ds.id}:pattern`;
-  const log = useDisplay((s) => s.imageLog[logKey]) ?? true;
+  // Linear unless switched to Log (per dataset).
+  const log = useDisplay((s) => s.imageLog[logKey]) ?? false;
   const setImageLog = useDisplay((s) => s.setImageLog);
   const drawnPattern = useMemo(() => pattern.frame && (log ? logFrame(pattern.frame) : pattern.frame), [pattern.frame, log]);
 
@@ -703,16 +755,14 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     const found = disksOf(id);
     if (!found) return null;
     const colour = disksLayer.colour ?? DISK_COLOR;
-    // A circle of the disk's size, or a dot at its position.
-    const dot = disksLayer.style === "dot";
+    // A circle or "+" of the disk's size, or a dot at its position.
+    const style = (disksLayer.style ?? "circle") as MarkStyle;
     const dotR = DOT_PX * (disksLayer.size ?? 1);
     return (
       <g className="fourd-overlay" opacity={disksLayer.opacity ?? 1}>
         {found.disks.map(([ky, kx], i) => {
           const [x, y] = t.toScreen(kx, ky);
-          return dot
-            ? <circle key={i} cx={x} cy={y} r={dotR} fill={colour} stroke="#000" strokeWidth={0.5} />
-            : <circle key={i} cx={x} cy={y} r={Math.max(3, found.r * t.zoom)} fill="none" stroke={colour} strokeWidth={1.25} />;
+          return mark(style, x, y, Math.max(3, found.r * t.zoom), colour, 1.25, i, undefined, dotR);
         })}
       </g>
     );
@@ -761,6 +811,245 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       </g>
     );
   };
+
+  // ---------- the templates chosen (Orientation mapping): a layer on the pattern ----------
+  // The template nearest the way its Structure is seen (the Structure tab
+  // below, or its own view), turned as the crystal is, at the pattern's scale.
+  // Its own choice, or (polar patterns) their data's.
+  const chosenTemplates = useOrientation((s) => chosenFor(s, ds));
+  const templatesDs = chosenTemplates ? allDatasets(files).find((x) => x.id === chosenTemplates && x.templates) : undefined;
+  const templateStructure = templatesDs ? allDatasets(files).find((x) => x.id === templatesDs.parent_id && x.structure) : undefined;
+  const templateLayer = ovOf("template");
+  const templateVisible = !!templatesDs && (templateLayer.visible ?? true) && perAngstrom(ds) !== null;
+  const viewPattern = useViewTemplate(templatesDs?.id ?? null, templateStructure?.id ?? null, templateVisible);
+  const templateColour = templateLayer.colour ?? ZONE_COLOR;
+  const templateStyle: MarkStyle = templateLayer.style === "cross" ? "cross" : "circle";
+  const templateScale = useOrientation((s) => s.scale[ds.id] ?? 1);
+  const zoneOverlay = (t: Transform): ReactNode => {
+    const z = templateVisible ? viewPattern : null;
+    const per = perAngstrom(ds);
+    const [ky, kx] = ds.axes.filter((a) => !a.navigate);
+    if (!z || !per || !kx || !ky) return null;
+    return (
+      <g className="fourd-overlay" opacity={templateLayer.opacity ?? 1}>
+        {z.x.map((x, i) => {
+          // View y is up; the pattern's rows go down.
+          // Scaled about the axes' 0 (Orientation mapping's Scale).
+          const f = templateScale;
+          // Polar patterns: at angle (across; pyxem's, −atan2 of the rows
+          // down) and radius (down), as the matches are drawn.
+          const [sx, sy] = isPolar(ds)
+            ? t.toScreen(
+                ((((Math.atan2(z.y[i], x) - kx.offset) % TURN) + TURN) % TURN) / kx.scale + 0.5,
+                (f * Math.hypot(x, z.y[i]) / per - ky.offset) / ky.scale + 0.5,
+              )
+            : t.toScreen((f * x / per - kx.offset) / kx.scale + 0.5, (-f * z.y[i] / per - ky.offset) / ky.scale + 0.5);
+          return mark(templateStyle, sx, sy, 2 + 5 * Math.sqrt(z.intensity[i]), templateColour, 1.25, i, <title>{z.hkl[i].join(" ")}</title>);
+        })}
+      </g>
+    );
+  };
+  // ---------- matching at the cursors (pyxem's get_orientation) ----------
+  // Each cursor's best template, as pyxem draws it (on the pattern's axes;
+  // on polar patterns at angle, radius), when asked (Match current position).
+  const polarData = isPolar(ds);
+  // The phases matched: the Templates chosen and any other phases (a phase map), joined by commas.
+  const matchTemplates = useOrientation((s) => phasesFor(s, ds, allDatasets(files)));
+  const matchLayer = ovOf("match");
+  const matchVisible = matchLayer.visible ?? true;
+  const matchStyle: MarkStyle = matchLayer.style === "cross" ? "cross" : "circle";
+  // The polar patterns matched against (chosen in Orientation mapping; polar
+  // patterns themselves): their matches, by position, shared with them.
+  const matchPolar = useOrientation((s) => polarFor(s, allDatasets(files), ds));
+  const matchTemplatesOpen = !!matchTemplates && matchTemplates.split(",").every((id) => allDatasets(files).some((x) => x.id === id));
+  const matchCacheKey = matchTemplatesOpen && matchPolar ? matchKey(matchPolar, matchTemplates!) : "";
+  const matchAt = useOrientation((s) => (matchCacheKey ? s.matchCache[matchCacheKey] : undefined));
+  const matchBusy = useOrientation((s) => (matchCacheKey ? s.matchBusy[matchCacheKey] ?? false : false));
+  const matchError = useOrientation((s) => (matchCacheKey ? s.matchErrors[matchCacheKey] ?? null : null));
+  const matchOn = !!matchAt || matchBusy || !!matchError;
+  // Each position's match shown: the one picked in the Match tab's list, else the best.
+  const matchPick = useOrientation((s) => s.matchPick);
+  const described = useOrientation((s) => s.described);
+  const matchOf = (id: string) => {
+    const c = cursors.find((k) => k.id === id);
+    return c && matchAt ? shownMatch({ matchCache: { [matchCacheKey]: matchAt }, matchPick, described }, matchCacheKey, `${c.x},${c.y}`, matchTemplates!) : undefined;
+  };
+  /** Where a match's reflections are on this data's patterns (pixel coordinates). */
+  const spotsOf = (m: MatchResult): [number, number][] => {
+    const [ky, kx] = ds.axes.filter((a) => !a.navigate);
+    const per = perAngstrom(ds);
+    return polarData
+      // Polar transform: angle across (rad), radius down (1/Å).
+      // (Axis values are at pixel centres: pixel i spans [i, i + 1).)
+      ? m.polar.theta.map((th, i) => [(((th - kx.offset) % TURN) + TURN) % TURN / kx.scale + 0.5, (m.polar.r[i] - ky.offset) / ky.scale + 0.5])
+      : per
+        ? m.vectors.x.map((x, i) => [(x / per - kx.offset) / kx.scale + 0.5, (m.vectors.y[i] / per - ky.offset) / ky.scale + 0.5])
+        : [];
+  };
+  const matchOverlay = (t: Transform, id: string): ReactNode => {
+    const m = matchVisible ? matchOf(id) : undefined;
+    if (!m) return null;
+    const c = cursors.find((k) => k.id === id);
+    const colour = matchLayer.colour ?? c?.color ?? "#ff9f0a";
+    const points = spotsOf(m);
+    return (
+      <g className="fourd-overlay" opacity={matchLayer.opacity ?? 1}>
+        {points.map(([px, py], i) => {
+          const [sx, sy] = t.toScreen(px, py);
+          const r = 2.5 + 4 * Math.sqrt(m.vectors.intensity[i] ?? 0);
+          return mark(matchStyle, sx, sy, r, colour, 1.5, i, <title>{m.vectors.hkl[i]?.join(" ")}</title>);
+        })}
+      </g>
+    );
+  };
+  // The orientation matched at the active cursor, for the Structure tab.
+  const activeBest = matchOf(activeCursor.id)?.best;
+  const activeMatchView = activeBest?.view && activeBest.up ? { view: activeBest.view, up: activeBest.up } : null;
+  // ---------- the orientation map on the patterns (the tutorial's
+  // to_markers(annotate=True) and to_ipf_markers): at each cursor, the
+  // map's best template, its reflections labelled, and where its beam
+  // direction falls in the inverse pole figure (an inset) ----------
+  const omap = mapFor(allDatasets(files), ds, matchPolar, matchTemplates);
+  const omapKey = omap ? mapKey(omap) : "";
+  const omapAt = useOrientation((s) => (omapKey ? s.mapAtCache[omapKey] : undefined));
+  useEffect(() => {
+    if (omap) void useOrientation.getState().fetchMapAt(omapKey, omap.id, cursors.map((c) => [c.x, c.y]));
+  }, [omapKey, cursorKeys.join(";")]); // eslint-disable-line react-hooks/exhaustive-deps
+  const omapLayer = ovOf("omap");
+  const omapVisible = !!omap && (omapLayer.visible ?? true);
+  const omapStyle: MarkStyle = omapLayer.style === "cross" ? "cross" : "circle";
+  const omapLabels = omapLayer.labels ?? true;
+  const omapInset = omapLayer.inset ?? true;
+  const omapColour = omapLayer.colour ?? OMAP_COLOR;
+  // Each phase's IPF (several for a phase map: each match in its own phase's).
+  const omapTemplates = omap?.orientation?.templates?.split(",") ?? [];
+  const [omapIpfs, setOmapIpfs] = useState<Record<string, TemplatesIpf>>({});
+  useEffect(() => {
+    if (!omapInset) return;
+    let live = true;
+    for (const id of omapTemplates) {
+      if (omapIpfs[id]) continue;
+      api.templatesIpf(id).then((ipf) => live && setOmapIpfs((s) => ({ ...s, [id]: ipf })), () => undefined);
+    }
+    return () => {
+      live = false;
+    };
+  }, [omapTemplates.join(","), omapInset]); // eslint-disable-line react-hooks/exhaustive-deps
+  const omapOverlay = (t: Transform, id: string): ReactNode => {
+    const c = cursors.find((k) => k.id === id);
+    const m = omapVisible && c ? omapAt?.[`${c.x},${c.y}`] : undefined;
+    if (!m) return null;
+    const points = spotsOf(m);
+    const ipf = omapInset ? omapIpfs[m.templates ?? omapTemplates[0]] ?? null : null;
+    let inset: ReactNode = null;
+    if (ipf) {
+      // Top right of the pattern, a fifth of its size (as pyxem's).
+      const [ax, ay] = t.toScreen(0, 0);
+      const [bx, by] = t.toScreen(patternG.width, patternG.height);
+      const size = 0.22 * Math.min(Math.abs(bx - ax), Math.abs(by - ay));
+      const { x: ox, y: oy } = ipf.sector.outline;
+      const x0 = Math.min(...ox), x1 = Math.max(...ox), y0 = Math.min(...oy), y1 = Math.max(...oy);
+      const k = size / Math.max(x1 - x0, y1 - y0);
+      const rx = Math.max(ax, bx) - size - 8, ry = Math.min(ay, by) + 8;
+      const at = (x: number, y: number) => [rx + (x - x0) * k, ry + (y1 - y) * k];
+      const path = ox.map((x, i) => `${i ? "L" : "M"}${at(x, oy[i]).join(",")}`).join("") + "Z";
+      const [px, py] = at(ipf.points.x[m.best.index], ipf.points.y[m.best.index]);
+      const rgb = ipf.points.rgb[m.best.index];
+      inset = (
+        <g className="omap-inset">
+          <path d={path} fill="rgba(0,0,0,0.45)" stroke="#fff" strokeWidth={1} />
+          <circle cx={px} cy={py} r={4} fill={rgb ? `rgb(${rgb.join(",")})` : omapColour} stroke="#000" strokeWidth={1}>
+            <title>{`[${m.best.uvw.map((v) => formatValue(v)).join(" ")}] · ${formatValue(m.best.correlation)}`}</title>
+          </circle>
+        </g>
+      );
+    }
+    return (
+      <g className="fourd-overlay" opacity={omapLayer.opacity ?? 1}>
+        {points.map(([px, py], i) => {
+          const [sx, sy] = t.toScreen(px, py);
+          const r = 2.5 + 4 * Math.sqrt(m.vectors.intensity[i] ?? 0);
+          const hkl = m.vectors.hkl[i];
+          return (
+            <g key={i}>
+              {mark(omapStyle, sx, sy, r, omapColour, 1.5, "m")}
+              {omapLabels && hkl && (
+                <text x={sx} y={sy - r - 2} className="omap-label" fill={omapColour} textAnchor="middle">{hklLabel(hkl)}</text>
+              )}
+            </g>
+          );
+        })}
+        {inset}
+      </g>
+    );
+  };
+  const omapRow = omap ? [{
+    id: "fd:omap",
+    label: omap.title,
+    visible: omapVisible,
+    opacity: omapLayer.opacity ?? 1,
+    display: undefined,
+    removable: false,
+    colour: omapColour,
+    properties: [
+      markChoice(omapStyle, "How each spot of the map's template is marked", (v) => setOverlay(ds.id, "omap", { style: v })),
+      {
+        label: "hkl",
+        control: <input type="checkbox" checked={omapLabels} title="Label each reflection"
+          onChange={(e) => setOverlay(ds.id, "omap", { labels: e.target.checked })} />,
+      },
+      {
+        label: "IPF",
+        control: <input type="checkbox" checked={omapInset} title="Where the beam direction falls in the inverse pole figure"
+          onChange={(e) => setOverlay(ds.id, "omap", { inset: e.target.checked })} />,
+      },
+    ],
+  }] : [];
+  const matchRow = matchOn ? [{
+    id: "fd:match",
+    label: "Best match",
+    visible: matchVisible,
+    opacity: matchLayer.opacity ?? 1,
+    display: undefined,
+    removable: false,
+    colour: matchLayer.colour ?? "#ff9f0a",
+    properties: [markChoice(matchStyle, "How each spot of the best template is marked",
+      (v) => setOverlay(ds.id, "match", { style: v }))],
+  }] : [];
+  const matchTabs = matchOn ? [{
+    id: "match" as const,
+    label: "Match",
+    content: (
+      <MatchPanel templatesId={matchTemplates!} cursors={cursors} activeId={activeCursor.id}
+        at={matchAt ?? {}} busy={matchBusy} error={matchError} matchKey={matchCacheKey} />
+    ),
+  }] : [];
+
+  const templateRow = templatesDs ? [{
+    id: "fd:template",
+    label: `${templateStructure?.title ?? templatesDs.templates!.name} · ${templatesDs.title.replace(/^Templates · /, "")}`
+      + (viewPattern ? ` · [${viewPattern.uvw.map((x) => formatValue(x)).join(" ")}]` : ""),
+    visible: templateLayer.visible ?? true,
+    opacity: templateLayer.opacity ?? 1,
+    display: undefined,
+    removable: false,
+    colour: templateColour,
+    properties: [markChoice(templateStyle, "How each reflection of the template is marked",
+      (v) => setOverlay(ds.id, "template", { style: v }))],
+  }] : [];
+  const structureTabs = templateStructure ? [{
+    id: "structure" as const,
+    label: "Structure",
+    content: (
+      <div className="structure-tab">
+        <StructureScene key={templateStructure.id} d={templateStructure}
+          initial={useOrientation.getState().views[templateStructure.id]}
+          matched={matchOn ? activeMatchView : undefined}
+          onOrientation={(o) => useOrientation.getState().setView(templateStructure.id, o)} />
+      </div>
+    ),
+  }] : [];
+
 
   // ---------- the ring, while the Calibration process is shown ----------
   // The annulus searched (dashed), the ellipse fitted and the points on it.
@@ -1282,10 +1571,20 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         .map((g) => <g key={g.id} opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1)}</g>)}
     </g>
   );
+  /** Marks of the data (spots, templates, labels) drawn only over the
+   * pattern: a nested svg its size clips them (no clip-path ids, which
+   * would clash with the magnifier's copy of the overlay). */
+  const onPattern = (t: Transform, children: ReactNode): ReactNode => {
+    const [x0, y0] = t.toScreen(0, 0);
+    const [x1, y1] = t.toScreen(patternG.width, patternG.height);
+    const x = Math.min(x0, x1), y = Math.min(y0, y1), w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    if (!(w > 0 && h > 0)) return null;
+    return <svg x={x} y={y} width={w} height={h} viewBox={`${x} ${y} ${w} ${h}`} overflow="hidden">{children}</svg>;
+  };
   const patternOverlay = (t: Transform, key?: string): ReactNode => {
     const id = grid && key ? key.replace(/^dp:/, "") : source;
     // The strain lattice on the Bragg vector map, without the detectors (they'd hide it).
-    if (strainShown && id === SCAN_BVM) return <>{sourceBorder(t, key)}{strainOverlay(t)}</>;
+    if (strainShown && id === SCAN_BVM) return <>{sourceBorder(t, key)}{onPattern(t, strainOverlay(t))}</>;
     // The last preview stays until the next arrives (no flicker while dragging).
     const at = strainPreviewOn && strainPreview
       ? (() => {
@@ -1293,13 +1592,18 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           return c ? strainPreview.at[`${c.x},${c.y}`] : undefined;
         })()
       : undefined;
-    if (at) return <>{sourceBorder(t, key)}{strainAtOverlay(t, at)}</>;
+    if (at) return <>{sourceBorder(t, key)}{onPattern(t, strainAtOverlay(t, at))}</>;
     return (
       <>
         {sourceBorder(t, key)}
-        {disksOverlay(t, id)}
-        {beamOverlay(t, id)}
-        {ringOverlay(t)}
+        {onPattern(t, <>
+          {disksOverlay(t, id)}
+          {beamOverlay(t, id)}
+          {ringOverlay(t)}
+          {zoneOverlay(t)}
+          {omapOverlay(t, id)}
+          {matchOverlay(t, id)}
+        </>)}
         {othersOverlay(t)}
         {detectorOverlay(t)}
       </>
@@ -1323,10 +1627,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   };
 
   // ---------- labels ----------
-  const scanCal = scanG.calX;
   const patCal = patternG.calX;
-  const at = (c: ScanCursor) =>
-    `(${c.x}, ${c.y}) · ${formatValue(c.x * scanCal.scale)}, ${formatValue(c.y * scanCal.scale)} ${scanCal.units}`;
+  const at = (c: ScanCursor) => `(${c.x}, ${c.y})`;
   const cursorText = `${cursors.length > 1 ? `${cursorName(activeCursor)} ` : ""}${at(activeCursor)}`;
   const patternLabel = sourceRoi
     ? `Mean pattern over ${sourceRoi.name}`
@@ -1365,13 +1667,13 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     { id: SCAN_MEAN, label: "Mean", title: "The mean pattern over the whole scan" },
     { id: SCAN_MAX, label: "Max", title: "The maximum of every pixel over the whole scan" },
     ...(hasVectors
-      ? [{ id: SCAN_BVM, label: "BVM", title: "The Bragg vector map on the pattern's pixels (centred while the descan is corrected)" }]
+      ? [{ id: SCAN_BVM, label: "BVM", title: "The Bragg vector map on the pattern's pixels" }]
       : []),
   ], source, (v) => setScan({ source: v }));
   // The image on the scan: a group's, live, or a map made from the data.
   const imagePicker = (
     <ListPicker
-      title="The image on the scan: a detector group's, live, or a map made from the data"
+      title="The image shown on the scan"
       label={shownSaved ? shownSaved.title : group.name}
       color={shownSaved ? undefined : group.color}
       items={[
@@ -1488,9 +1790,9 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   };
   const layoutSwitch = segmented("Layout", [
     { id: "single", label: "Single", title: "One virtual image and one pattern" },
-    { id: "grid", label: "Grid", title: "A virtual image per visible group, a pattern per cursor and region" },
-    { id: "merge", label: "Merge", title: "The visible groups' virtual images as one colour composite, each in its group's colour" },
-    { id: "list", label: "List", title: "A row per visible group: the pattern with its detector, and its virtual image (the wheel zooms; ⌘ + wheel or the scroll bar scrolls)" },
+    { id: "grid", label: "Grid", title: "A virtual image per group, a pattern per cursor" },
+    { id: "merge", label: "Merge", title: "The groups' images as one colour composite" },
+    { id: "list", label: "List", title: "A row per group: pattern and virtual image (⌘ + wheel scrolls)" },
   ], st.layout, setLayout);
   // Right-click a grid panel: open it in Single (the press made its group,
   // or its cursor or region, the one shown).
@@ -1545,20 +1847,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     removable: false,
     colour: disksLayer.colour ?? DISK_COLOR,
     properties: [
-      {
-        label: "Mark",
-        control: (
-          <select
-            className="layer-choice"
-            value={disksStyle}
-            title="A circle of the disk's size, or a dot at its position"
-            onChange={(e) => setOverlay(ds.id, "disks", { style: e.target.value as "circle" | "dot" })}
-          >
-            <option value="circle">Circle</option>
-            <option value="dot">Dot</option>
-          </select>
-        ),
-      },
+      markChoice(disksStyle as MarkStyle, "Circle, \"+\" or dot for each disk",
+        (v) => setOverlay(ds.id, "disks", { style: v }), true),
       ...(disksStyle === "dot"
         ? [{
             label: "Size",
@@ -1595,6 +1885,9 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         colour: g.color,
       })),
       ...(vectorsDs || diskOpen ? [disksRow] : []),
+      ...templateRow,
+      ...omapRow,
+      ...matchRow,
     ],
     onActivate: (id) => id.startsWith("fd:det:") && selectGroup(id.slice("fd:det:".length)),
     onChange: (id, p) => {
@@ -1704,9 +1997,13 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
                       renderOverlay={(t) => (
                         <>
                           {sourceBorder(t)}
-                          {disksOverlay(t, source)}
-                          {beamOverlay(t, source)}
-                          {ringOverlay(t)}
+                          {onPattern(t, <>
+                            {disksOverlay(t, source)}
+                            {beamOverlay(t, source)}
+                            {ringOverlay(t)}
+                            {zoneOverlay(t)}
+                            {matchOverlay(t, source)}
+                          </>)}
                           {on ? detectorOverlay(t) : detShown(g) && (
                             <g className="fourd-overlay" opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1.5)}</g>
                           )}
@@ -1771,7 +2068,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
               onChange={(e) => patch({ rowHeight: Number(e.target.value) })}
             />
           </label>
-          <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click or Delete removes one">
+          <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click removes">
             {cursorText}
           </span>
         </div>
@@ -1820,11 +2117,11 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
             <div className="stack-bar fourd-bar">
               {!grid && !merge && imagePicker}
               {merge && segmented("Combine", [
-                { id: "dominant", label: "Dominant", title: "At each pixel, only the group brightest there (for its contrast): one colour per pixel" },
+                { id: "dominant", label: "Dominant", title: "Only the brightest group at each pixel" },
                 { id: "max", label: "Max", title: "The brighter of the groups' colours, channel by channel" },
                 { id: "add", label: "Add", title: "The groups' colours added up" },
               ], mergeBlend, (v) => patch({ mergeBlend: v }))}
-              <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click or Delete removes one">
+              <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click removes">
                 {cursorText}
               </span>
             </div>
@@ -1864,6 +2161,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           imageMenu={(p) => (det.shape === "apertures" && apertureAt(det, p) >= 0 ? [] : openInSingle)}
           layersSection="Diffraction pattern"
           extraLayers={dpExtra}
+          // The same tabs in single and grid views.
+          bottomTabs={[...matchTabs, ...structureTabs]}
           footer={
             <div className="fourd-footer">
               <div className="stack-bar fourd-bar">

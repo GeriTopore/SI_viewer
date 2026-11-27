@@ -131,11 +131,11 @@ export function MaskSection({ d: target }: { d: DatasetSummary }) {
         <input type="checkbox" checked={o.invert} onChange={(e) => set({ invert: e.target.checked })} />
         Invert
       </label>
-      <label title="Opening then closing with a disk of this radius (px): removes specks and fills gaps; 0: none">
+      <label title="Remove specks and fill gaps up to this radius (px); 0: none">
         <span>Clean (px)</span>
         <input type="number" min={0} step={1} value={o.clean} onChange={(e) => set({ clean: Math.max(0, Math.round(num(e.target.value, o.clean))) })} />
       </label>
-      <label title="Regions and holes smaller than this (px) are removed; 0: none">
+      <label title="Regions and holes under this size (px) are removed; 0: none">
         <span>Min area (px)</span>
         <input type="number" min={0} step={10} value={o.min_area} onChange={(e) => set({ min_area: Math.max(0, Math.round(num(e.target.value, o.min_area))) })} />
       </label>

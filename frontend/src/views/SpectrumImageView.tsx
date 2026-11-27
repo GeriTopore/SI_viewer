@@ -50,14 +50,14 @@ const VIRTUAL = "virtual";
 const ADF = "insitu-adf";
 
 const TOOLS: { tool: Tool; label: string; title: string }[] = [
-  { tool: "cursor", label: "✛", title: "Cursor: drag its marker to see the spectrum at another pixel (arrow keys nudge it)" },
+  { tool: "cursor", label: "✛", title: "Cursor: drag to see another pixel (arrow keys nudge it)" },
   { tool: "rect", label: "▭", title: "Rectangle region: drag to draw, drag inside to move" },
   { tool: "ellipse", label: "◯", title: "Ellipse region: drag to draw, drag inside to move" },
-  { tool: "polygon", label: "⬠", title: "Polygon region: click vertices; click the first, double-click or Enter to close" },
+  { tool: "polygon", label: "⬠", title: "Polygon region: click vertices; Enter or double-click to close" },
   {
     tool: "line",
     label: "╱",
-    title: "Line profile: drag to draw (Shift snaps the angle); shift-click on the profile for the spectrum there",
+    title: "Line profile: drag to draw (Shift: snap the angle)",
   },
   { tool: "fft", label: "FFT", title: FFT_TOOL_TITLE },
 ];

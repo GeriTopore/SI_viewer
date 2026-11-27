@@ -29,7 +29,7 @@ export function DiskDetectionSection({ d }: { d: DatasetSummary }) {
     <section className="q-form virtual-form">
       <div className="virtual-row">
         {segmented("Template", [
-          { id: "probe", label: "Probe", title: "The bright-field disk of the mean pattern (the measured probe)" },
+          { id: "probe", label: "Probe", title: "The bright-field disk of the mean pattern" },
           { id: "disc", label: "Disc", title: "A flat disc" },
         ], opts.template, (v) => set({ template: v }))}
       </div>
@@ -91,7 +91,7 @@ export function DiskDetectionSection({ d }: { d: DatasetSummary }) {
           <button
             className="primary"
             onClick={() => void run(d.id)}
-            title="Find the disks of every pattern: a Bragg vectors table and its map, under the data"
+            title="Find the disks of every pattern"
           >
             {found ? "Find again" : "Find in every pattern"}
           </button>

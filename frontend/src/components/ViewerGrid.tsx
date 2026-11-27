@@ -277,12 +277,10 @@ export function ViewerGrid({
         </div>
       </div>
       <div className="readout">
-        <span className="readout-pos muted">
-          {panels.length} panels{first && ` · ${first.width} × ${first.height} px`}
-        </span>
+        <span className="readout-pos" />
         <span className="readout-zoom">
           {zoom !== undefined && `${Math.round(zoom * 100)}%`}
-          <button className="link-button" onClick={() => eachView((c) => c.fit())} title="Fit all panels to their windows (F, or double-click a panel)">
+          <button className="link-button" onClick={() => eachView((c) => c.fit())} title="Fit all panels (F, or double-click a panel)">
             Fit
           </button>
           <button className="link-button" onClick={() => eachView((c) => c.oneToOne())} title="One screen pixel per data pixel">
@@ -297,7 +295,7 @@ export function ViewerGrid({
             className="link-button"
             onClick={saveImage}
             disabled={!panels.some((p) => p.layer.frame)}
-            title="Save the grid as shown (colours, contrast, a label per panel) at full resolution as PNG"
+            title="Save the grid as shown, at full resolution, as PNG"
           >
             Save PNG
           </button>

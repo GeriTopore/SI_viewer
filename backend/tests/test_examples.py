@@ -98,3 +98,43 @@ def test_pyxem_simulation_opens_as_4dstem():
     # pyxem's LaTeX units ($\AA^{-1}$), as the app writes them.
     strain = s.datasets[s.open_example("pyxem-strain").dataset_ids[0]]
     assert strain.signal.axes_manager.signal_axes[0].units == "1/Å"
+
+
+def test_an_analysis_of_an_example_opens_again(tmp_path):
+    """An example's path is ``example:<id>``: opened from the examples."""
+    from si_viewer.project import open_project, save_project
+    from si_viewer.session import Session
+
+    s = Session()
+    entry = s.open_example("two-gaussians")
+    ids = list(entry.dataset_ids)
+    saved = save_project(s, tmp_path / "ex.hspy")
+    other = Session()
+    open_project(other, saved)
+    again = other.files[entry.id]
+    assert str(again.path) == "example:two-gaussians" and list(again.dataset_ids) == ids
+    assert other.get_dataset(ids[0]).signal.data.shape == s.get_dataset(ids[0]).signal.data.shape
+
+
+def test_an_edited_calibration_is_kept_with_the_analysis(tmp_path):
+    """Info → Edit calibration on a file's data: saved (link level) and set
+    again on the raw data when the analysis is opened."""
+    from fastapi.testclient import TestClient
+
+    from si_viewer.app import create_app
+    from si_viewer.project import open_project, save_project
+    from si_viewer.session import Session
+
+    s = Session()
+    client = TestClient(create_app(s))
+    ds_id = client.post("/api/examples/two-gaussians").json()["datasets"][0]["id"]
+    axes = s.get_dataset(ds_id).signal.axes_manager._axes
+    last = len(axes) - 1
+    before = axes[last].scale
+    r = client.patch(f"/api/datasets/{ds_id}/axes", json=[{"index": last, "scale": before * 2, "offset": -1.5, "units": "eV"}])
+    assert r.status_code == 200
+    saved = save_project(s, tmp_path / "cal.hspy")
+    other = Session()
+    open_project(other, saved)
+    ax = other.get_dataset(ds_id).signal.axes_manager._axes[last]
+    assert (ax.scale, ax.offset, ax.units) == (before * 2, -1.5, "eV")

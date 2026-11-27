@@ -41,7 +41,7 @@ export function ColumnsSection({ d }: { d: DatasetSummary }) {
   return (
     <section className="q-form">
       <h4 className="process-heading">Find</h4>
-      <label title="Local maxima of the image (kemstem), or of its correlation with a Gaussian the size of a column (finds dim columns as well as bright ones)">
+      <label title="Local maxima of the image, or template correlation">
         <span>Method</span>
         <select
           value={method}
@@ -61,11 +61,11 @@ export function ColumnsSection({ d }: { d: DatasetSummary }) {
           <input type="number" min={0.3} step={0.5} value={s.template ?? 1.5} onChange={(e) => set({ template: Math.max(0.3, num(e.target.value, s.template ?? 1.5)) })} />
         </label>
       )}
-      <label title="Gaussian blur (σ, px) of the normalised image, before finding and fitting">
+      <label title="Gaussian blur (σ, px) before finding and fitting">
         <span>Blur σ (px)</span>
         <input type="number" min={0} step={0.25} value={s.blur} onChange={(e) => set({ blur: Math.max(0, num(e.target.value, s.blur)) })} />
       </label>
-      <label title="Finding only: a broad Gaussian (σ, px) subtracted first, leaving the brightest columns (e.g. the A sites); 0: none">
+      <label title="Finding only: subtract a broad Gaussian (σ, px); 0: none">
         <span>Background σ (px)</span>
         <input type="number" min={0} step={5} value={s.background ?? 0} onChange={(e) => set({ background: Math.max(0, num(e.target.value, s.background ?? 0)) })} />
       </label>
@@ -74,12 +74,12 @@ export function ColumnsSection({ d }: { d: DatasetSummary }) {
         <input type="number" min={1} step={1} value={s.distance} onChange={(e) => set({ distance: Math.max(1, Math.round(num(e.target.value, s.distance))) })} />
       </label>
       {method === "template" ? (
-        <label title="Places correlating less than this with the template (−1 to 1) are left out">
+        <label title="Places correlating less than this (−1 to 1) are left out">
           <span>Correlation</span>
           <input type="number" min={-0.99} max={0.99} step={0.05} value={s.threshold} onChange={(e) => set({ threshold: Math.min(0.99, Math.max(-0.99, num(e.target.value, s.threshold))) })} />
         </label>
       ) : (
-        <label title="Columns dimmer than this (0–1 of the normalised image) are left out">
+        <label title="Columns dimmer than this (0–1) are left out">
           <span>Threshold</span>
           <input type="number" min={0} max={0.99} step={0.05} value={s.threshold} onChange={(e) => set({ threshold: Math.min(0.99, Math.max(0, num(e.target.value, s.threshold))) })} />
         </label>
@@ -107,7 +107,7 @@ export function ColumnsSection({ d }: { d: DatasetSummary }) {
           onClick={() =>
             testColumn(d, view ? [(view.y0 + view.y1) / 2, (view.x0 + view.x1) / 2] : [(d.axes[0]?.size ?? 0) / 2, (d.axes[1]?.size ?? 0) / 2])
           }
-          title="Fit the column nearest the centre of the view, to check the window"
+          title="Fit the column at the view centre, to check the window"
         >
           {st.testing ? "Testing…" : "Test one"}
         </button>

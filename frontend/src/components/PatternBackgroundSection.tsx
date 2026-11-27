@@ -9,7 +9,7 @@ type Field = { key: "footprint" | "min_sigma" | "max_sigma" | "h"; label: string
 
 const FIELDS: Record<PatternBackgroundOptions["method"], Field[]> = {
   "median kernel": [
-    { key: "footprint", label: "Kernel (px)", title: "The median filter's size: about 2–3 × a disk's diameter, or the disks are taken off too", min: 3, max: 255, step: 2 },
+    { key: "footprint", label: "Kernel (px)", title: "Median filter size: 2–3 × a disk's diameter", min: 3, max: 255, step: 2 },
   ],
   "difference of gaussians": [
     { key: "min_sigma", label: "Narrow σ (px)", title: "The narrow blur: what counts as a peak", min: 0.5, max: 100, step: 0.5 },
@@ -17,7 +17,7 @@ const FIELDS: Record<PatternBackgroundOptions["method"], Field[]> = {
   ],
   "radial median": [],
   "h-dome": [
-    { key: "h", label: "h", title: "Peaks rising more than this (of the pattern's maximum) above their surroundings are kept", min: 0.01, max: 1, step: 0.05 },
+    { key: "h", label: "h", title: "Lowest peak height kept, as a fraction of the maximum", min: 0.01, max: 1, step: 0.05 },
   ],
 };
 
@@ -38,10 +38,10 @@ export function PatternBackgroundSection({ d }: { d: DatasetSummary }) {
     <section className="q-form virtual-form">
       <div className="virtual-row">
         {segmented("Method", [
-          { id: "median kernel", label: "Median", title: "The pattern minus its median filter: smooth diffuse background, amorphous haze" },
-          { id: "difference of gaussians", label: "DoG", title: "Difference of Gaussians: compact spots kept on a slowly varying background (≥ 0; not quantitative)" },
-          { id: "radial median", label: "Radial", title: "At each radius from the beam, the median there subtracted: radially falling diffuse scattering (the beam per pattern while the descan is corrected)" },
-          { id: "h-dome", label: "h-dome", title: "Only the local maxima rising more than h above their surroundings, normalised to 1 (for finding peaks)" },
+          { id: "median kernel", label: "Median", title: "Subtract a median-filtered copy of the pattern" },
+          { id: "difference of gaussians", label: "DoG", title: "Difference of Gaussians: keeps compact spots" },
+          { id: "radial median", label: "Radial", title: "Subtract the median at each radius from the beam" },
+          { id: "h-dome", label: "h-dome", title: "Keep only peaks rising more than h; for finding peaks" },
         ], opts.method, (v) => set({ method: v }))}
       </div>
       {FIELDS[opts.method].map(({ key, label, title, min, max, step }) => (
@@ -60,7 +60,7 @@ export function PatternBackgroundSection({ d }: { d: DatasetSummary }) {
           />
         </label>
       ))}
-      <label className="q-check-line small" title="Show the patterns with their background subtracted as the settings change">
+      <label className="q-check-line small" title="Preview the subtraction on the patterns">
         <input type="checkbox" checked={preview} onChange={(e) => setPreview(d.id, e.target.checked)} />
         Show on the patterns
       </label>

@@ -160,7 +160,7 @@ function QuantifyTarget({ ds }: { ds: DatasetSummary }) {
             </select>
           </label>
         )}
-        <label title="Order of the polynomial fitted to the bremsstrahlung background">
+        <label title="Order of the bremsstrahlung polynomial">
           Background
           <select
             value={q.options.background_order}

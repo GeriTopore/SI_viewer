@@ -260,7 +260,7 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
         </label>
         <label
           className="q-check"
-          title="Fit the background over a window of your choice (drawn on the spectrum), then keep it fixed while the edges are fitted; off: exSpy's smart fit (the background up to the first edge)"
+          title="Fit the background in its own window first"
         >
           <input
             type="checkbox"
@@ -278,7 +278,7 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
           Background window
         </label>
         {options.bg_lo !== null && options.bg_hi !== null && (
-          <label title="The window the background is fitted over (drag the hatched band on the spectrum)">
+          <label title="Window the background is fitted over">
             <span>
               <i className="bg-swatch" style={{ background: EELS_BG_COLOUR }} />
               Window
@@ -301,7 +301,7 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
           Fine structure (spline)
         </label>
         {options.fine_structure && (
-          <label title="Width of the fine structure after each onset; narrowed where edges overlap">
+          <label title="Width of the fine structure after each onset">
             Width
             <span className="q-inline">
               <input
@@ -394,7 +394,7 @@ export function EelsFitPanel({ ds }: { ds: DatasetSummary }) {
             <thead>
               <tr>
                 <th>Edge</th>
-                <th title="Onset of the edge (eV); type one where the database's is off">Onset</th>
+                <th title="Onset of the edge (eV); editable">Onset</th>
                 <th>Intensity</th>
                 <th>±</th>
                 <th>at%</th>

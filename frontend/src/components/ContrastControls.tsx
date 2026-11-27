@@ -168,7 +168,7 @@ export function ContrastControls({ frame, display, onChange }: Props) {
             setLimitsAt({ x: e.clientX, y: e.clientY });
           }}
           style={{ cursor: dragging.current?.kind === "move" ? "grabbing" : hoverZone === "line" ? "ew-resize" : hoverZone === "inside" ? "grab" : undefined }}
-          title="Drag a limit line to set it, or between them to move the range; right-click to type the limits"
+          title="Drag a limit, or the range between; right-click to type limits"
         />
         <div className="histogram-labels">
           <span>{formatValue(display.lo)}</span>
@@ -233,7 +233,7 @@ function GammaSlider({ gamma, value, onChange }: { gamma: number; value: number;
     return () => window.removeEventListener("mousedown", onDown);
   }, [bubble]);
   return (
-    <label ref={wrap} className="gamma" title="Gamma: click the handle to type a value, double-click to reset">
+    <label ref={wrap} className="gamma" title="Gamma: click to type, double-click to reset">
       γ
       <span className="gamma-track">
         <input

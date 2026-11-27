@@ -63,7 +63,7 @@ export function SeriesLegend({ si, state, wholeColor }: Props) {
           key={r.id}
           className={`series-chip roi-chip${r.visible ? "" : " off"}${state.selected === r.id ? " selected" : ""}`}
           onClick={() => patch(si, { selected: r.id })}
-          title="Click to select (drag its corners in the navigator to resize, Delete to remove)"
+          title="Click to select (Delete to remove)"
         >
           <input
             type="checkbox"

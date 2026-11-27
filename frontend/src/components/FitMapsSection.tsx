@@ -67,7 +67,7 @@ export function FitMapsSection({ ds }: { ds: DatasetSummary }) {
       {q.mapComposition && (
         <label
           className="q-mask"
-          title="Pixels whose fitted element counts add up to less than this (e.g. vacuum or support film) are left blank, instead of reading as e.g. 100% from one stray count"
+          title="Pixels with fewer fitted counts than this are left blank"
         >
           Mask pixels under
           <input

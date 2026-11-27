@@ -3,6 +3,126 @@
 export type Technique = "EDS" | "EELS";
 export type TechniqueSource = "metadata" | "dm_tag" | "energy_axis" | "user";
 
+/** A crystal structure read from a CIF (as orix's Phase.from_cif). */
+export interface StructureInfo {
+  name: string;
+  formula: string;
+  spacegroup: { number: number; symbol: string } | null;
+  point_group: string | null;
+  crystal_system: string | null;
+  /** a, b, c (Å), α, β, γ (degrees). */
+  cell: number[];
+  /** Atoms per cell, by occupancy. */
+  composition: Record<string, number>;
+  sites: { element: string; xyz: number[]; occupancy: number }[];
+}
+
+/** An inverse pole figure's sector as orix draws it (stereographic x, y; y up). */
+export interface IpfSector {
+  outline: { x: number[]; y: number[] };
+  corners: { x: number; y: number; label: string }[];
+  /** orix's colour key (PNG data URL) over ``extent`` [x0, x1, y0, y1], first row at y1. */
+  key: string;
+  extent: number[];
+  point_group: string;
+}
+
+/** A Templates object's inverse pole figure: each template's beam direction. */
+export interface TemplatesIpf {
+  sector: IpfSector;
+  points: { x: number[]; y: number[]; rgb: number[][] };
+}
+
+/** One template: its reflections (1/Å; intensity: the brightest 1). */
+export interface TemplatePattern {
+  index: number;
+  x: number[];
+  y: number[];
+  intensity: number[];
+  hkl: number[][];
+  /** The crystal direction along the beam (largest 1). */
+  uvw: number[];
+  /** Bunge Euler angles (°). */
+  euler: number[];
+  reciprocal_radius: number;
+}
+
+/** pyxem's template matching at one scan position (``orientation.match``). */
+export interface MatchResult {
+  x: number;
+  y: number;
+  best: {
+    index: number;
+    correlation: number;
+    /** In-plane rotation (°). */
+    rotation: number;
+    mirror: boolean;
+    /** Bunge Euler angles (°). */
+    euler: number[];
+    /** The template's beam direction (largest 1). */
+    uvw: number[];
+    /** How the crystal is seen: towards the viewer and the screen's up, [uvw]. */
+    view?: number[];
+    up?: number[];
+  };
+  /** The best template's reflections as pyxem draws them: 1/Å on the pattern's axes. */
+  vectors: { x: number[]; y: number[]; intensity: number[]; hkl: number[][] };
+  /** The same on the polar transform: angle (rad), radius (1/Å). */
+  polar: { theta: number[]; r: number[] };
+  /** Every template's correlation (null: not matched): of the phase matched. */
+  correlations: (number | null)[];
+  /** Several phases (a phase map): the phase matched best, its Templates
+   * object, and every phase's best. */
+  phase?: string;
+  phase_index?: number;
+  templates?: string;
+  phases?: { name: string; templates: string; correlation: number; uvw?: number[] }[];
+  /** Every template matched, best first (all phases'; ``phase``: its index
+   * in the templates matched). Not in an orientation map's. */
+  ranked?: RankedMatch[];
+}
+
+/** One template of a match's ranked list: at what in-plane rotation it matched. */
+export interface RankedMatch {
+  index: number;
+  correlation: number;
+  rotation: number;
+  mirror: boolean;
+  uvw: number[];
+  phase: number;
+}
+
+/** orix's plots of a Structure. */
+export interface StructurePlots {
+  symmetry: { name: string; upper: { x: number[]; y: number[] }; lower: { x: number[]; y: number[] } };
+  sector: IpfSector;
+}
+
+/** A zone axis the templates are kept near (within ``angle``, degrees). */
+export interface ZoneAxis {
+  uvw: number[];
+  angle: number;
+}
+
+/** A Structure's templates: diffsims and orix settings (the backend's ``TemplateOptions``). */
+export interface TemplateOptions {
+  kv: number;
+  resolution: number;
+  zone_axes: ZoneAxis[];
+  reciprocal_radius: number;
+  max_excitation_error: number;
+  precession_angle: number;
+  minimum_intensity: number;
+}
+
+/** A Structure's templates (origin "templates", under the Structure). */
+export interface TemplatesInfo {
+  /** The phase (the Structure's title). */
+  name: string;
+  templates: number;
+  options: TemplateOptions;
+}
+
 export type DatasetKind = "image" | "stack" | "spectrum" | "spectrum_image" | "4dstem" | "other";
 
 /** What an in-situ series dataset holds: one frame, or the mean/sum of frames
@@ -490,7 +610,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map" | "beam-shift" | "centred" | "origin-map" | "strain-fit";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map" | "beam-shift" | "centred" | "origin-map" | "strain-fit" | "templates" | "polar" | "vector-masked" | "orientation-map";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -535,6 +655,30 @@ export interface DatasetSummary {
    * residual"): the lattice picked, the fit settings, the calibration it was
    * fitted in. The strain maps' (εxx, εyy, εxy, ωxy): the reference, the axes
    * and the fit they are from. */
+  /** A crystal structure (a CIF, read as an orix phase). */
+  structure?: StructureInfo | null;
+  /** 4D-STEM data: orientation and phase mapping (pyxem). */
+  /** Orientation mapping results: an orientation map ("map") and its
+   * images ("correlation", "ipf" along ``direction``), with what was matched. */
+  orientation?: {
+    output: "map" | "correlation" | "phase" | "ipf";
+    direction?: "x" | "y" | "z";
+    /** The Templates matched (several, one per phase, joined by commas). */
+    templates: string;
+    polar: string;
+    phase: string;
+    /** A phase map: each phase, its Templates and colour. */
+    phases?: { name: string; templates: string; colour: string }[];
+    options: { n_best: number; frac_keep: number };
+    map_id?: string;
+  } | null;
+  /** A Structure's templates (origin "templates"). */
+  templates?: TemplatesInfo | null;
+  /** Polar patterns: what they were made from (the source's pattern axes
+   * then, ky and kx; source null when made in place). */
+  polar?: { source: string | null; axes: { scale: number; offset: number; units: string }[]; options: Record<string, unknown> } | null;
+  /** 4D-STEM data: the accelerating voltage the file records (kV). */
+  beam_energy?: number | null;
   strain?: Partial<StrainFitMeta> & {
     source_id: string;
     output: "lattice" | "count" | "residual" | StrainMapOutput;
@@ -1147,6 +1291,8 @@ export interface JobSummary {
     /** Finding the beam: the shift images' ids and each shift's range (px). */
     ids?: string[];
     range?: { x: [number, number]; y: [number, number] };
+    /** A Structure's templates made: how many. */
+    templates?: number;
   } | null;
 }
 
@@ -1533,6 +1679,40 @@ export const api = {
     request<JobSummary>(`/api/datasets/${id}/insitu/aligned-sum`, { method: "POST", body: JSON.stringify(choice) }),
   getJob: (id: string) => request<JobSummary>(`/api/jobs/${id}`),
   /** Find the direct beam in every pattern of 4D-STEM data (a job). */
+  /** The polar transform of every pattern (a job): a copy under the data, or in place. */
+  polarTransform: (id: string, options: object, inPlace: boolean) =>
+    request<JobSummary>(`/api/datasets/${id}/4d/polar`, { method: "POST", body: JSON.stringify({ options, in_place: inPlace }) }),
+  /** Simulate a Structure's templates (a job): a new Templates object under it. */
+  makeTemplates: (id: string, options: TemplateOptions) =>
+    request<JobSummary>(`/api/datasets/${id}/templates/make`, { method: "POST", body: JSON.stringify({ options }) }),
+  /** A Templates object's inverse pole figure (orix). */
+  templatesIpf: (id: string) => request<TemplatesIpf>(`/api/datasets/${id}/templates`),
+  /** Template ``index`` of a Templates object. */
+  template: (id: string, index: number) => request<TemplatePattern>(`/api/datasets/${id}/templates/${index}`),
+  /** The template nearest the zone axis [u v w]. */
+  nearestTemplate: (id: string, uvw: number[]) =>
+    request<{ index: number }>(`/api/datasets/${id}/templates/nearest?u=${uvw[0]}&v=${uvw[1]}&w=${uvw[2]}`),
+  /** The template nearest the beam direction [u v w], its reflections on that zone. */
+  templateToward: (id: string, uvw: number[]) =>
+    request<{ index: number; angle: number; hkl: number[][]; intensity: number[] }>(
+      `/api/datasets/${id}/templates/toward?u=${uvw[0]}&v=${uvw[1]}&w=${uvw[2]}`),
+  /** pyxem's template matching at scan ``positions`` of the data's polar transform. */
+  /** An orientation map at scan positions: its best template there, described as a match is. */
+  mapAt: (omapId: string, positions: number[][]) =>
+    request<{ matches: MatchResult[] }>(`/api/datasets/${omapId}/orientation/at`, {
+      method: "POST", body: JSON.stringify({ positions }),
+    }),
+  /** A template at an in-plane rotation described as a match (one of a match's ranked). */
+  describeTemplate: (id: string, row: Pick<RankedMatch, "index" | "rotation" | "mirror" | "correlation">) =>
+    request<MatchResult>(`/api/datasets/${id}/templates/describe`, {
+      method: "POST", body: JSON.stringify({ index: row.index, rotation: row.rotation, mirror: row.mirror, correlation: row.correlation }),
+    }),
+  matchAt: (id: string, templates: string, positions: number[][], polar?: string | null) =>
+    request<{ polar: string; matches: MatchResult[] }>(`/api/datasets/${id}/4d/orientation/match`, {
+      method: "POST", body: JSON.stringify({ templates, positions, polar: polar ?? null }),
+    }),
+  /** orix's plots of a Structure. */
+  structurePlots: (id: string) => request<StructurePlots>(`/api/datasets/${id}/structure/plots`),
   findBeam: (id: string, options: object) =>
     request<JobSummary>(`/api/datasets/${id}/4d/beam/find`, { method: "POST", body: JSON.stringify({ options }) }),
   /** Shift every pattern so the beam is at the centre (a job; not ``inPlace``: a copy). */

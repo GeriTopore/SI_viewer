@@ -15,10 +15,11 @@ export type GridContext = "si" | "images" | "stacks";
  * a stored one that is not shown falls back, see BottomPane). */
 export type BottomTab =
   | "spectrum" | "profile" | "histogram" | "exploded" | "alignment" | "pca-component" | "pca-scree" | "neighbourhood"
-  | "cell" | `eels:${string}`;
+  | "cell" | "templates" | "symmetry" | "sites" | "structure" | "match" | "ipf-key" | "phase-key" | `eels:${string}`;
 const isBottomTab = (t: string | undefined): t is BottomTab =>
   t === "spectrum" || t === "profile" || t === "histogram" || t === "exploded" || t === "alignment" ||
   t === "pca-component" || t === "pca-scree" || t === "neighbourhood" || t === "cell" ||
+  t === "templates" || t === "symmetry" || t === "sites" || t === "structure" || t === "match" || t === "ipf-key" || t === "phase-key" ||
   (!!t && t.startsWith("eels:") && t.length > 5);
 export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
 /** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */
@@ -195,8 +196,6 @@ interface UiState {
   processCollapsed: string[];
   toggleProcess: (id: string) => void;
   /** The Process tab as a list of foldable sections or a grid of icons. */
-  processMode: ListMode;
-  setProcessMode: (mode: ListMode) => void;
   /** The process opened from the icon grid (null: the grid). */
   processOpen: string | null;
   setProcessOpen: (id: string | null) => void;
@@ -391,11 +390,6 @@ export const useUi = create<UiState>((set, get) => ({
     save("si-viewer.processCollapsed", processCollapsed.join(","));
     set({ processCollapsed });
   },
-  processMode: load<ListMode>("si-viewer.processMode", "list"),
-  setProcessMode: (processMode) => {
-    save("si-viewer.processMode", processMode);
-    set({ processMode });
-  },
   processOpen: null,
   setProcessOpen: (processOpen) => set({ processOpen }),
   processSplit: loadProcessSplit(),
@@ -490,10 +484,10 @@ export const useUi = create<UiState>((set, get) => ({
   setBrowserOpen: (browserOpen, browserMode = "data") => set({ browserOpen, browserMode }),
 }));
 
-/** Whether process ``id`` is on screen in the Process tab: opened from the
- * icon view, unfolded in the list view, or split off beside the others. */
+/** Whether process ``id`` is on screen in the Process tab: opened from its
+ * tile, or split off beside the others. */
 export const useProcessShown = (id: string): boolean =>
   useUi((s) =>
     s.rightTab === "process"
-    && (s.processSplit?.id === id || (s.processMode === "list" ? !s.processCollapsed.includes(id) : s.processOpen === id)),
+    && (s.processSplit?.id === id || s.processOpen === id),
   );

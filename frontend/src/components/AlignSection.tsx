@@ -152,7 +152,7 @@ export function AlignSection({ d }: { d: DatasetSummary }) {
     return (
       <section className="q-form">
         {partners.length > 0 && !a?.session && (
-          <label className="q-row" title="The stack the drift is measured on; its shifts can be applied to the others at the end">
+          <label className="q-row" title="The stack the drift is measured on">
             <span>Measure on</span>
             <select value={measureOn} onChange={(e) => setMeasureOn(e.target.value)}>
               <option value={d.id}>{d.title}</option>
@@ -257,7 +257,7 @@ function RemoveAlignment({ d }: { d: DatasetSummary }) {
     <>
       <button
         className="secondary"
-        title="Back to the frames as loaded; the aligned average is removed too"
+        title="Back to the loaded frames; removes the aligned average"
         onClick={async () => {
           try {
             replaceFile((await api.removeAlignment(d.id)).file);
@@ -305,7 +305,7 @@ function FrameRange({ d, a }: { d: DatasetSummary; a: Alignment }) {
   };
 
   return (
-    <label title="First and last frame to register: leave out frames at the start or end that differ (e.g. before the drift settled)">
+    <label title="First and last frame to register">
       Register frames
       <span className="q-inline">
         <input
@@ -424,8 +424,8 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
         label={elliptical ? "Cutoff n1" : "Cutoff n"}
         title={
           elliptical
-            ? "Cutoff along the first axis: features smaller than about n1 pixels along it are ignored"
-            : "Cutoff: features smaller than about n pixels are ignored"
+            ? "Cutoff along the first axis: ignores features under n1 px"
+            : "Cutoff: ignores features under n px"
         }
         value={a.mask.n}
         min={1}
@@ -447,7 +447,7 @@ function MaskControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
           />
           <SliderNumber
             label="Angle θ (°)"
-            title="Direction of the first axis (the package's theta, in degrees)"
+            title="Direction of the first axis (degrees)"
             value={a.mask.theta}
             min={-90}
             max={90}
@@ -499,9 +499,9 @@ const PEAK_METHODS: { id: PeakMethod; label: string; title: string }[] = [
   {
     id: "gf",
     label: "Gaussian fit",
-    title: "Fits Gaussians to the brightest pixels and uses the best fit: subpixel, and robust to unit-cell jumps in atomic-resolution data",
+    title: "Gaussian fits to the brightest pixels: subpixel and robust",
   },
-  { id: "com", label: "Centre of mass", title: "Centre of mass of the correlation, refined around the first estimate" },
+  { id: "com", label: "Centre of mass", title: "Centre of mass of the correlation peak" },
 ];
 
 function PeaksControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
@@ -530,7 +530,7 @@ function PeaksControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
     <section className="q-form">
       <h4 className="process-heading">Step 2 · Peak finding</h4>
       <PairInputs d={d} a={a} />
-      <label title="Cross-correlation is the usual choice; mutual and phase correlation sharpen the peak by normalising the spectrum">
+      <label title="Mutual and phase correlation sharpen the peak">
         Correlation
         <select value={p.correlation} onChange={(e) => set({ correlation: e.target.value as CorrelationType })}>
           <option value="cc">Cross-correlation</option>
@@ -583,12 +583,12 @@ const OUTLIER_METHODS: { id: OutlierSettings["method"]; label: string; title: st
   {
     id: "transitivity",
     label: "Transitivity",
-    title: "Shifts must add up along paths of pairs (i→k→j equals i→j); entries that don't, within the threshold, are masked",
+    title: "Mask shifts inconsistent with paths through other frames",
   },
   {
     id: "neighbours",
     label: "Neighbours",
-    title: "An entry differing from too many of its neighbouring entries by more than the maximum shift is masked",
+    title: "Mask shifts that differ from their neighbours",
   },
   { id: "none", label: "None", title: "Mask no outliers (only bad frames and far pairs)" },
 ];
@@ -663,7 +663,7 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
           </div>
           {o.method === "transitivity" && (
             <>
-              <label title="Allowed mismatch of a shift with the paths through other frames (px); lower masks more">
+              <label title="Allowed mismatch with other paths (px); lower masks more">
                 Threshold (px)
                 <span className="q-inline process-slider">
                   <input
@@ -683,7 +683,7 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
                   />
                 </span>
               </label>
-              <label title="How many paths through other frames each shift is checked against">
+              <label title="Paths checked per shift">
                 Paths
                 <input
                   type="number"
@@ -696,7 +696,7 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
             </>
           )}
           {o.method === "neighbours" && (
-            <label title="Allowed difference from neighbouring entries (px); lower masks more">
+            <label title="Allowed difference from neighbours (px); lower masks more">
               Max shift (px)
               <span className="q-inline process-slider">
                 <input
@@ -717,7 +717,7 @@ function MatricesControls({ d, a }: { d: DatasetSummary; a: Alignment }) {
               </span>
             </label>
           )}
-          <label className="q-check" title="Leave out pairs of frames far apart in time (e.g. when the sample changes)">
+          <label className="q-check" title="Leave out pairs of frames far apart in time">
             <input
               type="checkbox"
               checked={o.off_diagonal !== null}

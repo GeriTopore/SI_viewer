@@ -169,7 +169,7 @@ export function DeconvolutionSection({ d }: { d: DatasetSummary }) {
       )}
       {o.method === "fourier_ratio" && (
         <>
-          <label title="Width of the Gaussian the result is convolved with; empty: the zero-loss peak's">
+          <label title="Width of the smoothing Gaussian; empty: the zero-loss peak's">
             <span>FWHM</span>
             <span className="q-inline">
               <ValueInput

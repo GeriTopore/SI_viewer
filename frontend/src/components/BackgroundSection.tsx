@@ -106,7 +106,7 @@ export function BackgroundSection({ d }: { d: DatasetSummary }) {
     <section className="q-form">
       {made && <p className="muted small q-elements">From {source?.title ?? "its source"}</p>}
       {!made && (
-        <label className="q-check" title="Draw the Background and Signal windows and the fitted backgrounds on the spectrum">
+        <label className="q-check" title="Show the windows and fitted backgrounds on the spectrum">
           <input type="checkbox" checked={st.on} onChange={(e) => patch(d, { on: e.target.checked })} />
           Show on spectrum
         </label>
@@ -153,7 +153,7 @@ export function BackgroundSection({ d }: { d: DatasetSummary }) {
         </div>
       )}
       {d.kind === "spectrum_image" && (
-        <div className="q-row" title="Local background averaging: the background window is averaged across the scan with a Gaussian before the fit">
+        <div className="q-row" title="Average the background window across the scan before fitting">
           <label className="q-check">
             <input
               type="checkbox"
@@ -172,10 +172,10 @@ export function BackgroundSection({ d }: { d: DatasetSummary }) {
         </div>
       )}
       {windowRow("background", "Background", "#f97316", "The range the model is fitted to, before the edge")}
-      {windowRow("signal", "Signal", "#22c55e", "The range kept, starting where the background window ends or later")}
+      {windowRow("signal", "Signal", "#22c55e", "The range kept, after the background window")}
       {!made && st.on && (
         <>
-          <label className="q-check" title="Show the spectra minus their fitted backgrounds, over the signal window">
+          <label className="q-check" title="Show the spectra minus their fitted backgrounds">
             <input type="checkbox" checked={st.subtracted} onChange={(e) => patch(d, { subtracted: e.target.checked })} />
             Subtracted
           </label>

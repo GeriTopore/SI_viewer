@@ -681,6 +681,92 @@ def disks_at(dataset_id: str, x: float, y: float, request: Request) -> dict:
     return {"disks": rows.round(3).tolist()}
 
 
+def _vectors(request: Request, ds):
+    vectors = request.app.state.session.bragg_vectors_of(ds)
+    if vectors is None:
+        raise HTTPException(409, f"Find the disks of {ds.title} first (Disk detection)")
+    return vectors.signal
+
+
+class MagnitudesBody(BaseModel):
+    bins: int = Field(100, ge=10, le=1000)
+    structures: list[str] = []  # Structures whose reflections are marked
+
+
+@router.post("/api/datasets/{dataset_id}/4d/disks/magnitudes")
+def disk_magnitudes(dataset_id: str, body: MagnitudesBody, request: Request) -> dict:
+    """pyxem's histogram of the Bragg vectors' magnitudes (from the pattern
+    axes' 0), with the Structures' reflections (diffsims'
+    ``calculate_diffraction1d``) to check the phase and the calibration:
+    ``{k, counts, units, reflections: [{structure, hkl, k, intensity}]}``,
+    k in the pattern's units."""
+    from ..processing import disks, orientation
+    from .orientation import PER_ANGSTROM, _structure
+
+    ds = _cube(request, dataset_id)
+    k, counts = disks.magnitude_histogram(_vectors(request, ds), body.bins)
+    units = str(ds.signal.axes_manager.signal_axes[0].units)
+    per = PER_ANGSTROM.get(units)
+    reflections = []
+    if per is not None and len(k):
+        top = float(k[-1]) / per
+        for sid in body.structures:
+            st, phase = _structure(request, sid)
+            for r in orientation.reflections_1d(phase, top):
+                reflections.append({"structure": st.title, **r, "k": r["k"] * per})
+    return {"k": np.round(k, 6).tolist(), "counts": counts.tolist(), "units": units, "reflections": reflections}
+
+
+class VectorMaskBody(BaseModel):
+    disk_r: float = Field(2.1, gt=0, le=100)  # pattern px
+    in_place: bool = False
+
+
+@router.get("/api/datasets/{dataset_id}/4d/disks/mask")
+def vector_mask_at(dataset_id: str, x: float, y: float, request: Request, disk_r: float = 2.1) -> Response:
+    """The vector mask at scan pixel (x, y) (uint8, the pattern's shape)."""
+    from skimage.draw import disk
+
+    from ..processing import disks
+
+    ds = _cube(request, dataset_id)
+    try:
+        rows = disks.vectors_at(_vectors(request, ds), x, y)
+    except IndexError as e:
+        raise HTTPException(416, str(e))
+    shape = tuple(ds.signal.data.shape[2:])
+    out = np.zeros(shape, np.uint8)
+    # As pyxem's to_mask: a disc about each vector's nearest pixel.
+    for ky, kx in np.rint(rows[:, :2] - 0.5).astype(int):
+        rr, cc = disk((ky, kx), disk_r, shape=shape)
+        out[rr, cc] = 1
+    return array_response(out.astype(np.float32))
+
+
+@router.post("/api/datasets/{dataset_id}/4d/disks/mask")
+def vector_mask(dataset_id: str, body: VectorMaskBody, request: Request) -> dict:
+    """Mask the data by its Bragg vectors (pyxem's ``to_mask``, discs of
+    ``disk_r`` px, × the data, as its orientation mapping tutorial does
+    before matching), as a copy under it or in place (a job). The job's
+    result is ``{file, id}`` (the data masked)."""
+    from ..processing import disks
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    vectors = _vectors(request, ds)
+    if ds.lazy and ds.signal.data.nbytes > _session.DIFFRACTION4D_IN_MEMORY_LIMIT:
+        raise HTTPException(422, f"{ds.title} is too big to process in memory: bin it first")
+
+    def run(job) -> dict:
+        job.report(0.05, "Making the mask")
+        mask = disks.vector_mask(vectors, ds.signal, body.disk_r)
+        job.report(0.8, "Masking the patterns")
+        made = session.mask_with_vectors(ds, mask, body.disk_r, body.in_place)
+        return {"file": session.file_of(ds).summary(session), "id": made.id}
+
+    return request.app.state.jobs.submit("vector-mask", f"Vector mask of {ds.title}", run).summary()
+
+
 # ---------- centring ----------
 
 

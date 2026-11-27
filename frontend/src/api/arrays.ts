@@ -34,6 +34,8 @@ export interface Frame {
   /** Brightness of each pixel (see ``LayerData.shade``): a DPC image's magnitude. */
   shade?: Float32Array;
   shadeHi?: number;
+  /** Colours (r, g, b interleaved, 0–1), e.g. an IPF map's. */
+  rgb?: Float32Array;
 }
 
 export async function fetchFrame(
@@ -64,6 +66,21 @@ export async function fetchDpcFrame(
   const { data, shape } = await fetchArray(`/api/datasets/${datasetId}/dpc/frame?${q}`, signal);
   const [, height, width] = shape;
   return colourFrame(data, height, width, params.bin ?? 1);
+}
+
+/** An IPF image of an orientation map: its value (the correlation) and its
+ * colours (orix's IPF key). */
+export async function fetchIpfFrame(datasetId: string, signal?: AbortSignal): Promise<Frame> {
+  const { data, shape } = await fetchArray(`/api/datasets/${datasetId}/orientation/ipf`, signal);
+  const [, height, width] = shape;
+  const n = height * width;
+  const rgb = new Float32Array(3 * n);
+  for (let i = 0; i < n; i++) {
+    rgb[3 * i] = data[n + i];
+    rgb[3 * i + 1] = data[2 * n + i];
+    rgb[3 * i + 2] = data[3 * n + i];
+  }
+  return { data: data.slice(0, n), height, width, bin: 1, rgb };
 }
 
 /** A direction (degrees) and magnitude, one after the other in ``data``, as

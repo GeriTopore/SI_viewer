@@ -12,7 +12,7 @@ import { segmented } from "../views/FourDView";
 const MAP_OUTPUTS = ["exx", "eyy", "exy", "oxy"];
 
 /** A job's progress bar with its message and Cancel. */
-function JobProgress({ job, cancel }: { job: JobSummary; cancel: () => void }) {
+export function JobProgress({ job, cancel }: { job: JobSummary; cancel: () => void }) {
   return (
     <div className="q-job">
       <div className="q-progress" role="progressbar" aria-valuenow={Math.round(job.progress * 100)}>
@@ -27,7 +27,7 @@ function JobProgress({ job, cancel }: { job: JobSummary; cancel: () => void }) {
 }
 
 const PEAK_FIELDS: { key: keyof BvmPeakOptions; label: string; title: string; min: number; max: number; step: number }[] = [
-  { key: "sigma", label: "Blur (px)", title: "Gaussian blur of the map before its peaks are found (0: none)", min: 0, max: 50, step: 0.25 },
+  { key: "sigma", label: "Blur (px)", title: "Gaussian blur before finding peaks (0: none)", min: 0, max: 50, step: 0.25 },
   { key: "threshold", label: "Threshold", title: "Lowest peak kept, as a fraction of the brightest", min: 0, max: 1, step: 0.01 },
   { key: "min_spacing", label: "Spacing (px)", title: "Closest two peaks may be", min: 0.5, max: 1000, step: 0.5 },
 ];
@@ -137,7 +137,7 @@ export function StrainSection({ d }: { d: DatasetSummary }) {
       ) : (
         <p className="muted small">{busy ? "Finding the peaks…" : "No lattice found: lower the threshold or the spacing"}</p>
       )}
-      <label title="Largest distance from a lattice point at which a disk is indexed to it">
+      <label title="Largest distance from a lattice point to index a disk">
         <span>Tolerance (px)</span>
         <input
           type="number"
@@ -153,14 +153,14 @@ export function StrainSection({ d }: { d: DatasetSummary }) {
           <button
             className="link-button"
             onClick={() => setLattice(d.id, peaks.proposed!)}
-            title="O at the direct beam, g1 and g2 the shortest pair of peaks from it"
+            title="Reset O, g1 and g2 from the peaks"
           >
             Propose again
           </button>
         </div>
       )}
       <p className="process-heading small">Fit</p>
-      <label title="Fewest indexed disks a position needs to be fitted (not all on one line)">
+      <label title="Fewest indexed disks needed to fit a position">
         <span>Min disks</span>
         <input
           type="number"
@@ -171,11 +171,11 @@ export function StrainSection({ d }: { d: DatasetSummary }) {
           onChange={(e) => e.target.value !== "" && setFit(d.id, { min_disks: Math.min(10000, Math.max(3, Math.round(Number(e.target.value)))) })}
         />
       </label>
-      <label className="q-check-line small" title="Disks weighted by their intensity (the correlation), as py4DSTEM does">
+      <label className="q-check-line small" title="Weight the disks by their intensity">
         <input type="checkbox" checked={fit.weighted} onChange={(e) => setFit(d.id, { weighted: e.target.checked })} />
         Weighted
       </label>
-      <label className="q-check-line small" title="The indexed disks and the lattice fitted at each cursor, on its pattern (pick a cursor in the pattern pane)">
+      <label className="q-check-line small" title="Show the indexed disks and fit at each cursor">
         <input type="checkbox" checked={preview} onChange={(e) => setPreview(d.id, e.target.checked)} />
         Show on the patterns
       </label>
@@ -197,7 +197,7 @@ export function StrainSection({ d }: { d: DatasetSummary }) {
             className="primary"
             disabled={!lattice}
             onClick={() => void runFit(d.id)}
-            title="Index every pattern's disks to the lattice and fit it at every position: Lattice fit, Indexed disks and Fit residual under the Bragg vectors"
+            title="Index and fit every pattern's disks to the lattice"
           >
             {fitted ? "Fit again" : "Fit every pattern"}
           </button>
@@ -245,7 +245,7 @@ function StrainMaps({ d, fit }: { d: DatasetSummary; fit: DatasetSummary }) {
   // Angles on screen (y down), counter-clockwise from x as seen.
   const ang = (g: [number, number]) => (Math.atan2(-g[1], g[0]) * 180) / Math.PI;
   const AXES: { id: StrainAxes["along"]; label: string; title: string }[] = [
-    { id: "scan", label: "Scan", title: "x along the scan's x (the pattern's while the QR rotation isn't applied)" },
+    { id: "scan", label: "Scan", title: "x along the scan's x" },
     { id: "g1", label: "g1", title: "x along the reference g1" },
     { id: "angle", label: "Angle", title: "x at an angle from the scan's x, counter-clockwise" },
   ];
@@ -253,7 +253,7 @@ function StrainMaps({ d, fit }: { d: DatasetSummary; fit: DatasetSummary }) {
   return (
     <>
       <p className="process-heading small">Reference</p>
-      <label title="The unstrained lattice: the median of the fitted g1 and g2 over the scan, or over a region drawn on it">
+      <label title="The unstrained lattice: median over the scan or a region">
         <span>Median over</span>
         <select value={roi?.id ?? ""} onChange={(e) => setRefRegion(d.id, e.target.value || null)}>
           <option value="">Whole scan</option>
@@ -297,7 +297,7 @@ function StrainMaps({ d, fit }: { d: DatasetSummary; fit: DatasetSummary }) {
             className="primary"
             disabled={!r}
             onClick={() => void runMaps(d.id, body)}
-            title="εxx, εyy, εxy and ωxy against the reference, on these axes (pyxem), as kemstem's: under the Lattice fit"
+            title="Strain maps against the reference, on these axes"
           >
             {made ? "Make maps again" : "Make strain maps"}
           </button>

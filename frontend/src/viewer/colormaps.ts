@@ -47,7 +47,10 @@ export const OVERLAY_COLOURS = [
 /** A colormap name may also be a "#rrggbb" colour: black → that colour. */
 export const isColour = (name: string) => /^#[0-9a-f]{6}$/i.test(name);
 
-const stopsFor = (name: string) => (isColour(name) ? ["#000000", name] : (STOPS[name] ?? STOPS.gray));
+/** A colour map's stops: a named one, one colour (from black), or a list of
+ * colours ("stops:#rrggbb,#rrggbb,…", e.g. a phase map's phases). */
+const stopsFor = (name: string) => (name.startsWith("stops:") ? name.slice(6).split(",")
+  : isColour(name) ? ["#000000", name] : (STOPS[name] ?? STOPS.gray));
 
 const hexToRgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
 

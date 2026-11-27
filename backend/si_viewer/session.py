@@ -34,6 +34,10 @@ class NotAvailable(ValueError):
 
 
 def classify(signal) -> DatasetKind:
+    from .processing.structure import is_structure
+
+    if is_structure(signal):
+        return DatasetKind.OTHER
     am = signal.axes_manager
     nav, sig = am.navigation_dimension, am.signal_dimension
     if sig == 2 and nav == 0:
@@ -292,6 +296,16 @@ class Dataset:
     # map), "options" (FitOptions), "frame" (the calibration applied:
     # "centred", "ellipse", "rotation"), "components" (the stack's frames)}.
     strain: dict | None = None
+    # 4D-STEM data: orientation and phase mapping (pyxem), its results.
+    orientation: dict | None = None
+    # A Structure's templates (origin "templates", under the Structure):
+    # {"name" (the phase), "templates" (how many), "options" (TemplateOptions)}.
+    templates: dict | None = None
+    # Polar patterns (a polar transform, pyxem's PolarDiffraction2D): what it
+    # was made from: {"source" (the 4D-STEM data's id; None when made in
+    # place), "axes" (the source's pattern axes then: [{scale, offset,
+    # units}] for ky, kx), "options" (PolarOptions)}.
+    polar: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -342,6 +356,17 @@ class Dataset:
     def loaded_signal(self):
         """The data as loaded (a stack's frames before any alignment)."""
         return self.original_signal if self.original_signal is not None else self.signal
+
+    @property
+    def structure_info(self) -> dict | None:
+        """A crystal structure's (a CIF) formula, space group, cell and sites."""
+        from .processing.structure import is_structure, structure_info
+
+        if not is_structure(self.signal):
+            return None
+        if "structure" not in self.cache:
+            self.cache["structure"] = structure_info(self.signal)
+        return self.cache["structure"]
 
     @property
     def lazy(self) -> bool:
@@ -498,6 +523,11 @@ class Dataset:
             "calibration": self.calibration,
             "origin_map": self.origin_map,
             "strain": self.strain,
+            "orientation": self.orientation,
+            "templates": self.templates,
+            "polar": self.polar,
+            "beam_energy": _beam_energy(s) if self.kind is DatasetKind.DIFFRACTION4D else None,
+            "structure": self.structure_info,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
             "insitu": self.insitu.summary() if self.insitu is not None else insitu_summary(s),
             "id": self.id,
@@ -594,6 +624,15 @@ class FileEntry:
         }
 
 
+def _beam_energy(signal) -> float | None:
+    """The accelerating voltage (kV) the file records, if any."""
+    try:
+        v = float(signal.metadata.get_item("Acquisition_instrument.TEM.beam_energy"))
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
 def _detector_info(signal) -> dict | None:
     """The detector segments an image was summed from, if recorded."""
     det = signal.metadata.get_item("Acquisition_instrument.TEM.Detector")
@@ -661,6 +700,10 @@ class Session:
         self.experiments: dict[str, Experiment] = {}
         # Deletions that can be undone, oldest first (see ``delete_dataset``).
         self.undoable: dict[str, dict] = {}
+        # Templates objects' simulations (diffsims), by id: (made with, simulation).
+        self.template_sims: dict[str, tuple[dict, object]] = {}
+        # Orientation maps' IPF colours, by (map id, direction).
+        self.orientation_cache: dict[tuple[str, str], np.ndarray] = {}
         self._lock = threading.RLock()
 
     def open_file(self, path: str | Path, experiment_id: str | None = None) -> FileEntry:
@@ -1489,6 +1532,28 @@ class Session:
             self.files[ds.file_id].dataset_ids.append(out.id)
         return out
 
+    # ---------- orientation mapping: templates under their Structures ----------
+
+    def add_templates(self, structure: Dataset, record: dict, title: str) -> Dataset:
+        """A new "Templates" object under ``structure`` (its ``templates``
+        record). Titles repeated get a number."""
+        import hyperspy.api as hs
+
+        with self._lock:
+            taken = {d.title for d in self.siblings(structure) if d.parent_id == structure.id}
+            name, k = title, 2
+            while name in taken:
+                name, k = f"{title} ({k})", k + 1
+            signal = hs.signals.BaseSignal(np.zeros(1, dtype=np.uint8))
+            signal.metadata.General.title = name
+            ds = Dataset(
+                id=_new_id(), file_id=structure.file_id, signal=signal, kind=DatasetKind.OTHER,
+                origin="templates", parent_id=structure.id, templates=dict(record),
+            )
+            self.datasets[ds.id] = ds
+            self.files[structure.file_id].dataset_ids.append(ds.id)
+        return ds
+
     # ---------- time scans of an in-situ series ----------
 
     def time_scan_sources(self, ds: Dataset, with_linked: bool = True) -> list[Dataset]:
@@ -2304,6 +2369,41 @@ class Session:
         cube.replace_signal(centred)
         return cube
 
+    def polar_transform(self, cube: Dataset, options, in_place: bool = False, report=None) -> Dataset:
+        """The polar transform of every pattern of 4D-STEM data
+        (``processing.orientation.polar_scan``, pyxem's, with the
+        calibration's ellipse when ``options.ellipse``): as a copy under it
+        (origin "polar"), or in place (a new revision; the file is unchanged).
+        Returns the dataset made. ValueError when the patterns aren't
+        calibrated (1/Å or 1/nm) or the data is too big."""
+        from .processing.orientation import polar_scan
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        kx, ky = cube.signal.axes_manager.signal_axes
+        per = {"1/Å": 1.0, "1/A": 1.0, "1/nm": 10.0}.get(str(kx.units))
+        if per is None:
+            raise ValueError("Calibrate the pattern's pixel size first (1/Å or 1/nm)")
+        if cube.signal.metadata.get_item("Signal.signal_type") == "polar_diffraction":
+            raise ValueError(f"{cube.title} is already a polar transform")
+        if cube.lazy and cube.signal.data.nbytes > DIFFRACTION4D_IN_MEMORY_LIMIT:
+            raise ValueError(f"{cube.title} is too big to transform in memory: bin it first")
+        cal = cube.calibration or {}
+        affine = cal.get("affine") if options.ellipse and cal.get("ring") else None
+        polar = polar_scan(cube.signal, [(a.scale, a.offset, a.units) for a in (ky, kx)], affine, options, per, report)
+        record = {
+            "source": None if in_place else cube.id,
+            "axes": [{"scale": float(a.scale), "offset": float(a.offset), "units": str(a.units)} for a in (ky, kx)],
+            "options": options.model_dump(),
+        }
+        if not in_place:
+            made = self.copy_as(cube, "polar", f"{cube.title} (polar)", signal=polar)
+            made.polar = record
+            return made
+        cube.replace_signal(polar)
+        cube.polar = record
+        return cube
+
     def calibrate_patterns(self, cube: Dataset, scale: float, units: str, ring: dict | None, info: dict) -> Dataset:
         """Calibrate 4D-STEM data's pattern axes: ``scale`` ``units`` per
         pixel, and 0 at ``ring``'s centre if given (pattern px, pixel i
@@ -2527,6 +2627,86 @@ class Session:
             made.append(ds)
         return made
 
+    def set_orientation_map(self, data: Dataset, results: np.ndarray, record: dict) -> Dataset:
+        """The orientation map of ``data`` (4D-STEM data or polar patterns:
+        ``processing.orientation.match_scan``'s ``results``, [y, x, n_best,
+        4]) as an "Orientation map" under it (origin "orientation-map", kind
+        "other", the results as its data), with its images under that: the
+        correlation and the IPF colours along x, y and z (whose values are
+        the correlation; colours from ``ipf_colours``). ``record``: what was
+        matched (templates, polar, options, phase), kept in each one's
+        ``orientation``. Made again in place for the same polar patterns and
+        templates. Returns the map."""
+        import hyperspy.api as hs
+
+        from .processing.orientation import IPF_DIRECTIONS, best_phase, phase_blocks
+
+        if data.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{data.title} is not 4D-STEM data")
+        scan = data.signal.axes_manager.navigation_axes  # x, y
+        same = lambda d: (d.orientation or {}).get("polar") == record["polar"] and (  # noqa: E731
+            (d.orientation or {}).get("templates") == record["templates"])
+        with self._lock:
+            omap = next((d for d in self.datasets.values()
+                         if d.origin == "orientation-map" and d.parent_id == data.id and same(d)), None)
+        holder = hs.signals.BaseSignal(np.ascontiguousarray(results, dtype=np.float32))
+        holder.metadata.General.title = f"Orientation map · {record['phase']}"
+        info = {**record, "output": "map", "source_id": data.id}
+        if omap is not None:
+            omap.replace_signal(holder)
+            omap.orientation = info
+        else:
+            omap = Dataset(id=_new_id(), file_id=data.file_id, signal=holder, kind=DatasetKind.OTHER,
+                           origin="orientation-map", parent_id=data.id, orientation=info)
+            with self._lock:
+                self.datasets[omap.id] = omap
+                ids = self.files[data.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == data.id]
+                ids.insert(ids.index(after[-1] if after else data.id) + 1, omap.id)
+        # Several phases ([phases, y, x, n_best, 4]): each position's best phase.
+        n_phases = phase_blocks(results).shape[0]
+        which, picked = best_phase(results)
+        corr = np.ascontiguousarray(picked[:, :, 0, 1], dtype=np.float32)
+        with self._lock:
+            earlier = {(d.orientation or {}).get("key"): d for d in self.datasets.values() if d.parent_id == omap.id}
+        made = [omap]
+        images = [("correlation", "Correlation")] + ([("phase", "Phase")] if n_phases > 1 else [])
+        for key, title in images + [(f"ipf-{v}", f"IPF-{v}") for v in IPF_DIRECTIONS]:
+            # The phase image holds each position's phase (0, 1, …), drawn in the phases' colours.
+            value = corr.copy()
+            if key.startswith("ipf") and n_phases > 1:
+                # The IPF colours darkened by the correlation as a fraction of
+                # its phase's best (phases correlate on different scales).
+                for k in range(n_phases):
+                    top = corr[which == k].max() if (which == k).any() else 0
+                    if top > 0:
+                        value[which == k] /= top
+            signal = hs.signals.Signal2D(which.astype(np.float32) if key == "phase" else value)
+            for axis, src in zip(signal.axes_manager.signal_axes, scan):
+                axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
+            signal.metadata.General.title = title
+            quantity = "Phase" if key == "phase" else (
+                "Correlation (of its phase's best)" if key.startswith("ipf") and n_phases > 1 else "Correlation")
+            signal.metadata.set_item("Signal.quantity", quantity)
+            out = {**info, "output": "ipf" if key.startswith("ipf") else key, "key": key, "map_id": omap.id}
+            if key.startswith("ipf"):
+                out["direction"] = key[-1]
+            ds = earlier.get(key)
+            if ds is not None:
+                ds.replace_signal(signal)
+                ds.orientation = out
+                continue
+            ds = Dataset(id=_new_id(), file_id=data.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                         origin="orientation-map", parent_id=omap.id, orientation=out)
+            with self._lock:
+                self.datasets[ds.id] = ds
+                ids = self.files[data.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == omap.id and i != ds.id]
+                ids.insert(ids.index(after[-1] if after else omap.id) + 1, ds.id)
+        with self._lock:
+            self.orientation_cache = {k: v for k, v in self.orientation_cache.items() if k[0] != omap.id}
+        return omap
+
     def set_calibration_switches(self, cube: Dataset, enabled: dict | None = None, view: str | None = None) -> None:
         """Switch parts of 4D-STEM data's calibration on or off for its
         Bragg vectors ("origin", "ellipse", "scale", "rotation"), and whether
@@ -2660,6 +2840,26 @@ class Session:
         signal.metadata.set_item("Signal.background", how)
         if not in_place:
             return self.copy_as(cube, "pattern-background", f"{cube.title} (background subtracted)", signal=signal)
+        signal.metadata.General.title = cube.signal.metadata.General.title
+        cube.replace_signal(signal)
+        return cube
+
+    def mask_with_vectors(self, cube: Dataset, mask: np.ndarray, disk_r: float, in_place: bool = False) -> Dataset:
+        """4D-STEM data times the mask of its Bragg vectors (``mask``: bool,
+        the data's shape; pyxem's ``to_mask``, as its orientation mapping
+        tutorial masks the data before matching): in place (a new revision),
+        or as a copy under it (origin "vector-masked"). Returns the dataset
+        changed."""
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if mask.shape != tuple(cube.signal.data.shape):
+            raise ValueError("The Bragg vectors are not the data's (was it binned since?)")
+        cube.materialise()
+        data = np.asarray(cube.loaded_signal.data)
+        signal = cube.loaded_signal._deepcopy_with_new_data(np.where(mask, data, 0).astype(data.dtype, copy=False))
+        signal.metadata.set_item("Signal.vector_mask", f"discs of {disk_r:g} px at the Bragg vectors")
+        if not in_place:
+            return self.copy_as(cube, "vector-masked", f"{cube.title} (masked by its vectors)", signal=signal)
         signal.metadata.General.title = cube.signal.metadata.General.title
         cube.replace_signal(signal)
         return cube
@@ -3470,13 +3670,13 @@ class Session:
         ds.technique_source = "user"
 
     def delete_dataset(self, dataset: Dataset) -> str:
-        """Delete an element map, a window map, a thickness or a
-        background-removed or deconvolved spectrum image (with everything made
-        from it). Returns a token that ``undo`` takes to bring it back.
+        """Delete anything made in the app (with everything made from it): an
+        element map, a window map, a result. Returns a token that ``undo``
+        takes to bring it back.
 
         Deleting an element map also unticks its element in the map's spectrum image and in the
         file's other (non-image) EDS spectra, which removes that element's
-        computed maps too. Other data can't be deleted.
+        computed maps too. A file's own data can't be deleted (close the file).
         """
         from .processing.xray import eds_info
 
@@ -3485,7 +3685,7 @@ class Session:
             entry["restore"] = self._tree_places(dataset)
             self._remove(dataset)  # no element to untick
             return self._keep_undoable(entry)
-        if dataset.origin in ("background", "background-r", "deconvolved", "line-scan", "aligned-sum", "rebinned", "zlp-aligned", "aligned", "dpc", "pca", "pca-factors", "pca-denoised", "cropped", "curve-fit", "curve-model", "atomic", "mask"):
+        if not dataset.is_element_map and dataset.origin not in (None, "", "file"):
             if dataset.origin == "curve-model" and dataset.parent_id in self.datasets:
                 self.datasets[dataset.parent_id].curve_fits = None  # its fit at the cursor goes with it
             places = self._tree_places(dataset)
@@ -3503,7 +3703,7 @@ class Session:
                     self._remove_tree(nb)
             return self._keep_undoable(entry)
         if not dataset.is_element_map:
-            raise ValueError(f"{dataset.title} is not an element map and can't be deleted")
+            raise ValueError(f"{dataset.title} is the file's own data: close the file instead")
         # A computed map comes back with its element; any other is kept.
         if dataset.origin != "computed":
             entry["restore"] = self._tree_places(dataset)

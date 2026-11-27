@@ -32,7 +32,7 @@ export function MapOptionsControls({ ds }: { ds: DatasetSummary }) {
   return (
     <div className="map-options" title="Maps are computed for elements you add here">
       <span className="map-options-title">Maps</span>
-      <label title="Subtract the background estimated from windows either side of the peak">
+      <label title="Subtract the background from either side of the peak">
         <input
           type="checkbox"
           checked={options.background}
@@ -51,7 +51,7 @@ export function MapOptionsControls({ ds }: { ds: DatasetSummary }) {
           ))}
         </select>
       </label>
-      <label title="Average each pixel with its n × n neighbourhood (reduces noise, keeps the map size)">
+      <label title="Average each pixel with its n × n neighbourhood">
         Smoothing
         <select
           value={options.smoothing}

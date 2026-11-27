@@ -31,7 +31,7 @@ def test_fits_an_elliptical_ring():
     # A circle: no ellipticity; its angle doesn't matter.
     circle = cal.fit_ring(_ring(a=25, b=25), cal.RingOptions(r_min=18, r_max=32), {"cx": 64, "cy": 64})
     assert circle["ellipticity"] < 0.003
-    # pyxem's affine makes it circular (radius b, pyxem's convention).
+    # pyxem's affine makes it circular, of radius √(a b) (areas kept).
     aff = np.asarray(cal.affine_of(ring))
     assert aff.shape == (3, 3) and np.allclose(aff, aff.T, atol=1e-6)
     t = np.linspace(0, 2 * np.pi, 64, endpoint=False)
@@ -39,7 +39,7 @@ def test_fits_an_elliptical_ring():
     pts = np.column_stack([ring["a"] * np.cos(t) * c - ring["b"] * np.sin(t) * s,
                            ring["a"] * np.cos(t) * s + ring["b"] * np.sin(t) * c])
     r = np.hypot(*(pts @ aff[:2, :2].T).T)
-    assert r.max() - r.min() < 1e-6 and r.mean() == pytest.approx(ring["b"], rel=1e-6)
+    assert r.max() - r.min() < 1e-6 and r.mean() == pytest.approx(ring["radius"], rel=1e-6)
 
 
 def test_no_ring_is_an_error():

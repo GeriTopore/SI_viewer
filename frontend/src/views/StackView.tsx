@@ -307,7 +307,7 @@ export function StackView({ ds, images, others = [] }: {
             setPcaGrid(!showGrid);
             setProjection("frame");
           }}
-          title="The kept components' maps side by side (the one shown is outlined)"
+          title="The kept components' maps side by side"
         >
           Grid · 1–{pcaKept}
         </button>

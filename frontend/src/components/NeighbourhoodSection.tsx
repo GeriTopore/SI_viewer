@@ -134,7 +134,7 @@ function Neighbourhoods({ d, columns }: { d: DatasetSummary; columns: DatasetSum
               ready();
               computeNeighbourhood(d.id, columns, nb);
             }}
-            title={`Make ${nb.title} again with these settings (its clusters and bonds go)`}
+            title={`Make ${nb.title} again; its clusters and bonds go`}
           >
             {st.busy === "Updating" ? "Updating…" : "Update"}
           </button>
@@ -224,7 +224,7 @@ function Analysis({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy
           Add vector
         </button>
       </div>
-      <label title="How far (px) the neighbour may be from the column + the vector">
+      <label title="How far (px) a neighbour may be from column + vector">
         <span>Within (px)</span>
         <input type="number" min={0.5} step={0.5} value={a.threshold} onChange={(e) => patch({ threshold: Math.max(0.1, num(e.target.value, a.threshold)) })} />
       </label>
@@ -264,7 +264,7 @@ function Cage({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy: st
   return (
     <>
       <h4 className="process-heading">Cage</h4>
-      <label className="q-check-line small" title="The cage is each column's k nearest neighbours (whichever way it has moved) instead of picked clusters">
+      <label className="q-check-line small" title="Use each column's k nearest neighbours as the cage">
         <input type="checkbox" checked={a.cageNearest} onChange={(e) => patch({ cageNearest: e.target.checked, cagePick: false })} />
         The {nb.atomic?.k ?? "k"} nearest
       </label>
@@ -272,7 +272,7 @@ function Cage({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy: st
         <button
           className={`icon-toggle${a.cagePick ? " active" : ""}`}
           aria-pressed={a.cagePick}
-          title="Click clusters in the plot to add them to the cage (again to take one out)"
+          title="Click clusters in the plot to add or remove them"
           onClick={() => {
             patch({ cagePick: !a.cagePick, pick: null });
             if (!a.cagePick) useUi.getState().setBottomTab("neighbourhood");
@@ -289,7 +289,7 @@ function Cage({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy: st
           </button>
         )}
       </div>}
-      <label title={a.cageNearest ? "How far (px) a neighbour may be from the usual distance for its place (more: the column is left out, e.g. at an edge)" : "How far (px) a cage neighbour may be from the column + its cluster"}>
+      <label title={a.cageNearest ? "How far (px) a neighbour may be from the usual distance" : "How far (px) a neighbour may be from column + cluster"}>
         <span>Within (px)</span>
         <input type="number" min={0.5} step={0.5} value={a.cageThreshold} onChange={(e) => patch({ cageThreshold: Math.max(0.1, num(e.target.value, a.cageThreshold)) })} />
       </label>
@@ -297,7 +297,7 @@ function Cage({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy: st
         <button
           disabled={!!busy || (!a.cageNearest && !a.cage.length)}
           onClick={() => seedCageCentres(d.id, nb)}
-          title="New column guesses at each origin's cage centre, after the fitted columns: fit them all in Atomic columns (the new ones a sublattice of their own)"
+          title="Add each cage centre as a new column guess; fit in Atomic columns"
         >
           {busy === "Seeding" ? "Adding…" : "Add centres as columns"}
         </button>
@@ -305,7 +305,7 @@ function Cage({ d, nb, busy }: { d: DatasetSummary; nb: DatasetSummary; busy: st
           className="primary"
           disabled={!!busy || (!a.cageNearest && !a.cage.length)}
           onClick={() => measureCageDisplacement(d.id, nb)}
-          title="Each origin's displacement from its cage centre, drawn as vectors"
+          title="Each origin's displacement from its cage centre, as vectors"
         >
           {busy === "Displacing" ? "Measuring…" : made ? "Measure again" : "Measure displacement"}
         </button>

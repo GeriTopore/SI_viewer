@@ -127,7 +127,7 @@ function ByMask({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
       <h4 className="process-heading">By mask</h4>
       {mask ? (
         <>
-          <label title="A sublattice of the columns in the mask, added next to the others">
+          <label title="Add a sublattice of the columns in the mask">
             <span>Mask</span>
             <select value={mask.id} onChange={(e) => setChosen(e.target.value)}>
               {masks.map((m) => (
@@ -199,7 +199,7 @@ function ByCell({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
               ))}
             </select>
           </label>
-          <label title="The neighbourhood whose first two lattice vectors span the cell">
+          <label title="The neighbourhood whose first two vectors span the cell">
             <span>Vectors</span>
             <select value={nb?.id ?? ""} onChange={(e) => patch({ nb: e.target.value })}>
               {withVectors.map((x) => (
@@ -221,7 +221,7 @@ function ByCell({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
           </div>
           {st.data && (
             <>
-              <label title="Clicks on the Cell plot add a site of this sublattice (a click on a site removes it)">
+              <label title="Click the Cell plot to add a site; click a site to remove it">
                 <span>Add sites as</span>
                 <select value={st.name} onChange={(e) => patch({ name: e.target.value })}>
                   {names.map((n) => (
@@ -257,7 +257,7 @@ function ByCell({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
               ) : (
                 <p className="muted small">Click the sites on the Cell plot below the image.</p>
               )}
-              <label title="Circles: each column to the nearest site within a radius. Clusters: each site the dense groups of columns that come near it, however far they reach (e.g. a tilt streak); columns apart from any site's group are left out">
+              <label title="Assign columns to sites by radius or by cluster">
                 <span>Sites as</span>
                 <select value={st.mode} onChange={(e) => patch({ mode: e.target.value as "radius" | "clusters", fits: null })}>
                   <option value="radius">Circles</option>
@@ -274,7 +274,7 @@ function ByCell({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
                     <span>Link (px)</span>
                     <input type="number" min={0.5} step={0.5} value={st.link} onChange={(e) => patch({ link: Math.max(0.5, num(e.target.value, st.link)), fits: null })} />
                   </label>
-                  <label title="The fewest columns round a group's core (fewer: left out as scattered)">
+                  <label title="Fewest columns in a group's core; fewer are left out">
                     <span>Smallest group</span>
                     <input type="number" min={1} step={1} value={st.least} onChange={(e) => patch({ least: Math.max(1, Math.round(num(e.target.value, st.least))), fits: null })} />
                   </label>
@@ -282,7 +282,7 @@ function ByCell({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
               )}
               <div className="process-actions">
                 {st.mode === "clusters" && (
-                  <button disabled={busy || !st.sites.length} onClick={() => ref && fitCell(d.id, made, ref.id)} title="Find each site's clusters and colour the Cell plot by them (without splitting)">
+                  <button disabled={busy || !st.sites.length} onClick={() => ref && fitCell(d.id, made, ref.id)} title="Find each site's clusters, without splitting">
                     {st.busy === "Fitting" ? "Finding…" : "Preview"}
                   </button>
                 )}
@@ -290,7 +290,7 @@ function ByCell({ d, made }: { d: DatasetSummary; made: DatasetSummary }) {
                   className="primary"
                   disabled={busy || !st.sites.length}
                   onClick={() => ref && splitByCell(d.id, made, ref.id)}
-                  title={st.mode === "clusters" ? "Each site's clusters its sublattice (replacing the sublattices there are)" : "Each column to its nearest site's sublattice (replacing the sublattices there are)"}
+                  title={st.mode === "clusters" ? "Each site's clusters form its sublattice; replaces existing sublattices" : "Each column to its nearest site; replaces existing sublattices"}
                 >
                   {st.busy === "Splitting" ? "Splitting…" : "Split"}
                 </button>

@@ -227,6 +227,10 @@ conda-forge and PyPI.
   token) or `--no-token`; the dev servers in `.claude/launch.json` (fixed
   ports, opened at the bare address) will need `--no-token` or
   `SI_VIEWER_TOKEN` and the token in the tab's address.
+- A server killed outright (SIGKILL, e.g. stopped from the preview pane)
+  never removes its session file: a new server deletes the files of
+  servers no longer running before writing its own (not on Windows, where
+  `os.kill(pid, 0)` sends Ctrl-C). (2026-11-27)
 
 ## 7d. R2: built (2026-11-26, branch `remote`)
 

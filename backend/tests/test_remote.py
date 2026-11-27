@@ -138,6 +138,20 @@ def test_server_on_a_free_port_with_a_session_file_stops_when_stdin_closes(tmp_p
             proc.kill()
 
 
+def test_a_new_session_file_clears_those_of_servers_gone(tmp_path, monkeypatch):
+    import si_viewer.app as app_mod
+
+    monkeypatch.setattr(app_mod, "SESSIONS_DIR", tmp_path)
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    (tmp_path / f"{gone.pid}.json").write_text("{}")
+    (tmp_path / f"{os.getppid()}.json").write_text("{}")
+    (tmp_path / "notes.json").write_text("{}")
+    app_mod._write_session_file({"pid": os.getpid()})
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        [f"{os.getpid()}.json", f"{os.getppid()}.json", "notes.json"])
+
+
 # ---------- R2: the launcher, ``si-viewer remote HOST`` ----------
 
 FAKE_SSH = r'''#!/usr/bin/env python3

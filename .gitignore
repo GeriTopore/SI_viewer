@@ -33,3 +33,6 @@ frontend/dist/
 # Built frontend, served by the backend
 backend/si_viewer/static/
 *.tsbuildinfo
+
+# The handover is private (in the owner's notes), never in this public repo.
+docs/HANDOVER.md

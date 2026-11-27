@@ -25,14 +25,13 @@ stacks, in-situ series and 4D-STEM.
 | Folder | Branch | State |
 |---|---|---|
 | `/Users/gt622/Documents/Dev/SI_viewer` | `abtem-plugin` (43ae9c9) | The abTEM plugin's work, separate. Holds `.claude/launch.json` and `examples/` (git-ignored). |
-| `/Users/gt622/Documents/Dev/SI_viewer-4dstem` | `4dstem` | **Current work.** `f7b2d37` pushed; the orientation-map work since is **uncommitted** (see below). |
+| `/Users/gt622/Documents/Dev/SI_viewer-4dstem` | `4dstem` | **Current work.** Everything committed and pushed (`3f2513c` and this handover after it). |
 | `/Users/gt622/Documents/Dev/SI_viewer-remote` | `remote` (a773a1d, pushed, clean) | `si-viewer remote HOST` (SSH launcher, token auth, install). |
 
 - `main` and `origin/main` are at `d652fa6`, the merge of the remote work and
   4D-STEM's COM and calibration changes.
 - Since `d652fa6`, `4dstem` and `remote` have moved apart:
-  - `4dstem` has the orientation work (`780b69d`, `f7b2d37` and the
-    uncommitted work).
+  - `4dstem` has the orientation work (`780b69d`, `f7b2d37`, `3f2513c`).
   - `remote` has one fix: a server deletes the session files of servers no
     longer running.
 - Merge them when the user asks.
@@ -48,7 +47,7 @@ main checkout's. Never commit it, `.claude/` or `examples/`.
 - **Test:**
   `PYTHONPATH=/Users/gt622/Documents/Dev/SI_viewer-4dstem/backend /Users/gt622/miniforge3/envs/si-viewer/bin/python -m pytest -q -p no:cacheprovider /Users/gt622/Documents/Dev/SI_viewer-4dstem/backend/tests`
   - It takes about 2.5 min; run it in the background.
-  - Last run: **464 passed, 140 skipped**, including the uncommitted work.
+  - Last run: **464 passed, 140 skipped**.
   - While iterating, run only `tests/test_orientation.py` (11 tests, about 30 s).
 - **Token auth:** since the remote merge, a server needs its token unless
   started with `--no-token`. Every 4dstem configuration in `.claude/launch.json`
@@ -142,22 +141,18 @@ them. Match results aren't kept.
     no precession with s = 0.001 1/Å). The app turns that into a message
     saying what to change.
 
-### Uncommitted in the 4dstem worktree (18 files, tests pass)
+### Last commit
 
-The whole-scan **Map** and everything it needs:
+`3f2513c` added the whole-scan **Map** and what it needs:
 - `match_scan`, `orientation_map`, `ipf_colours`, `map_at` and `describe` in
   `processing/orientation.py`;
-- `/4d/orientation/map`, `/orientation/ipf` and `/orientation/at` in
-  `api/orientation.py`;
+- `/4d/orientation/map`, `/orientation/ipf` and `/orientation/at`;
 - `session.set_orientation_map`;
 - the RGB renderer;
-- `fetchIpfFrame`;
-- the IPF key tab (`views/ImagesView.tsx`);
-- the Orientation map layer (FourDView);
-- the "Map" button (`OrientationSection.tsx`);
-- persistence of the choices was committed in `f7b2d37`.
+- the IPF key tab;
+- the Orientation map layer.
 
-Commit and push only when the user asks.
+Nothing is uncommitted.
 
 ## Open items (nearest first)
 

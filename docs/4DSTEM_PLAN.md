@@ -892,6 +892,26 @@ Calibration's step 1 and the Info tab's row are now "Descan".
     again (they failed with "Raw data not found").
   - SPED-Ag's voltage is recorded nowhere (file metadata, the tutorial, the
     Zenodo record): the tutorial's templates use diffsims' default 200 kV.
+  - **Polar patterns and matching (2026-11-27):**
+    - A polar transform is its own object, "polar patterns" (badge Polar;
+      Filters, Virtual imaging, Orientation mapping only), recording its
+      source and the source's pattern axes then (`Dataset.polar`, saved).
+    - Orientation mapping: "Match current position" (a button: every cursor
+      where it is); a Polar patterns choice (the file's, same scan: e.g. the
+      vector-masked data's), warned when its source's calibration changed.
+    - Matches kept by polar patterns, their version and templates, then
+      position (shared by the data and its polar patterns); cursors shared
+      by the file's 4D-STEM data of the same scan: switching between the
+      data and its polar patterns shows the same match. On polar patterns
+      the template layer is drawn at angle and radius too.
+    - Structure tab "Match orientation": the 3D view turned as matched at
+      the active cursor (`view_of`: towards the viewer orientation × z, up
+      orientation × −y, as [uvw]); its template then lands on the best match
+      (42 of 42 on SPED-Ag; tested off a zone axis, where a half turn isn't
+      a symmetry). The matched reflections are labelled with the crystal's
+      hkl from that view (pyxem's `to_vectors` hkl are the turned template's,
+      rounded).
+    - Marks on the pattern drawn at pixel centres (half a pixel off before).
   - **Still to do, in the tutorial's order:** the whole scan as a job
     (`get_orientation(n_best=1, frac_keep=0.5)` on the masked data's polar
     transform): an orientation map with markers on the patterns

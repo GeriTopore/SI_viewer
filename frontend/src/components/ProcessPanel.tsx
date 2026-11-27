@@ -543,6 +543,10 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       Rebin…
     </button>
   );
+  // Polar patterns (a polar transform) are 4D-STEM data with radius × angle
+  // patterns: only virtual imaging and orientation mapping apply to them.
+  const polarPatterns = d.kind === "4dstem" && d.signal_type === "polar_diffraction";
+  const cartesian4d = d.kind === "4dstem" && !polarPatterns;
   const processes = bySection(([
     d.kind === "stack" && d.origin !== "pca" && {
       id: "align", title: "Align frames", tip: "Register the frames to remove drift, then average them",
@@ -554,7 +558,7 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       body: <DpcSection d={d} />,
     },
     // 4D-STEM data: Pre-processing (Rebin first), then Analysis.
-    canRebin(d) && d.kind === "4dstem" && {
+    canRebin(d) && cartesian4d && {
       id: "rebin", title: "Rebin", section: "Pre-processing", tip: "Sum neighbouring scan positions or pattern pixels; overwrites the loaded data",
       body: rebinBody,
     },
@@ -563,27 +567,27 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       tip: "The virtual detector drawn on the pattern: its shape, response, apertures; keep the image as a dataset",
       body: <VirtualImageSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
       id: "bad-pixels", title: "Remove bad pixels", section: "Pre-processing",
       tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
       body: <BadPixelSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
       id: "background", title: "Background", section: "Pre-processing",
       tip: "Diffuse scattering subtracted from every pattern (pyxem: median kernel, difference of Gaussians, radial median, h-dome), tried on the patterns shown",
       body: <PatternBackgroundSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
       id: "centring", title: "Fix descan", section: "Pre-processing",
       tip: "The direct beam found in every pattern, the descan as a plane, and every pattern shifted so the beam is at its centre",
       body: <CentringSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && d.signal_type !== "polar_diffraction" && {
+    cartesian4d && {
       id: "polar", title: "Polar transform", section: "Pre-processing",
       tip: "Every pattern as radius × azimuth (pyxem's get_azimuthal_integral2d), as a copy or in place: what orientation mapping matches against",
       body: <PolarSection key={d.id} d={d} />,
     },
-    d.kind === "4dstem" && {
+    cartesian4d && {
       id: "disks", title: "Disk detection", section: "Analysis",
       tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
       body: <DiskDetectionSection key={d.id} d={d} />,

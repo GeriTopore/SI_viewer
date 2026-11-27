@@ -76,6 +76,7 @@ export function kindLabel(d: DatasetSummary): string {
   if (d.origin === "mask") return "Mask";
   if (d.structure) return "Structure";
   if (d.origin === "templates") return "Templates";
+  if (d.signal_type === "polar_diffraction") return "Polar";
   if (d.origin === "disks") return "Bragg";
   if (d.origin === "bragg-map") return "BVM";
   if (d.origin === "beam-shift") return "Shift";
@@ -97,7 +98,9 @@ export function kindLabel(d: DatasetSummary): string {
 /** e.g. "EELS spectrum image" (the technique is left out when unknown). */
 export function kindName(d: DatasetSummary): string {
   const t = hasTechnique(d) && d.technique ? `${d.technique} ` : "";
-  const name = isLineScan(d)
+  const name = d.signal_type === "polar_diffraction"
+    ? "polar patterns"
+    : isLineScan(d)
     ? "LineScan"
     : isInsituView(d)
       ? "in-situ spectrum image"

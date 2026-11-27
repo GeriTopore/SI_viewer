@@ -3,7 +3,8 @@ import { api, type DatasetSummary } from "../api/client";
 import { formatValue } from "../format";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useLayers } from "../state/layers";
-import { chosenFor, isPolar, perAngstrom, templatesOf, useOrientation } from "../state/orientation";
+import { chosenFor, isPolar, matchKey, perAngstrom, polarFor, polarStale, polarsFor, templatesOf, useOrientation } from "../state/orientation";
+import { useFourDState } from "../views/FourDView";
 import { done } from "./FourDCalibrationInfo";
 import { templatesLabel } from "./TemplatesView";
 
@@ -16,11 +17,20 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
   const sets = templatesOf(all);
   const chosenId = useOrientation((s) => chosenFor(s, d));
   const polar = isPolar(d);
-  const matching = useOrientation((s) => s.matching[d.id] ?? false);
   const chosen = sets.find((x) => x.id === chosenId) ?? null;
   const { choose } = useOrientation.getState();
   const calibrated = perAngstrom(d) !== null;
   const structureOf = (x: DatasetSummary) => all.find((s) => s.id === x.parent_id);
+  const polars = polar ? [] : polarsFor(all, d);
+  const matchedOn = useOrientation((s) => polarFor(s, all, d));
+  const stale = matchedOn ? polarStale(matchedOn, all) : false;
+  // The cursors (shared by the data and its polar patterns): matched where they are.
+  const { st } = useFourDState(d);
+  const key = chosen && matchedOn ? matchKey(matchedOn, chosen.id) : "";
+  const busy = useOrientation((s) => (key ? s.matchBusy[key] ?? false : false));
+  const matchNow = () => chosen && matchedOn && useOrientation.getState().runMatch(
+    key, d.id, chosen.id, polar ? null : matchedOn.id, st.cursors.map((c) => [c.x, c.y]),
+  );
   const nameOf = (x: DatasetSummary) => `${structureOf(x)?.title ?? x.templates!.name} · ${x.title.replace(/^Templates · /, "")} (${x.templates!.templates})`;
 
   return (
@@ -38,12 +48,30 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
         <p className="muted small">Make templates on a Structure first (open a .cif, then its Templates process).</p>
       )}
       {chosen && !calibrated && !polar && <p className="field-error">Calibrate the pattern's pixel size to draw them.</p>}
-      {chosen && calibrated && <TemplateScale d={d} />}
-      {chosen && (
-        <label className="q-check-line small" title="pyxem's template matching (get_orientation, every template kept) of the polar transform at each cursor, as the cursors move: the best template on the patterns, the correlations in the Match tab">
-          <input type="checkbox" checked={matching} onChange={(e) => useOrientation.getState().setMatching(d.id, e.target.checked)} />
-          Match at the cursors
-        </label>
+      {/* Not on polar patterns: their axes are radius and angle. */}
+      {chosen && calibrated && !polar && <TemplateScale d={d} />}
+      {chosen && !polar && (
+        polars.length ? (
+          <label title="The polar patterns matched against (the notebook matches the vector-masked data's)">
+            <span>Polar patterns</span>
+            <select value={matchedOn?.id ?? ""} onChange={(e) => useOrientation.getState().choosePolar(d.id, e.target.value)}>
+              {polars.map((x) => <option key={x.id} value={x.id}>{x.title}</option>)}
+            </select>
+          </label>
+        ) : (
+          <p className="muted small">Make polar patterns first (Polar transform).</p>
+        )
+      )}
+      {chosen && stale && (
+        <p className="field-error">Made at another pixel size than {all.find((x) => x.id === matchedOn!.polar!.source)?.title}'s now: transform it again.</p>
+      )}
+      {chosen && matchedOn && (
+        <div className="process-actions">
+          <button className="primary" disabled={busy} onClick={() => void matchNow()}
+            title="pyxem's template matching (get_orientation, every template kept) of the polar transform at each cursor where it is now: the best template on the patterns, the correlations in the Match tab">
+            Match current position
+          </button>
+        </div>
       )}
 
     </section>

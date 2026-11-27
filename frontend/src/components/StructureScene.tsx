@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DatasetSummary } from "../api/client";
+import { useOrientation } from "../state/orientation";
 import type { Scene } from "../structure3d/scene";
 import {
   MAX_ATOMS,
@@ -114,12 +115,17 @@ export interface SceneOrientation {
   cell: number[][];
 }
 
-/** ``initial``: the view to start from (the structure's last, wherever shown). */
-export function StructureScene({ d, onOrientation, initial }: {
+/** ``initial``: the view to start from (the structure's last, wherever shown).
+ * ``matched``: the orientation matched at the active cursor (``view`` towards
+ * the viewer and screen ``up``, as [uvw]; null where not matched), offered as
+ * "Match orientation" (left out when undefined). */
+export function StructureScene({ d, onOrientation, initial, matched }: {
   d: DatasetSummary;
   onOrientation?: (o: SceneOrientation) => void;
   initial?: SceneOrientation;
+  matched?: { view: number[]; up: number[] } | null;
 }) {
+  const followMatch = useOrientation((s) => s.followMatch);
   const initialRef = useRef(initial);
   const orientationRef = useRef(onOrientation);
   orientationRef.current = onOrientation;
@@ -267,6 +273,13 @@ export function StructureScene({ d, onOrientation, initial }: {
       sceneRef.current.setOrientation(start.view, start.up);
     }
   }, [sceneReady, atoms, bonds, data, drawnElements, repeats, atomScale, hidden]);
+  // Match orientation: turned as the crystal is at the active cursor.
+  const matchedKey = matched ? `${matched.view.join()}|${matched.up.join()}` : "";
+  useEffect(() => {
+    if (!followMatch || !matched || !data || !sceneRef.current) return;
+    const cart = (uvw: number[]) => [0, 1, 2].map((k) => uvw.reduce((sum, u, j) => sum + u * data.cell[j][k], 0));
+    sceneRef.current.setOrientation(cart(matched.view), cart(matched.up));
+  }, [followMatch, matchedKey, sceneReady, data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) return <div className="structure3d-view"><p className="structure3d-message">{error}</p></div>;
   if (!data || !atoms || !drawnElements) {
@@ -327,21 +340,16 @@ export function StructureScene({ d, onOrientation, initial }: {
   return (
     <div className="structure3d-view" ref={rootRef} tabIndex={0}>
       <div className="structure3d-zones">
-        {ZONES.map((uvw) => {
-          const label = formatZone(uvw);
-          const active = onZone === uvw.join(",");
-          return (
-            <button
-              key={uvw.join("")}
-              className={active ? "active" : undefined}
-              aria-pressed={active}
-              title={`Look down ${label}`}
-              onClick={() => look(uvw)}
-            >
-              {label}
-            </button>
-          );
-        })}
+        <select
+          className="structure3d-zone-pick"
+          value={ZONES.find((uvw) => onZone === uvw.join(","))?.join(",") ?? ""}
+          aria-label="Main zone axes"
+          title="Look down a main zone axis"
+          onChange={(e) => e.target.value && look(e.target.value.split(",").map(Number))}
+        >
+          <option value="" disabled>Zone</option>
+          {ZONES.map((uvw) => <option key={uvw.join(",")} value={uvw.join(",")}>{formatZone(uvw)}</option>)}
+        </select>
         <input
           ref={zoneInputRef}
           className={zoneError ? "invalid" : undefined}
@@ -354,6 +362,7 @@ export function StructureScene({ d, onOrientation, initial }: {
           onKeyDown={(e) => { if (e.key === "Enter") applyZone(); }}
         />
         <button
+          className="structure3d-roll"
           title="Rotate the view 15° anticlockwise (Q: 1°, Shift: 5°)"
           aria-label="Rotate anticlockwise"
           onClick={() => sceneRef.current?.roll(-ROLL_BUTTON_STEP)}
@@ -361,12 +370,19 @@ export function StructureScene({ d, onOrientation, initial }: {
           ⟲
         </button>
         <button
+          className="structure3d-roll"
           title="Rotate the view 15° clockwise (E: 1°, Shift: 5°)"
           aria-label="Rotate clockwise"
           onClick={() => sceneRef.current?.roll(ROLL_BUTTON_STEP)}
         >
           ⟳
         </button>
+        {matched !== undefined && (
+          <label className="field" title="Turn the structure as matched at the active cursor (Match current position)">
+            <input type="checkbox" checked={followMatch} onChange={(e) => useOrientation.getState().setFollowMatch(e.target.checked)} />
+            Match orientation
+          </label>
+        )}
         {zoneError && <span className="structure3d-zone-error" role="alert">{zoneError}</span>}
       </div>
       <div className="structure3d-options">

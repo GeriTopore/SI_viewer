@@ -30,6 +30,7 @@
   --badge-atomic: #b45309;
   --badge-mask: #6d28d9;
   --badge-4dstem: #3a0f57;
+  --badge-polar: #86198f;
 
   /* Colours of linked EELS pairs (read on light and dark panels) */
   --pair-0: #0d9488;
@@ -521,6 +522,7 @@ button.primary:disabled {
 .badge-atomic { background: var(--badge-atomic); }
 .badge-mask { background: var(--badge-mask); }
 .badge-4dstem { background: var(--badge-4dstem); }
+.badge-polar { background: var(--badge-polar); }
 
 /* 4D-STEM: the scan and the diffraction pattern side by side. */
 .view.fourd-view { flex-direction: column; gap: 6px; }
@@ -6783,8 +6785,12 @@ kbd {
 .structure3d-zones { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
 .structure3d-zones button { padding: 2px 6px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text); background: none; border: 1px solid var(--border); border-radius: 4px; }
 .structure3d-zones button.active { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
-.structure3d-zones input { width: 76px; padding: 2px 5px; font-size: 11px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+.structure3d-zones label { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.structure3d-zones input:not([type="checkbox"]) { width: 76px; padding: 2px 5px; font-size: 11px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
 .structure3d-zones input.invalid { border-color: #e5484d; }
+.structure3d-zones .structure3d-zone-pick { padding: 2px 4px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+/* The rotate buttons: the arrows larger, the buttons the zone buttons' height. */
+.structure3d-zones button.structure3d-roll { display: inline-flex; align-items: center; justify-content: center; width: 21.5px; height: 21.4px; padding: 0; font-size: 17px; line-height: 1; }
 .structure3d-zone-error { font-size: 11px; color: #e5484d; }
 .structure3d-options { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 8px; font-size: 11px; border-bottom: 1px solid var(--border); }
 .structure3d-options .cell-input { width: 46px; }
@@ -6875,3 +6881,4 @@ kbd {
 .magnitude-tick { fill: var(--muted, #888); font-size: 8px; }
 .magnitude-reflection { stroke: var(--text, #ddd); stroke-width: 0.75; stroke-dasharray: 3 2; opacity: 0.7; }
 .magnitude-hkl { fill: var(--text, #ddd); font-size: 8px; }
+

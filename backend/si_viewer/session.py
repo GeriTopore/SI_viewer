@@ -301,6 +301,11 @@ class Dataset:
     # A Structure's templates (origin "templates", under the Structure):
     # {"name" (the phase), "templates" (how many), "options" (TemplateOptions)}.
     templates: dict | None = None
+    # Polar patterns (a polar transform, pyxem's PolarDiffraction2D): what it
+    # was made from: {"source" (the 4D-STEM data's id; None when made in
+    # place), "axes" (the source's pattern axes then: [{scale, offset,
+    # units}] for ky, kx), "options" (PolarOptions)}.
+    polar: dict | None = None
     # Microscope parameters the user set (EELS: "beam_energy" kV,
     # "convergence_angle" and "collection_angle" mrad), kept over recomputes.
     microscope: dict | None = None
@@ -520,6 +525,7 @@ class Dataset:
             "strain": self.strain,
             "orientation": self.orientation,
             "templates": self.templates,
+            "polar": self.polar,
             "beam_energy": _beam_energy(s) if self.kind is DatasetKind.DIFFRACTION4D else None,
             "structure": self.structure_info,
             "xray_line": s.metadata.get_item("Sample.xray_line_map.line"),
@@ -2383,9 +2389,17 @@ class Session:
         cal = cube.calibration or {}
         affine = cal.get("affine") if options.ellipse and cal.get("ring") else None
         polar = polar_scan(cube.signal, [(a.scale, a.offset, a.units) for a in (ky, kx)], affine, options, per, report)
+        record = {
+            "source": None if in_place else cube.id,
+            "axes": [{"scale": float(a.scale), "offset": float(a.offset), "units": str(a.units)} for a in (ky, kx)],
+            "options": options.model_dump(),
+        }
         if not in_place:
-            return self.copy_as(cube, "polar", f"{cube.title} (polar)", signal=polar)
+            made = self.copy_as(cube, "polar", f"{cube.title} (polar)", signal=polar)
+            made.polar = record
+            return made
         cube.replace_signal(polar)
+        cube.polar = record
         return cube
 
     def calibrate_patterns(self, cube: Dataset, scale: float, units: str, ring: dict | None, info: dict) -> Dataset:

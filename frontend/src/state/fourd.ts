@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { DatasetSummary } from "../api/client";
 
 /** A virtual detector on the pattern, in pattern pixels (pixel i spans
  * [i, i + 1)). The backend's ``processing/fourd.py`` ``Detector``. */
@@ -287,12 +288,23 @@ interface Store {
   /** Per dataset, per mark ("det:<group>", "disks", "cursor:<id>"). */
   overlays: Record<string, Record<string, OverlayLayer>>;
   setOverlay: (id: string, key: string, patch: OverlayLayer) => void;
+  /** The cursors of every 4D-STEM data with the same scan in a file (its
+   * copies, its polar patterns), by ``scanKey``: switching between them
+   * keeps the positions. */
+  scans: Record<string, Pick<FourDState, "cursors" | "lastCursor">>;
+  shareScan: (key: string, scan: Pick<FourDState, "cursors" | "lastCursor">) => void;
 }
+
+/** Which datasets share cursors: same file, same scan. */
+export const scanKey = (ds: DatasetSummary) =>
+  `${ds.file_id}|${ds.axes.filter((a) => a.navigate).map((a) => a.size).join("x")}`;
 
 /** Per dataset, kept while the app is open (switching datasets keeps each one's detector and cursor). */
 export const useFourD = create<Store>((set) => ({
   byId: {},
   patch: (id, init, patch) => set((s) => ({ byId: { ...s.byId, [id]: { ...(s.byId[id] ?? init), ...patch } } })),
+  scans: {},
+  shareScan: (key, scan) => set((s) => ({ scans: { ...s.scans, [key]: scan } })),
   bad: {},
   setBad: (id, bad) => set((s) => ({ bad: { ...s.bad, [id]: bad } })),
   overlays: {},

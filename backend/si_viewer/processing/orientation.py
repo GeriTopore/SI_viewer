@@ -296,6 +296,37 @@ def direction_of(rotation, phase) -> list[float]:
     return (uvw / np.abs(uvw).max()).round(4).tolist()
 
 
+def view_of(orientation, phase) -> dict:
+    """How the crystal is seen in the pattern at ``orientation`` (orix, as
+    pyxem's ``to_single_phase_orientations``): the direction towards the
+    viewer (orientation × z) and the screen's up (orientation × −y): a
+    reflection g is drawn at x = −g·(orientation × x) across and
+    y = g·(orientation × y) down the rows. Each as [u, v, w] of ``phase``'s
+    cell (largest 1), for the 3D view to look the same way. (Checked on a
+    pattern off a zone axis, where a half turn about the beam isn't a
+    symmetry of the crystal.)"""
+    from orix.vector import Miller, Vector3d
+
+    out = {}
+    for key, xyz in (("view", (0, 0, 1)), ("up", (0, -1, 0))):
+        v = orientation * Vector3d(xyz)
+        uvw = np.asarray(Miller(xyz=v.data, phase=phase).uvw, float).ravel()
+        out[key] = (uvw / np.abs(uvw).max()).round(5).tolist()
+    return out
+
+
+def _crystal_hkl(xy: np.ndarray, seen: dict, phase) -> np.ndarray:
+    """The Miller indices of reflections drawn at ``xy`` (1/Å, x right, y
+    down) when the crystal is seen as ``seen`` (``view_of``)."""
+    A = np.asarray(phase.structure.lattice.base, float)  # rows a, b, c (Å)
+    up = np.asarray(seen["up"], float) @ A
+    view = np.asarray(seen["view"], float) @ A
+    up, view = up / np.linalg.norm(up), view / np.linalg.norm(view)
+    right = np.cross(up, view)
+    g = np.outer(xy[:, 0], right) - np.outer(xy[:, 1], up)
+    return np.rint(g @ A.T).astype(int)
+
+
 def nearest_template(rotations, phase, uvw) -> int:
     """The template whose beam direction is nearest [uvw] (up to symmetry)."""
     from orix.vector import Miller, Vector3d
@@ -436,7 +467,7 @@ def polar_patterns(polar_signal, positions) -> object:
     return out
 
 
-def match(polar, sim, o: MatchOptions) -> list[dict]:
+def match(polar, sim, o: MatchOptions, phase=None) -> list[dict]:
     """pyxem's template matching of ``polar`` (``PolarDiffraction2D``, 1D
     navigation) against ``sim``: per pattern, the best match (template
     ``index``, ``correlation``, in-plane ``rotation`` in degrees, ``mirror``,
@@ -462,15 +493,18 @@ def match(polar, sim, o: MatchOptions) -> list[dict]:
             if np.isfinite(c) and 0 <= int(idx) < n:
                 corr[int(idx)] = round(float(c), 6)
         best = data[i, 0]
+        seen = view_of(oris[i, 0], phase) if phase is not None else {}
         out.append({
             "best": {
                 "index": int(best[0]), "correlation": float(best[1]), "rotation": float(best[2]),
-                "mirror": bool(best[3] < 0), "euler": [round(float(a), 3) for a in euler[i]],
+                "mirror": bool(best[3] < 0), "euler": [round(float(a), 3) for a in euler[i]], **seen,
             },
             "vectors": {
                 "x": xy[:, 0].round(6).tolist(), "y": xy[:, 1].round(6).tolist(),
                 "intensity": (inten / top if top > 0 else inten).round(5).tolist(),
-                "hkl": np.rint(np.asarray(v.hkl, float)).astype(int).reshape(-1, 3).tolist(),
+                # pyxem's are the turned template's, rounded: the crystal's
+                # come from where each is seen (the orientation's view).
+                "hkl": (_crystal_hkl(xy, seen, phase) if seen else np.rint(np.asarray(v.hkl, float)).astype(int).reshape(-1, 3)).tolist(),
             },
             "polar": {
                 "theta": (-np.arctan2(xy[:, 1], xy[:, 0])).round(6).tolist(),

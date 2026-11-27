@@ -100,6 +100,11 @@ def test_polar_transform_of_a_ring(tmp_path):
     assert np.abs(circle - 0.4).max() < 0.012  # two bins (0.006 1/Å)
     assert stretched.max() - stretched.min() > 0.06  # elliptical: 0.364 to 0.44
     assert made.signal.metadata.Signal.signal_type == "polar_diffraction"
+    # It records what it was made from (the source's pattern axes then), for
+    # Orientation mapping to tell when the source's calibration has changed.
+    rec = client.get(f"/api/datasets/{made.id}").json()["polar"]
+    assert rec["source"] == cube_id and rec["options"]["npt"] == 100
+    assert [round(a["scale"], 6) for a in rec["axes"]] == [scale, scale] and rec["axes"][0]["units"] == "1/Å"
     # The calibration's ellipse makes it circular, at √(a b) (pyxem's affine, areas kept).
     from si_viewer.processing.calibration import affine_of
 
@@ -115,6 +120,7 @@ def test_polar_transform_of_a_ring(tmp_path):
     assert client.post(f"/api/datasets/{made.id}/4d/polar", json={}).status_code == 409
     job = _wait(client, client.post(url, json={"in_place": True}).json())
     assert job["result"]["id"] == cube_id and ds.signal.data.shape == (2, 2, 112, 360)
+    assert ds.polar["source"] is None
 
 
 def test_templates_of_a_structure(tmp_path):
@@ -251,6 +257,28 @@ def test_match_at_positions(tmp_path):
         assert len(m["correlations"]) == n and len(corr) == n and abs(max(corr) - b["correlation"]) < 1e-5
         assert len(m["vectors"]["x"]) == len(m["vectors"]["hkl"]) == len(m["polar"]["r"]) > 0
         assert len(b["euler"]) == 3
+    # The way the crystal is seen at each (view towards the viewer, up the
+    # screen, as [uvw]): Ag's reflections across the view project (right,
+    # against the rows) onto the spots each pattern was drawn with, turned
+    # 0° and 30° (the matched orientation may be any equivalent one).
+    import itertools
+
+    A = np.asarray(ag.structure.lattice.base)  # rows a, b, c (Å)
+    fcc = np.array([h for h in itertools.product(range(-6, 7), repeat=3) if len({v % 2 for v in h}) == 1 and any(h)], float)
+    G = fcc @ np.linalg.inv(A).T
+    for m, turn in zip(out["matches"], (0, 30)):
+        view, up = (np.asarray(m["best"][k]) @ A for k in ("view", "up"))
+        view, up = view / np.linalg.norm(view), up / np.linalg.norm(up)
+        assert abs(view @ up) < 1e-3
+        right, on = np.cross(up, view), np.abs(G @ view) < 0.01
+        x, y = G[on] @ right, -(G[on] @ up)  # y down, as the rows
+        c, s = np.cos(np.radians(turn)), np.sin(np.radians(turn))
+        for tx, ty in zip(t["x"], t["y"]):
+            assert np.min(np.hypot(x - (c * tx - s * ty), y - (s * tx + c * ty))) < 0.04
+        # The reflections' labels: the crystal's, on the zone seen, allowed (fcc).
+        hkl = np.asarray(m["vectors"]["hkl"])
+        assert np.abs(hkl @ np.asarray(m["best"]["view"])).max() < 0.15
+        assert all(len({v % 2 for v in h}) == 1 for h in hkl)
     # The same polar transform, asked for directly; outside the scan.
     assert client.post(f"/api/datasets/{polar}/4d/orientation/match", json=body).status_code == 200
     assert client.post(url, json={**body, "positions": [[5, 0]]}).status_code == 422
@@ -269,3 +297,55 @@ def test_templates_without_precession_say_what_to_change():
         raise AssertionError("expected the narrow bank to fail")
     wide = orientation.TemplateOptions(precession_angle=0, resolution=5, max_excitation_error=0.01)
     assert orientation.simulate(au, wide).rotations.size > 0
+
+
+def test_the_matched_view_shows_the_template_on_the_match(tmp_path):
+    """Match orientation: the Structure view turned to a match's view and up
+    picks a template (``templates/toward``) that, projected as the view
+    projects it (x right, y up), lands on the match's spots. Off the zone
+    axis (the excited reflections not in ±g pairs), so a view turned half
+    way round about the beam can't pass."""
+    from test_4dstem import _write_emdfile
+
+    ag = phase_from_cif(AG, "Ag")
+    K, scale = 96, 0.025
+    t = orientation.zone_template(ag, [1, 0, 0.9], orientation.TemplateOptions(precession_angle=1, max_excitation_error=0.02))
+    yy, xx = np.mgrid[0:K, 0:K] + 0.5
+
+    def pattern(turn):
+        c, s = np.cos(np.radians(turn)), np.sin(np.radians(turn))
+        img = np.zeros((K, K), np.float32)
+        for x, y, i in zip(t["x"], t["y"], t["intensity"]):
+            px, py = K / 2 + (c * x - s * y) / scale, K / 2 + (s * x + c * y) / scale
+            img += i * np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / 2)
+        return img
+
+    cube = np.stack([np.stack([pattern(0), pattern(30)])] * 2).astype(np.float32)
+    _write_emdfile(tmp_path / "ag.h5", cube, q=(scale, "A^-1"), extra_2d=False)
+    (tmp_path / "Ag.cif").write_text(AG)
+    client = TestClient(create_app())
+    session = client.app.state.session
+    cube_id, ag_id = (client.post("/api/files", json={"path": str(tmp_path / n)}).json()["datasets"][0]["id"]
+                      for n in ("ag.h5", "Ag.cif"))
+    for ax in session.get_dataset(cube_id).signal.axes_manager.signal_axes:
+        ax.offset = -K / 2 * scale
+    # Templates keeping more reflections (s 0.02 1/Å), so they aren't in ±g pairs off the axis.
+    made = client.post(f"/api/datasets/{ag_id}/templates/make", json={"options": {"max_excitation_error": 0.02}}).json()
+    templates = _wait(client, made)["result"]["id"]
+    _wait(client, client.post(f"/api/datasets/{cube_id}/4d/polar", json={}).json())
+    out = client.post(f"/api/datasets/{cube_id}/4d/orientation/match",
+                      json={"templates": templates, "positions": [[0, 0], [1, 0]]}).json()
+    A = np.asarray(ag.structure.lattice.base)
+    for m in out["matches"]:
+        view, up = (np.asarray(m["best"][k]) @ A for k in ("view", "up"))
+        view, up = view / np.linalg.norm(view), up / np.linalg.norm(up)
+        right = np.cross(up, view)
+        uvw = view / np.abs(view).max()
+        toward = client.get(f"/api/datasets/{templates}/templates/toward", params=dict(zip("uvw", uvw))).json()
+        G = np.asarray(toward["hkl"], float) @ np.linalg.inv(A).T
+        drawn = np.column_stack([G @ right, -(G @ up)])  # y down, as the rows
+        spots = np.column_stack([m["vectors"]["x"], m["vectors"]["y"]])
+        near = [np.min(np.hypot(*(spots - p).T)) for p in drawn]
+        assert np.mean(np.asarray(near) < 0.03) > 0.9, sorted(near)[-5:]
+        # Turned half way round, it doesn't.
+        assert np.mean([np.min(np.hypot(*(spots + p).T)) < 0.03 for p in drawn]) < 0.8

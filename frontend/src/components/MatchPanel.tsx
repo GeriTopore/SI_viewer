@@ -18,11 +18,13 @@ const uvwLabel = (uvw: number[]) => `[${uvw.map((x) => formatValue(x)).join(" ")
  * figure (inferno, as the tutorial's heat map), each cursor's best ringed
  * in its colour; each cursor's best: [uvw], correlation, in-plane rotation,
  * Euler angles. */
-export function MatchPanel({ templatesId, cursors, activeId, at, error }: {
+export function MatchPanel({ templatesId, cursors, activeId, at, busy, error }: {
   templatesId: string;
   cursors: CursorLike[];
   activeId: string;
   at: Record<string, MatchResult>;
+  /** Matching now (a cursor without a result yet may get one). */
+  busy: boolean;
   error: string | null;
 }) {
   const [ipf, setIpf] = useState<{ id: string; ipf: TemplatesIpf } | null>(null);
@@ -65,7 +67,7 @@ export function MatchPanel({ templatesId, cursors, activeId, at, error }: {
               </figcaption>
             </>
           ) : (
-            <p className="muted small">{error ? "" : "Matching…"}</p>
+            <p className="muted small">{error ? "" : busy ? "Matching…" : `Not matched at (${active?.x}, ${active?.y})`}</p>
           )}
         </figure>
         <figure>
@@ -87,7 +89,7 @@ export function MatchPanel({ templatesId, cursors, activeId, at, error }: {
                   <tr key={c.id} className={c.id === active?.id ? "selected" : undefined}>
                     <td><span className="match-dot" style={{ background: c.color }} /></td>
                     <td>({c.x}, {c.y})</td>
-                    <td>{r ? uvwLabel(r.best.uvw) : "…"}</td>
+                    <td>{r ? uvwLabel(r.best.uvw) : busy ? "…" : "–"}</td>
                     <td>{r ? formatValue(r.best.correlation) : ""}</td>
                     <td>{r ? `${formatValue(r.best.rotation)}°${r.best.mirror ? " (mirrored)" : ""}` : ""}</td>
                     <td>{r ? r.best.euler.map((a) => `${formatValue(a)}°`).join(", ") : ""}</td>

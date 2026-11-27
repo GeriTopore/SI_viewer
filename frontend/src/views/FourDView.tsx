@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { colourFrame, fetchArray, fetchFrame, fetchStackFrame, type Frame } from "../api/arrays";
-import { api, dataVersion, type DatasetSummary, type MatchResult } from "../api/client";
+import { dataVersion, type DatasetSummary } from "../api/client";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { ImageView, type AxisCal, type Interaction, type Pt, type Transform } from "../components/ImageView";
 import { AnnotationsToggle } from "../components/AnnotationsToggle";
@@ -11,7 +11,7 @@ import { LineOverlay } from "../components/LineOverlay";
 import { RoiOverlay } from "../components/RoiOverlay";
 import { useCalibration } from "../state/calibration";
 import { planeOf, useCentring } from "../state/centring";
-import { chosenFor, isPolar, perAngstrom, useOrientation } from "../state/orientation";
+import { chosenFor, isPolar, matchKey, perAngstrom, polarFor, useOrientation } from "../state/orientation";
 import { MatchPanel } from "../components/MatchPanel";
 import { useViewTemplate } from "../state/viewTemplate";
 import { StructureScene } from "../components/StructureScene";
@@ -33,7 +33,7 @@ import { useShortcuts } from "../keyboard";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useDisplay } from "../state/display";
 import {
-  ROW_HEIGHTS, SCAN_BVM, SCAN_MAX, SCAN_MEAN, isScanSource, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, responseLabel, sizeApertures, initialState, latticePoints, moveDetector, newCursor, useFourD,
+  ROW_HEIGHTS, SCAN_BVM, SCAN_MAX, SCAN_MEAN, isScanSource, apertureR, cursorName, detectorForRequest, groupOf, imageRequest, responseLabel, sizeApertures, initialState, latticePoints, moveDetector, newCursor, scanKey, useFourD,
   type Detector, type DetectorGroup, type FourDState, type Lattice, type OverlayLayer, type PatternSource, type Response, type ScanCursor,
 } from "../state/fourd";
 import { containsPoint, shapeToRegion, useSi, useSiState } from "../state/si";
@@ -92,6 +92,7 @@ export const RESPONSES: { id: Response; label: string; title: string }[] = [
   { id: "icom", label: "iCOM", title: "The centre of mass of the pixels inside the detector, integrated (the projected potential, up to scale, once the data is centred and in the scan's frame)" },
 ];
 
+const TURN = 2 * Math.PI;
 const asFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame => ({ data, height: shape[0], width: shape[1], bin: 1 });
 /** A virtual image: a colour one ("com": direction and magnitude, [2, h, w]) drawn as a DPC object is. */
 const asVirtualFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame =>
@@ -396,9 +397,23 @@ export function useFourDState(ds: DatasetSummary) {
     () => initialState([scanG.width, scanG.height], [patternG.width, patternG.height]),
     [ds.id, scanG.width, scanG.height, patternG.width, patternG.height], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const st: FourDState = useFourD((s) => s.byId[ds.id]) ?? init;
+  // The cursors are shared with the file's other 4D-STEM data of the same scan.
+  const sharedKey = scanKey(ds);
+  const own: FourDState = useFourD((s) => s.byId[ds.id]) ?? init;
+  const shared = useFourD((s) => s.scans[sharedKey]);
+  const st: FourDState = useMemo(
+    () => (shared ? { ...own, cursors: shared.cursors, lastCursor: shared.lastCursor } : own),
+    [own, shared],
+  );
   const patchStore = useFourD((s) => s.patch);
-  const patch = useCallback((p: Partial<FourDState>) => patchStore(ds.id, init, p), [patchStore, ds.id, init]);
+  const patch = useCallback((p: Partial<FourDState>) => {
+    patchStore(ds.id, init, p);
+    if (p.cursors || p.lastCursor) {
+      const s = useFourD.getState();
+      const cur = s.scans[sharedKey] ?? (s.byId[ds.id] ?? init);
+      s.shareScan(sharedKey, { cursors: p.cursors ?? cur.cursors, lastCursor: p.lastCursor ?? cur.lastCursor });
+    }
+  }, [patchStore, ds.id, init, sharedKey]);
   /** Group ``id`` changed (from the store's latest state, so quick changes add up). */
   const patchGroup = useCallback(
     (id: string, p: Partial<DetectorGroup>) => {
@@ -770,7 +785,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // ---------- the templates chosen (Orientation mapping): a layer on the pattern ----------
   // The template nearest the way its Structure is seen (the Structure tab
   // below, or its own view), turned as the crystal is, at the pattern's scale.
-  const chosenTemplates = useOrientation((s) => s.chosen[ds.id] ?? null);
+  // Its own choice, or (polar patterns) their data's.
+  const chosenTemplates = useOrientation((s) => chosenFor(s, ds));
   const templatesDs = chosenTemplates ? allDatasets(files).find((x) => x.id === chosenTemplates && x.templates) : undefined;
   const templateStructure = templatesDs ? allDatasets(files).find((x) => x.id === templatesDs.parent_id && x.structure) : undefined;
   const templateLayer = ovOf("template");
@@ -789,7 +805,14 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           // View y is up; the pattern's rows go down.
           // Scaled about the axes' 0 (Orientation mapping's Scale).
           const f = templateScale;
-          const [sx, sy] = t.toScreen((f * x / per - kx.offset) / kx.scale, (-f * z.y[i] / per - ky.offset) / ky.scale);
+          // Polar patterns: at angle (across; pyxem's, −atan2 of the rows
+          // down) and radius (down), as the matches are drawn.
+          const [sx, sy] = isPolar(ds)
+            ? t.toScreen(
+                ((((Math.atan2(z.y[i], x) - kx.offset) % TURN) + TURN) % TURN) / kx.scale + 0.5,
+                (f * Math.hypot(x, z.y[i]) / per - ky.offset) / ky.scale + 0.5,
+              )
+            : t.toScreen((f * x / per - kx.offset) / kx.scale + 0.5, (-f * z.y[i] / per - ky.offset) / ky.scale + 0.5);
           return (
             <circle key={i} cx={sx} cy={sy} r={2 + 5 * Math.sqrt(z.intensity[i])} fill="none" stroke={templateColour} strokeWidth={1.25}>
               <title>{z.hkl[i].join(" ")}</title>
@@ -801,42 +824,24 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   };
   // ---------- matching at the cursors (pyxem's get_orientation) ----------
   // Each cursor's best template, as pyxem draws it (on the pattern's axes;
-  // on a polar transform at angle, radius), as the cursors move.
+  // on polar patterns at angle, radius), when asked (Match current position).
   const polarData = isPolar(ds);
   const matchTemplates = useOrientation((s) => chosenFor(s, ds));
-  const matchOn = useOrientation((s) => s.matching[ds.id] ?? false) && !!matchTemplates
-    && allDatasets(files).some((x) => x.id === matchTemplates);
   const matchLayer = ovOf("match");
   const matchVisible = matchLayer.visible ?? true;
   const matchStyle = matchLayer.style === "cross" ? "cross" : "circle";
-  const matchKey = matchOn ? `${version}|${matchTemplates}|${cursorKeys.join(";")}` : "";
-  const [matches, setMatches] = useState<{ key: string; polar: string; at: Record<string, MatchResult> } | null>(null);
-  const [matchError, setMatchError] = useState<string | null>(null);
-  const matchBusy = useRef(false);
-  // The newest wanted: its key, templates and positions (the cursors when wanted).
-  const matchWanted = useRef<{ key: string; templates: string; positions: number[][] } | null>(null);
-  useEffect(() => {
-    matchWanted.current = matchKey ? { key: matchKey, templates: matchTemplates!, positions: cursors.map((c) => [c.x, c.y]) } : null;
-    if (!matchKey || matches?.key === matchKey) return;
-    const next = () => {
-      const w = matchWanted.current;
-      if (!w || matchBusy.current) return;
-      matchBusy.current = true;
-      api.matchAt(ds.id, w.templates, w.positions)
-        .then((r) => {
-          setMatches({ key: w.key, polar: r.polar, at: Object.fromEntries(r.matches.map((m) => [`${m.x},${m.y}`, m])) });
-          setMatchError(null);
-        }, (e: Error) => setMatchError(e.message))
-        .finally(() => {
-          matchBusy.current = false;
-          if (matchWanted.current && matchWanted.current.key !== w.key) next();
-        });
-    };
-    next();
-  }, [matchKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The polar patterns matched against (chosen in Orientation mapping; polar
+  // patterns themselves): their matches, by position, shared with them.
+  const matchPolar = useOrientation((s) => polarFor(s, allDatasets(files), ds));
+  const matchTemplatesOpen = !!matchTemplates && allDatasets(files).some((x) => x.id === matchTemplates);
+  const matchCacheKey = matchTemplatesOpen && matchPolar ? matchKey(matchPolar, matchTemplates!) : "";
+  const matchAt = useOrientation((s) => (matchCacheKey ? s.matchCache[matchCacheKey] : undefined));
+  const matchBusy = useOrientation((s) => (matchCacheKey ? s.matchBusy[matchCacheKey] ?? false : false));
+  const matchError = useOrientation((s) => (matchCacheKey ? s.matchErrors[matchCacheKey] ?? null : null));
+  const matchOn = !!matchAt || matchBusy || !!matchError;
   const matchOf = (id: string) => {
     const c = cursors.find((k) => k.id === id);
-    return matchOn && c ? matches?.at[`${c.x},${c.y}`] : undefined;
+    return c ? matchAt?.[`${c.x},${c.y}`] : undefined;
   };
   const matchOverlay = (t: Transform, id: string): ReactNode => {
     const m = matchVisible ? matchOf(id) : undefined;
@@ -847,9 +852,10 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     const per = perAngstrom(ds);
     const points: [number, number][] = polarData
       // Polar transform: angle across (rad), radius down (1/Å).
-      ? m.polar.theta.map((th, i) => [(th - kx.offset) / kx.scale, (m.polar.r[i] - ky.offset) / ky.scale])
+      // (Axis values are at pixel centres: pixel i spans [i, i + 1).)
+      ? m.polar.theta.map((th, i) => [(((th - kx.offset) % TURN) + TURN) % TURN / kx.scale + 0.5, (m.polar.r[i] - ky.offset) / ky.scale + 0.5])
       : per
-        ? m.vectors.x.map((x, i) => [(x / per - kx.offset) / kx.scale, (m.vectors.y[i] / per - ky.offset) / ky.scale])
+        ? m.vectors.x.map((x, i) => [(x / per - kx.offset) / kx.scale + 0.5, (m.vectors.y[i] / per - ky.offset) / ky.scale + 0.5])
         : [];
     return (
       <g className="fourd-overlay" opacity={matchLayer.opacity ?? 1}>
@@ -870,6 +876,9 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       </g>
     );
   };
+  // The orientation matched at the active cursor, for the Structure tab.
+  const activeBest = matchOf(activeCursor.id)?.best;
+  const activeMatchView = activeBest?.view && activeBest.up ? { view: activeBest.view, up: activeBest.up } : null;
   const matchRow = matchOn ? [{
     id: "fd:match",
     label: "Best match",
@@ -889,12 +898,12 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       ),
     }],
   }] : [];
-  const matchTabs = matchOn && !grid ? [{
+  const matchTabs = matchOn ? [{
     id: "match" as const,
     label: "Match",
     content: (
       <MatchPanel templatesId={matchTemplates!} cursors={cursors} activeId={activeCursor.id}
-        at={matches?.key === matchKey ? matches.at : matches?.at ?? {}} error={matchError} />
+        at={matchAt ?? {}} busy={matchBusy} error={matchError} />
     ),
   }] : [];
 
@@ -908,13 +917,14 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     removable: false,
     colour: templateColour,
   }] : [];
-  const structureTabs = templateStructure && !grid ? [{
+  const structureTabs = templateStructure ? [{
     id: "structure" as const,
     label: "Structure",
     content: (
       <div className="structure-tab">
         <StructureScene key={templateStructure.id} d={templateStructure}
           initial={useOrientation.getState().views[templateStructure.id]}
+          matched={matchOn ? activeMatchView : undefined}
           onOrientation={(o) => useOrientation.getState().setView(templateStructure.id, o)} />
       </div>
     ),
@@ -2029,6 +2039,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           imageMenu={(p) => (det.shape === "apertures" && apertureAt(det, p) >= 0 ? [] : openInSingle)}
           layersSection="Diffraction pattern"
           extraLayers={dpExtra}
+          // The same tabs in single and grid views.
           bottomTabs={[...matchTabs, ...structureTabs]}
           footer={
             <div className="fourd-footer">

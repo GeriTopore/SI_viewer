@@ -61,6 +61,9 @@ export interface MatchResult {
     euler: number[];
     /** The template's beam direction (largest 1). */
     uvw: number[];
+    /** How the crystal is seen: towards the viewer and the screen's up, [uvw]. */
+    view?: number[];
+    up?: number[];
   };
   /** The best template's reflections as pyxem draws them: 1/Å on the pattern's axes. */
   vectors: { x: number[]; y: number[]; intensity: number[]; hkl: number[][] };
@@ -639,6 +642,9 @@ export interface DatasetSummary {
   orientation?: Record<string, unknown> | null;
   /** A Structure's templates (origin "templates"). */
   templates?: TemplatesInfo | null;
+  /** Polar patterns: what they were made from (the source's pattern axes
+   * then, ky and kx; source null when made in place). */
+  polar?: { source: string | null; axes: { scale: number; offset: number; units: string }[]; options: Record<string, unknown> } | null;
   /** 4D-STEM data: the accelerating voltage the file records (kV). */
   beam_energy?: number | null;
   strain?: Partial<StrainFitMeta> & {

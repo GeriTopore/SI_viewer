@@ -143,7 +143,7 @@ def match_at(dataset_id: str, body: MatchBody, request: Request) -> dict:
             raise HTTPException(422, f"({x}, {y}) is outside the scan")
     _, sim, phase = _templates(request, body.templates)
     patterns = orientation.polar_patterns(polar.signal, body.positions)
-    matches = orientation.match(patterns, sim, body.options)
+    matches = orientation.match(patterns, sim, body.options, phase)
     for m, (x, y) in zip(matches, body.positions):
         m["x"], m["y"] = x, y
         m["best"]["uvw"] = orientation.direction_of(sim.rotations[m["best"]["index"]], phase)

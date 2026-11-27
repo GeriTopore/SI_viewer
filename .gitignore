@@ -34,3 +34,6 @@ frontend/dist/
 backend/si_viewer/static/
 plugins/abtem/src/si_viewer_abtem/frontend/
 *.tsbuildinfo
+
+# The handover is private (in the owner's notes), never in this public repo.
+docs/HANDOVER.md

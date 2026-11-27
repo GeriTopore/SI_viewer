@@ -10,6 +10,8 @@ SUPPORTED_SUFFIXES = (
     ".emd", ".hspy", ".dm3", ".dm4", ".bcf", ".tif", ".tiff",
     # 4D-STEM: py4DSTEM (emdfile) .h5, Quantum Detectors Merlin, blockfiles.
     ".h5", ".hdf5", ".mib", ".blo",
+    # Crystal structures (orix phases, for orientation and phase mapping).
+    ".cif",
 )
 
 
@@ -19,6 +21,10 @@ def load_file(path: str | Path, lazy: bool = True) -> list:
     if not path.is_file():
         raise FileNotFoundError(path)
     suffix = path.suffix.lower()
+    if suffix == ".cif":
+        from ..processing.structure import structure_signal
+
+        return [structure_signal(path)]
     if suffix == ".emd":
         return load_emd(path, lazy=lazy)
 

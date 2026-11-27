@@ -43,8 +43,10 @@ const deleteTitle = (d: DatasetSummary) =>
     ? `Delete this ${isLineScan(d) ? "LineScan" : "spectrum image"} (and what was made from it)`
     : d.origin === "fitted" || d.origin === "curve-fit" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
       ? "Delete this map"
-      : `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
-        (d.origin === "file" ? ". The file on disk is not changed." : "");
+      : d.is_element_map
+      ? `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
+        (d.origin === "file" ? ". The file on disk is not changed." : "")
+      : "Delete (and what was made from it)";
 
 export function DatasetList() {
   const { files, selection, focusId, clickDataset, toggleSelect, showOnly, closeFile, deleteDataset, enterWorkspace } = useDatasets();

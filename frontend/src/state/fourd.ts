@@ -271,8 +271,9 @@ export interface OverlayLayer {
   visible?: boolean;
   opacity?: number;
   colour?: string;
-  /** Bragg disks: a circle of the disk's size, or a dot at its position. */
-  style?: "circle" | "dot";
+  /** Bragg disks: a circle of the disk's size, or a dot at its position;
+   * the best match: circles or crosses. */
+  style?: "circle" | "dot" | "cross";
   /** A dot's size (× its default). */
   size?: number;
 }

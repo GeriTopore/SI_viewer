@@ -14,6 +14,8 @@ dependencies = [
     "rosettasciio>=0.14",
     # 4D-STEM processing (HyperSpy-native).
     "pyxem>=0.21",
+    # Crystal structures: atoms, colours and radii for the 3D view.
+    "ase",
     "sparse",
     "tifffile",
     "pillow",

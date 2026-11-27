@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { colourFrame, fetchArray, fetchFrame, fetchStackFrame, type Frame } from "../api/arrays";
-import { dataVersion, type DatasetSummary } from "../api/client";
+import { api, dataVersion, type DatasetSummary, type MatchResult } from "../api/client";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { ImageView, type AxisCal, type Interaction, type Pt, type Transform } from "../components/ImageView";
 import { AnnotationsToggle } from "../components/AnnotationsToggle";
@@ -11,6 +11,10 @@ import { LineOverlay } from "../components/LineOverlay";
 import { RoiOverlay } from "../components/RoiOverlay";
 import { useCalibration } from "../state/calibration";
 import { planeOf, useCentring } from "../state/centring";
+import { chosenFor, isPolar, perAngstrom, useOrientation } from "../state/orientation";
+import { MatchPanel } from "../components/MatchPanel";
+import { useViewTemplate } from "../state/viewTemplate";
+import { StructureScene } from "../components/StructureScene";
 import { diskOptionsOf, useDisks, type Disk } from "../state/disks";
 import { useLayers } from "../state/layers";
 import { useProfiles } from "../state/profiles";
@@ -46,6 +50,7 @@ const BEAM_PLANE_COLOR = "#00e5ff";
 // Calibration: the annulus searched and the points found (yellow), the ellipse fitted (green).
 const RING_COLOR = "#ffd60a";
 const RING_FIT_COLOR = "#30d158";
+const ZONE_COLOR = "#ff6bd6";
 // The frames around the virtual image and the pattern in their group's / source's colour.
 const FRAME_WIDTH = 2;
 const FRAME_OPACITY = 0.6;
@@ -762,6 +767,160 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     );
   };
 
+  // ---------- the templates chosen (Orientation mapping): a layer on the pattern ----------
+  // The template nearest the way its Structure is seen (the Structure tab
+  // below, or its own view), turned as the crystal is, at the pattern's scale.
+  const chosenTemplates = useOrientation((s) => s.chosen[ds.id] ?? null);
+  const templatesDs = chosenTemplates ? allDatasets(files).find((x) => x.id === chosenTemplates && x.templates) : undefined;
+  const templateStructure = templatesDs ? allDatasets(files).find((x) => x.id === templatesDs.parent_id && x.structure) : undefined;
+  const templateLayer = ovOf("template");
+  const templateVisible = !!templatesDs && (templateLayer.visible ?? true) && perAngstrom(ds) !== null;
+  const viewPattern = useViewTemplate(templatesDs?.id ?? null, templateStructure?.id ?? null, templateVisible);
+  const templateColour = templateLayer.colour ?? ZONE_COLOR;
+  const templateScale = useOrientation((s) => s.scale[ds.id] ?? 1);
+  const zoneOverlay = (t: Transform): ReactNode => {
+    const z = templateVisible ? viewPattern : null;
+    const per = perAngstrom(ds);
+    const [ky, kx] = ds.axes.filter((a) => !a.navigate);
+    if (!z || !per || !kx || !ky) return null;
+    return (
+      <g className="fourd-overlay" opacity={templateLayer.opacity ?? 1}>
+        {z.x.map((x, i) => {
+          // View y is up; the pattern's rows go down.
+          // Scaled about the axes' 0 (Orientation mapping's Scale).
+          const f = templateScale;
+          const [sx, sy] = t.toScreen((f * x / per - kx.offset) / kx.scale, (-f * z.y[i] / per - ky.offset) / ky.scale);
+          return (
+            <circle key={i} cx={sx} cy={sy} r={2 + 5 * Math.sqrt(z.intensity[i])} fill="none" stroke={templateColour} strokeWidth={1.25}>
+              <title>{z.hkl[i].join(" ")}</title>
+            </circle>
+          );
+        })}
+      </g>
+    );
+  };
+  // ---------- matching at the cursors (pyxem's get_orientation) ----------
+  // Each cursor's best template, as pyxem draws it (on the pattern's axes;
+  // on a polar transform at angle, radius), as the cursors move.
+  const polarData = isPolar(ds);
+  const matchTemplates = useOrientation((s) => chosenFor(s, ds));
+  const matchOn = useOrientation((s) => s.matching[ds.id] ?? false) && !!matchTemplates
+    && allDatasets(files).some((x) => x.id === matchTemplates);
+  const matchLayer = ovOf("match");
+  const matchVisible = matchLayer.visible ?? true;
+  const matchStyle = matchLayer.style === "cross" ? "cross" : "circle";
+  const matchKey = matchOn ? `${version}|${matchTemplates}|${cursorKeys.join(";")}` : "";
+  const [matches, setMatches] = useState<{ key: string; polar: string; at: Record<string, MatchResult> } | null>(null);
+  const [matchError, setMatchError] = useState<string | null>(null);
+  const matchBusy = useRef(false);
+  // The newest wanted: its key, templates and positions (the cursors when wanted).
+  const matchWanted = useRef<{ key: string; templates: string; positions: number[][] } | null>(null);
+  useEffect(() => {
+    matchWanted.current = matchKey ? { key: matchKey, templates: matchTemplates!, positions: cursors.map((c) => [c.x, c.y]) } : null;
+    if (!matchKey || matches?.key === matchKey) return;
+    const next = () => {
+      const w = matchWanted.current;
+      if (!w || matchBusy.current) return;
+      matchBusy.current = true;
+      api.matchAt(ds.id, w.templates, w.positions)
+        .then((r) => {
+          setMatches({ key: w.key, polar: r.polar, at: Object.fromEntries(r.matches.map((m) => [`${m.x},${m.y}`, m])) });
+          setMatchError(null);
+        }, (e: Error) => setMatchError(e.message))
+        .finally(() => {
+          matchBusy.current = false;
+          if (matchWanted.current && matchWanted.current.key !== w.key) next();
+        });
+    };
+    next();
+  }, [matchKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const matchOf = (id: string) => {
+    const c = cursors.find((k) => k.id === id);
+    return matchOn && c ? matches?.at[`${c.x},${c.y}`] : undefined;
+  };
+  const matchOverlay = (t: Transform, id: string): ReactNode => {
+    const m = matchVisible ? matchOf(id) : undefined;
+    if (!m) return null;
+    const c = cursors.find((k) => k.id === id);
+    const colour = matchLayer.colour ?? c?.color ?? "#ff9f0a";
+    const [ky, kx] = ds.axes.filter((a) => !a.navigate);
+    const per = perAngstrom(ds);
+    const points: [number, number][] = polarData
+      // Polar transform: angle across (rad), radius down (1/Å).
+      ? m.polar.theta.map((th, i) => [(th - kx.offset) / kx.scale, (m.polar.r[i] - ky.offset) / ky.scale])
+      : per
+        ? m.vectors.x.map((x, i) => [(x / per - kx.offset) / kx.scale, (m.vectors.y[i] / per - ky.offset) / ky.scale])
+        : [];
+    return (
+      <g className="fourd-overlay" opacity={matchLayer.opacity ?? 1}>
+        {points.map(([px, py], i) => {
+          const [sx, sy] = t.toScreen(px, py);
+          const r = 2.5 + 4 * Math.sqrt(m.vectors.intensity[i] ?? 0);
+          const title = <title>{m.vectors.hkl[i]?.join(" ")}</title>;
+          if (matchStyle === "cross") {
+            return (
+              <path key={i} d={`M${sx - r},${sy}H${sx + r}M${sx},${sy - r}V${sy + r}`}
+                stroke={colour} strokeWidth={1.5} strokeLinecap="round">{title}</path>
+            );
+          }
+          return (
+            <circle key={i} cx={sx} cy={sy} r={r} fill="none" stroke={colour} strokeWidth={1.5}>{title}</circle>
+          );
+        })}
+      </g>
+    );
+  };
+  const matchRow = matchOn ? [{
+    id: "fd:match",
+    label: "Best match",
+    visible: matchVisible,
+    opacity: matchLayer.opacity ?? 1,
+    display: undefined,
+    removable: false,
+    colour: matchLayer.colour ?? "#ff9f0a",
+    properties: [{
+      label: "Mark",
+      control: (
+        <select className="layer-choice" value={matchStyle} title="How each spot of the best template is marked"
+          onChange={(e) => setOverlay(ds.id, "match", { style: e.target.value as "circle" | "cross" })}>
+          <option value="circle">Circle</option>
+          <option value="cross">Cross</option>
+        </select>
+      ),
+    }],
+  }] : [];
+  const matchTabs = matchOn && !grid ? [{
+    id: "match" as const,
+    label: "Match",
+    content: (
+      <MatchPanel templatesId={matchTemplates!} cursors={cursors} activeId={activeCursor.id}
+        at={matches?.key === matchKey ? matches.at : matches?.at ?? {}} error={matchError} />
+    ),
+  }] : [];
+
+  const templateRow = templatesDs ? [{
+    id: "fd:template",
+    label: `${templateStructure?.title ?? templatesDs.templates!.name} · ${templatesDs.title.replace(/^Templates · /, "")}`
+      + (viewPattern ? ` · [${viewPattern.uvw.map((x) => formatValue(x)).join(" ")}]` : ""),
+    visible: templateLayer.visible ?? true,
+    opacity: templateLayer.opacity ?? 1,
+    display: undefined,
+    removable: false,
+    colour: templateColour,
+  }] : [];
+  const structureTabs = templateStructure && !grid ? [{
+    id: "structure" as const,
+    label: "Structure",
+    content: (
+      <div className="structure-tab">
+        <StructureScene key={templateStructure.id} d={templateStructure}
+          initial={useOrientation.getState().views[templateStructure.id]}
+          onOrientation={(o) => useOrientation.getState().setView(templateStructure.id, o)} />
+      </div>
+    ),
+  }] : [];
+
+
   // ---------- the ring, while the Calibration process is shown ----------
   // The annulus searched (dashed), the ellipse fitted and the points on it.
   const calibrationShown = useProcessShown("calibration") && (focused || braggFocused);
@@ -1300,6 +1459,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         {disksOverlay(t, id)}
         {beamOverlay(t, id)}
         {ringOverlay(t)}
+        {zoneOverlay(t)}
+        {matchOverlay(t, id)}
         {othersOverlay(t)}
         {detectorOverlay(t)}
       </>
@@ -1595,6 +1756,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         colour: g.color,
       })),
       ...(vectorsDs || diskOpen ? [disksRow] : []),
+      ...templateRow,
+      ...matchRow,
     ],
     onActivate: (id) => id.startsWith("fd:det:") && selectGroup(id.slice("fd:det:".length)),
     onChange: (id, p) => {
@@ -1707,6 +1870,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
                           {disksOverlay(t, source)}
                           {beamOverlay(t, source)}
                           {ringOverlay(t)}
+                          {zoneOverlay(t)}
+                          {matchOverlay(t, source)}
                           {on ? detectorOverlay(t) : detShown(g) && (
                             <g className="fourd-overlay" opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1.5)}</g>
                           )}
@@ -1864,6 +2029,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           imageMenu={(p) => (det.shape === "apertures" && apertureAt(det, p) >= 0 ? [] : openInSingle)}
           layersSection="Diffraction pattern"
           extraLayers={dpExtra}
+          bottomTabs={[...matchTabs, ...structureTabs]}
           footer={
             <div className="fourd-footer">
               <div className="stack-bar fourd-bar">

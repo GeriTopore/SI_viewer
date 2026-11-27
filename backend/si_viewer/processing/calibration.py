@@ -127,12 +127,16 @@ def fit_ring(image: np.ndarray, opts: RingOptions, guess: dict) -> dict:
 
 def affine_of(ellipse: dict) -> list[list[float]]:
     """The affine transform that makes the ring circular, as pyxem's
-    calibration takes it (``ransac_ellipse_tools._ellipse_to_affine``)."""
+    calibration takes it (``ransac_ellipse_tools._ellipse_to_affine``),
+    scaled to keep areas: the circle's radius is the ring's √(a b), the
+    radius the pixel size is calibrated at."""
     from pyxem.utils.ransac_ellipse_tools import _ellipse_to_affine
 
     # pyxem measures the angle the other way round (checked: with −angle the
     # affine maps the ellipse's (x, y) points onto a circle, of radius b).
-    return np.asarray(_ellipse_to_affine(ellipse["a"], ellipse["b"], -ellipse["angle"]), dtype=float).tolist()
+    m = np.asarray(_ellipse_to_affine(ellipse["a"], ellipse["b"], -ellipse["angle"]), dtype=float)
+    m[:2, :2] /= np.sqrt(abs(np.linalg.det(m[:2, :2])))
+    return m.tolist()
 
 
 def wavelength(kv: float) -> float:

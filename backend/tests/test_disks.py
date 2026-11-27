@@ -166,3 +166,78 @@ def test_disks_through_the_api_and_kept_with_the_analysis(tmp_path):
     assert restored.disks["count"] == 12 and restored.signal.data.shape == (3, 4)
     assert other.bragg_vectors_of(other.get_dataset(cube_id)).id == vectors_id
     assert len(disks.vectors_at(restored.signal, 1, 2)) == 1
+
+
+def test_the_vector_mask_and_magnitudes_through_the_api(tmp_path):
+    """pyxem's ``to_mask`` × the data (its orientation mapping tutorial's
+    pre-processing) and its magnitude histogram."""
+    from fastapi.testclient import TestClient
+
+    from si_viewer.app import create_app
+    from si_viewer.session import Session
+
+    from test_4dstem import _write_emdfile
+
+    path = tmp_path / "mask.h5"
+    cube = _cube()
+    _write_emdfile(path, cube, extra_2d=False)
+    session = Session()
+    client = TestClient(create_app(session))
+    cube_id = client.post("/api/files", json={"path": str(path)}).json()["datasets"][0]["id"]
+    assert client.post(f"/api/datasets/{cube_id}/4d/disks/mask", json={}).status_code == 409
+    job = _wait(client, client.post(f"/api/datasets/{cube_id}/4d/disks/run", json={"options": {"threshold": 0.3}}).json())
+    assert job["status"] == "done", job["error"]
+
+    # The histogram holds every vector.
+    m = client.post(f"/api/datasets/{cube_id}/4d/disks/magnitudes", json={"bins": 50}).json()
+    assert len(m["k"]) == 50 and sum(m["counts"]) == 60 and m["reflections"] == []
+
+    # The mask at a position: discs about its disks.
+    one = client.get(f"/api/datasets/{cube_id}/4d/disks/mask?x=2&y=1&disk_r=3")
+    assert one.status_code == 200
+
+    job = _wait(client, client.post(f"/api/datasets/{cube_id}/4d/disks/mask", json={"disk_r": 3}).json())
+    assert job["status"] == "done", job["error"]
+    masked = session.get_dataset(job["result"]["id"])
+    assert masked.origin == "vector-masked" and masked.parent_id == cube_id
+    data = np.asarray(masked.signal.data)
+    # Each disk's centre kept, the space between them zeroed.
+    for iy in range(3):
+        for ix in range(4):
+            cy, cx = 32.3 + 0.25 * iy, 31.8 + 0.25 * ix
+            for dy, dx, _ in SPOTS:
+                y, x = int(cy + dy), int(cx + dx)
+                assert data[iy, ix, y, x] == cube[iy, ix, y, x]
+            assert data[iy, ix, int(cy) + 7, int(cx) + 7] == 0
+    # As pyxem makes it.
+    vectors = session.bragg_vectors_of(session.get_dataset(cube_id)).signal
+    mask = disks.vector_mask(vectors, session.get_dataset(cube_id).signal, 3)
+    np.testing.assert_array_equal(data, np.where(mask, cube, 0))
+    assert not vectors.metadata.has_item("Peaks.signal_axes")
+
+    # Anything made in the app can be deleted (with what was made from it); the file's data can't.
+    vectors_id = session.bragg_vectors_of(session.get_dataset(cube_id)).id
+    bvm_id = session.bragg_map_of(session.get_dataset(cube_id)).id
+    assert client.delete(f"/api/datasets/{masked.id}").status_code == 200
+    r = client.delete(f"/api/datasets/{vectors_id}")
+    assert r.status_code == 200
+    left = {d["id"] for d in r.json()["file"]["datasets"]}
+    assert vectors_id not in left and bvm_id not in left and masked.id not in left
+    assert client.post(f"/api/datasets/{cube_id}/4d/disks/magnitudes", json={}).status_code == 409
+    client.post(f"/api/undo/{r.json()['undo']}")
+    assert session.bragg_map_of(session.get_dataset(cube_id)).id == bvm_id
+    assert client.delete(f"/api/datasets/{cube_id}").status_code == 400
+
+
+def test_powder_reflections_of_a_structure():
+    from orix.crystal_map import Phase
+    from diffpy.structure import Atom, Lattice, Structure
+
+    from si_viewer.processing.orientation import reflections_1d
+
+    a = 4.078
+    au = Structure([Atom("Au", p) for p in ((0, 0, 0), (0.5, 0.5, 0), (0.5, 0, 0.5), (0, 0.5, 0.5))],
+                   Lattice(a, a, a, 90, 90, 90))
+    got = reflections_1d(Phase(space_group=225, structure=au), 0.8)
+    assert [r["hkl"] for r in got][:3] == [[1, 1, 1], [2, 0, 0], [2, 2, 0]]
+    assert abs(got[0]["k"] - np.sqrt(3) / a) < 1e-6 and all(r["k"] <= 0.8 for r in got)

@@ -602,6 +602,19 @@ grid's *Merged* mode with each group's colour), and presets.
   annular images from profiles.
 - Variance / FEM, background subtraction, reduced intensity and PDF for
   amorphous samples.
+- **Polar transform process (built 2026-11-27, Pre-processing):** every
+  pattern as radius × azimuth, as pyxem's `get_azimuthal_integral2d`
+  (defaults: its orientation mapping tutorial's, npt 112 × 360 over the
+  whole pattern, summed; optional radial range, gamma, the calibration's
+  ellipse), as a copy under the data ("… (polar)", origin "polar") or in
+  place: a pyxem `PolarDiffraction2D` (axes Radians, Radius in 1/Å) shown in
+  the 4D viewer like any 4D data. pyxem's integration slices are made once
+  and kept (`_slices`; per pattern then ~0.5 ms against ~3 s for pyxem's own
+  call: SPED-Ag's 13312 patterns in a few seconds). pyxem changes a
+  calibration's affine in place whenever it makes slices, so each transform
+  starts from a fresh `Diffraction2D`. Replaces Orientation mapping's
+  Pattern | Polar preview (which re-made the slices per cursor move and
+  fell behind the cursor).
 
 ### Phase 6: Bragg peaks and strain
 - **Built (2026-11-26): Disk detection process** (`processing/disks.py`,
@@ -751,10 +764,149 @@ they come (`ProcessPanel` `SECTION_ORDER`, `bySection`), numbered through.
 Calibration's step 1 and the Info tab's row are now "Descan".
 
 ### Phase 7: orientation and phase mapping
-- Template matching against diffsims simulations from CIF structures (the
-  abTEM plugin's structures), orix orientation maps (IPF colours), phase maps.
-- Shares structures and diffraction simulation with the abTEM diffraction
-  work.
+- **Scope (2026-11-27): only what pyxem does.** pyxem's pipeline: CIFs as
+  orix `Phase`s (diffpy.structure); diffsims `SimulationGenerator.
+  calculate_diffraction2d` over an orientation sampling; the centred,
+  calibrated patterns to polar (`get_azimuthal_integral2d`) →
+  `PolarDiffraction2D.get_orientation` (template matching, several phases)
+  → `OrientationMap` (`to_ipf_colormap`, `to_phase_map`, `to_crystal_map`).
+  py4DSTEM's vector ACOM stays in phase 9.
+- **Structures in core (done 2026-11-27):** a `.cif` opens as a Structure
+  (kind "other", a placeholder signal holding the CIF text in
+  `metadata.Sample.structure`), read as orix reads it (`Phase.from_cif`):
+  formula, space group, point group, cell, atoms per cell in the Info tab;
+  the cell's atoms in the viewer. Saved with an analysis like any file.
+  `processing.structure.phase_of` gives the orix phase for diffsims. The
+  abTEM plugin's ASE structures and 3D view are not in core.
+- **Step 1 · Templates (done 2026-11-27):** "Orientation mapping" in the 4D
+  data's Analysis section. The Structures ticked as phases; voltage (from the
+  file's beam energy, else 200 kV), orientation resolution (1°, orix
+  `get_sample_reduced_fundamental` per phase's point group), reciprocal
+  radius (default: the pattern's edge in 1/Å), excitation error (0.05 1/Å),
+  precession angle → diffsims `calculate_diffraction2d` (no direct beam) as
+  a job, kept per data in the session (`orientation_banks`) and recorded in
+  `Dataset.orientation["bank"]` (phases, counts, options; saved with the
+  analysis). Au and Si at 1°: 1081 templates each, about 1 s. A zone axis
+  template ([uvw] along the beam, `zone_rotation`) of a Structure drawn on
+  the patterns at their calibrated scale (needs 1/Å or 1/nm axes); checked
+  by the zone law and |g| = |hkl|/a, and on sim_Au (Au [011]: the four
+  {111} on the 111 ring, 70.5° apart). `api/orientation.py`.
+- **Step 2 · Polar transform (done 2026-11-27):** pyxem's
+  `get_azimuthal_integral2d(mean=True)` on a `Diffraction2D` with the data's
+  pattern axes (centre where they are 0), the calibration's ellipse as
+  pyxem's affine (optional), then a gamma (0.5): radial / azimuthal points,
+  radial range in 1/Å (end: the bank's reciprocal radius). The pattern pane
+  switches Pattern | Polar while the process is shown (the cursor's, mean or
+  max pattern; radius down, azimuth across). `affine_of` now keeps areas, so
+  the corrected ring is at √(a b), the radius the pixel size is calibrated
+  at (pyxem's own maps it to b). Tested on a ring and an elliptical ring.
+  Tried on `Au_NP_experiment.dm4` (DM-calibrated, 0.0668 1/Å per px, 300 kV):
+  its strongest rings at about 8 and 13 px fit Au 111 / 220 at about 0.053
+  1/Å per px, so its calibration may be about 25 % off (inner rings
+  saturated at 255, not settled).
+- **Templates objects and orix's plots (2026-11-27):** making the bank puts a
+  "Templates · <data>" object under each Structure (origin "templates",
+  `Dataset.templates`: data id, phase index, count, options; replaced when
+  made again; deletable; saved with the analysis, the bank made again from
+  the data's record when asked for). Its view: the templates' beam
+  directions (rotation × z, as pyxem's IPF markers) in the phase's inverse
+  pole figure, coloured by orix's `DirectionColorKeyTSL`, over the sector
+  and its corners (orix's labels); click picks the nearest, [u v w] →
+  Nearest; the template picked drawn beside it (reflections to the bank's
+  radius, hkl on hover, Euler angles) and on its data's patterns while
+  Orientation mapping is shown (replacing the zone axis preview). The
+  Structure's view adds orix's point group stereogram (`Symmetry.plot`: a
+  general orientation's poles, upper dots, lower crosses) and IPF colour
+  key. orix computes, the app draws (SVG; `components/OrixPlots.tsx`).
+  orix's own example data not added to the Examples list (decided).
+- **Templates moved to the Structure; 3D view in core (2026-11-27).** Goal:
+  every process and plot of pyxem's tutorial
+  `Hyperspy_Workshop_2025/pyxem/Orientation_mapping_SPED-Ag.ipynb`, tested
+  on its data (Examples: "Ag, precession (pyxem)", scale × 2 about the
+  centre as the tutorial fixes it: Info tab → Edit calibration) and its
+  parameters, with `examples/4dstem/Ag.cif` (a = 4.08 Å, Fm-3m).
+  - A Structure's main view is the abTEM plugin's 3D render (ported:
+    `structure3d/`, `StructureScene`; three.js 0.170; atoms from ASE, now a
+    core dependency) with a bottom pane: Templates (when made), Symmetry
+    (orix stereogram, IPF key), Sites. Selecting a Templates object opens
+    its Structure on the Templates tab.
+  - Templates are a process of the Structure (each run a new "Templates ·
+    2°" object under it): voltage 200 kV, precession 1°, minimum intensity
+    1e-5, resolution 2°, reciprocal radius 1.5 1/Å, excitation error 0.001
+    1/Å (the tutorial's first bank); optional zone axes with an angle (the
+    tutorial's `reduce_beam_directions`: 0.5° within 5° of [101] and [114]
+    → 118 + 175 = 293 templates, s 0.01). Simulated again from the record
+    when not kept (opening an analysis).
+  - Orientation mapping (4D data) only picks the Templates object (drawn
+    on the patterns); the polar transform is its own process (phase 5).
+  - The template picked last (any Templates tab) drawn on the patterns.
+  - **Templates follow the structure's view (2026-11-27):** Orientation
+    mapping's step 1 is a dropdown of Templates objects. The one chosen is
+    a layer on the pattern (Layers → Diffraction pattern: eye, colour,
+    opacity; label with the [uvw] seen down) and the pattern's bottom pane
+    gets a Structure tab (the 3D view: zone buttons, typed [uvw], in-plane
+    turns). The layer shows the template nearest the way the structure is
+    seen (`template_toward`: nearest beam direction over the symmetry
+    operations, its reflections taken onto the view's own zone by that
+    operation), each hkl projected through the view's rotation, so it turns
+    with the crystal (`state/viewTemplate.ts`). Each Structure's view is
+    shared (its own view, a pattern's Structure tab); the Templates tab's
+    "Link to structure view" shows the same there (the IPF ringing the
+    template used). A 3D view opens at its Structure's last view (direction
+    and in-plane turn; the scene reports its up vector, `setOrientation`).
+  - **Template scale (2026-11-27):** Orientation mapping's Scale slider
+    (0.7–1.3×, and a box) draws the template larger or smaller about the
+    pattern's 0, to line it up with the pattern by eye (with the Structure
+    tab's zone and in-plane turns). It shows the pattern pixel size that
+    implies (scale / factor); "Use as pixel size" writes it to both pattern
+    axes, scale and offset divided by the factor (the centre kept), and
+    resets the slider. The voltage barely moves a template (it only changes
+    which reflections are excited): the zoom is the pixel size, i.e. camera
+    length × wavelength.
+  - **Match at the cursors (2026-11-27):** Orientation mapping's "Match at
+    the cursors" runs pyxem's `get_orientation(n_best=-1, frac_keep=1)` on
+    the data's newest polar transform at every cursor as they move
+    (`/4d/orientation/match`; a polar transform itself, or its data's
+    choice). Each cursor's best template is drawn as pyxem's `to_markers`
+    (pattern axes) or `to_polar_markers` (on the polar data), a "Best
+    match" layer; the pattern's Match tab shows every template's
+    correlation at the active cursor on the IPF (inferno heat map), each
+    cursor's best ringed in its colour, and a table ([uvw], correlation,
+    in-plane rotation, mirror, Euler). On SPED-Ag the best [101] template
+    lands on the spots. A second cursor gets its own row and follows its
+    cursor (checked in the browser).
+  - **Diffraction vectors and the vector mask (2026-11-27):** the
+    tutorial's `template_match_disk(disk_r=2.5)` +
+    `get_diffraction_vectors(min_distance=3, threshold_abs=0.5)` is Disk
+    detection with a Disc template of 2.5 px, threshold 0.5, spacing 3,
+    no sub-pixel (the same pyxem correlation and HyperSpy local maxima):
+    586,411 vectors on SPED-Ag. Its diffracting pixels map is Virtual
+    imaging's DDF with Count. Two processes on the Bragg vectors:
+    **Magnitudes** (pyxem's `get_magnitude_histogram`, 100 bins, with a
+    Structure's reflections from diffsims' `calculate_diffraction1d`
+    dashed and labelled; on SPED-Ag 200, 220 and 311 fall on peaks) and
+    **Vector mask** (pyxem's `to_mask(disk_r=2.1)` × the data, a copy
+    "(masked by its vectors)" or in place, as a job: 18 s on SPED-Ag).
+    pyxem's `to_mask` needs `metadata.Peaks.signal_axes`, set for the call.
+  - Saved analyses of a bundled example (path `example:<id>`) now open
+    again (they failed with "Raw data not found").
+  - SPED-Ag's voltage is recorded nowhere (file metadata, the tutorial, the
+    Zenodo record): the tutorial's templates use diffsims' default 200 kV.
+  - **Still to do, in the tutorial's order:** the whole scan as a job
+    (`get_orientation(n_best=1, frac_keep=0.5)` on the masked data's polar
+    transform): an orientation map with markers on the patterns
+    (`to_markers(annotate=True)`, `to_ipf_markers`), then `to_crystal_map`:
+    IPF-x/y/z maps (`IPFColorKeyTSL`) with the correlation as overlay, phase
+    map. The IPF maps are RGB: the viewer's images are one channel through a
+    colormap, so RGB images are needed first.
+- orix's crystal-map tutorial loads EBSD orientations indexed by EMsoft
+  (dictionary indexing, `dp` its score); orix itself doesn't index. pyxem
+  indexes by template matching and hands orix its results
+  (`OrientationMap.to_crystal_map`, `to_ipf_colormap` with `IPFColorKeyTSL`).
+- Next:
+  matching at the cursors then the whole scan, then IPF / correlation /
+  phase maps. Tested on the Au data (`examples/4dstem/Au.cif`), with Si as
+  a decoy phase.
 
 ### Phase 8: decomposition and segmentation
 - The existing decomposition (PCA, NMF, …) on 4D data, VDF segmentation,

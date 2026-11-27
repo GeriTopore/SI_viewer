@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { CurveModelInfo } from "./CurveModelInfo";
 import { FourDCalibrationInfo } from "./FourDCalibrationInfo";
+import { StructureInfo } from "./StructureInfo";
 import { api, type DatasetSummary, type EelsRole, type MicroscopeInfo, type Technique } from "../api/client";
 import { useExportFormats } from "../download";
 import { allDatasets, useDatasets, useFocusedDataset } from "../state/datasets";
@@ -69,13 +70,28 @@ export function Inspector() {
             </dd>
           </>
         )}
-        <dt>Shape</dt>
-        <dd>{shapeLabel(d)}</dd>
-        <dt>Data</dt>
-        <dd>
-          {d.dtype}, {bytesLabel(d.nbytes)}
-          <span className="muted"> · {d.lazy ? "on disk" : "in memory"}</span>
-        </dd>
+        {d.templates && (
+          <>
+            <dt>Phase</dt>
+            <dd>{d.templates.name}</dd>
+            <dt>Templates</dt>
+            <dd>
+              {d.templates.templates}
+              <span className="muted"> · {formatValue(d.templates.options.resolution)}°, {formatValue(d.templates.options.reciprocal_radius)} 1/Å, {formatValue(d.templates.options.kv)} kV</span>
+            </dd>
+          </>
+        )}
+        {d.structure ? <StructureInfo s={d.structure} /> : d.templates ? null : (
+          <>
+            <dt>Shape</dt>
+            <dd>{shapeLabel(d)}</dd>
+            <dt>Data</dt>
+            <dd>
+              {d.dtype}, {bytesLabel(d.nbytes)}
+              <span className="muted"> · {d.lazy ? "on disk" : "in memory"}</span>
+            </dd>
+          </>
+        )}
         {d.microscope && (
           <>
             <dt>Microscope</dt>
@@ -109,7 +125,7 @@ export function Inspector() {
       <FourDCalibrationInfo d={d} />
       {d.insitu?.view && <SeriesInfo d={d} />}
       {d.origin === "curve-model" && <CurveModelInfo key={d.id} d={d} />}
-      <AxesTable key={d.id} d={d} />
+      {!d.structure && !d.templates && <AxesTable key={d.id} d={d} />}
       <SaveButtons d={d} />
     </div>
   );

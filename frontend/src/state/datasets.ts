@@ -803,14 +803,10 @@ export const useDatasets = create<DatasetsState>((set, get) => {
   };
 });
 
-/** Datasets made in the app that can be deleted: maps, thickness, ZLP shifts,
- * background-removed SIs (with their r maps), deconvolved SIs and line scans cut from SIs. */
+/** Anything made in the app can be deleted (with what was made from it); a
+ * file's own data can't (close the file). As the backend's ``delete_dataset``. */
 export const canDelete = (d: DatasetSummary) =>
-  d.is_element_map || isWindowMap(d) || d.origin === "background" || d.origin === "background-r" ||
-  d.origin === "thickness" || d.origin === "zlp-shift" || d.origin === "deconvolved" || d.origin === "line-scan" ||
-  d.origin === "aligned-sum" || d.origin === "rebinned" || d.origin === "zlp-aligned" || d.origin === "aligned" ||
-  d.origin === "dpc" || d.origin === "pca" || d.origin === "pca-factors" || d.origin === "pca-denoised" ||
-  d.origin === "cropped" || d.origin === "atomic" || d.origin === "mask";
+  d.is_element_map || isWindowMap(d) || (!!d.origin && d.origin !== "file");
 
 /** Maps shown in a solid colour: element maps and window maps. */
 export const isColourMap = (d: DatasetSummary) => d.is_element_map || isWindowMap(d);

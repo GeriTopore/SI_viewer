@@ -243,8 +243,11 @@ export function ImageView({
   // Switching to a different view key: restore its saved view, or fit.
   useEffect(() => {
     const saved = useDisplay.getState().views[viewKey];
-    fitted.current = !saved;
     imageSize.current = { w: fullWidth, h: fullHeight };
+    // No saved view and the panel already sized: fit now (the size effect
+    // below won't run again, and nothing is drawn without a view).
+    if (!saved && size.w && fullWidth) return fit();
+    fitted.current = !saved;
     viewRef.current = saved ?? null;
     setViewState(saved ?? null);
   }, [viewKey]); // eslint-disable-line react-hooks/exhaustive-deps

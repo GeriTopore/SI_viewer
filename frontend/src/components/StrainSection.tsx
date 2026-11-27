@@ -12,7 +12,7 @@ import { segmented } from "../views/FourDView";
 const MAP_OUTPUTS = ["exx", "eyy", "exy", "oxy"];
 
 /** A job's progress bar with its message and Cancel. */
-function JobProgress({ job, cancel }: { job: JobSummary; cancel: () => void }) {
+export function JobProgress({ job, cancel }: { job: JobSummary; cancel: () => void }) {
   return (
     <div className="q-job">
       <div className="q-progress" role="progressbar" aria-valuenow={Math.round(job.progress * 100)}>

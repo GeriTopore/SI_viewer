@@ -56,7 +56,7 @@ export interface ReferenceBody {
 
 /** Post ``body`` to start a job at ``url``, then poll it (here, not in the
  * Process tab, so it finishes if the tab is closed), ``setJob`` at each step. */
-async function runJob(url: string, body: unknown, setJob: (job: JobSummary) => void): Promise<JobSummary> {
+export async function runJob(url: string, body: unknown, setJob: (job: JobSummary) => void): Promise<JobSummary> {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   let job = (await res.json()) as JobSummary;
   if (!res.ok) throw new Error((job as unknown as { detail?: string }).detail ?? res.statusText);

@@ -6713,3 +6713,165 @@ kbd {
   fill: var(--muted);
   font-size: 11px;
 }
+
+/* A crystal structure in the viewer: its cell and atoms. */
+.structure-view {
+  margin: 24px auto;
+  width: min(560px, calc(100% - 32px));
+  overflow: auto;
+}
+.structure-view h2 {
+  margin: 0 0 12px;
+}
+.structure-view .axes {
+  margin-top: 12px;
+}
+
+/* [u v w]: three whole numbers in a row. */
+.uvw-input {
+  display: flex;
+  gap: 4px;
+}
+.uvw-input input {
+  width: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+/* orix's plots drawn by the app (Structure and Templates views). */
+.templates-view {
+  margin: 24px auto;
+  width: min(820px, calc(100% - 32px));
+  overflow: auto;
+}
+.templates-view h2 {
+  margin: 0 0 4px;
+}
+.templates-panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin: 12px 0;
+}
+.templates-panes figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.orix-plot {
+  width: 100%;
+  max-width: 380px;
+  aspect-ratio: 1;
+}
+.orix-clickable {
+  cursor: crosshair;
+}
+.templates-find {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.templates-find .uvw-input {
+  width: 140px;
+}
+
+/* 3D structure view (ported from the abTEM plugin). */
+.structure3d-view { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; outline: none; }
+.structure3d-view:focus-within .structure3d-canvas { box-shadow: inset 0 0 0 1px var(--accent); }
+.structure3d-zones { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.structure3d-zones button { padding: 2px 6px; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text); background: none; border: 1px solid var(--border); border-radius: 4px; }
+.structure3d-zones button.active { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
+.structure3d-zones input { width: 76px; padding: 2px 5px; font-size: 11px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+.structure3d-zones input.invalid { border-color: #e5484d; }
+.structure3d-zone-error { font-size: 11px; color: #e5484d; }
+.structure3d-options { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 8px; font-size: 11px; border-bottom: 1px solid var(--border); }
+.structure3d-options .cell-input { width: 46px; }
+.structure3d-options input[type="range"] { width: 72px; }
+.structure3d-options .spacer { flex: 1; }
+.structure3d-options button { padding: 2px 7px; font-size: 11px; color: var(--text); background: none; border: 1px solid var(--border); border-radius: 4px; }
+.structure3d-canvas { position: relative; flex: 1; min-height: 0; overflow: hidden; cursor: grab; }
+.structure3d-canvas:active { cursor: grabbing; }
+.structure3d-canvas canvas { position: absolute; inset: 0; display: block; }
+.structure3d-legend { position: absolute; top: 6px; left: 8px; right: 8px; z-index: 1; cursor: default; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; pointer-events: none; }
+.structure3d-legend button { pointer-events: auto; display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; font-size: 11px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+.structure3d-legend button.off { color: var(--muted); opacity: 0.6; }
+.structure3d-legend .spacer { flex: 1; }
+.structure3d-dot { width: 9px; height: 9px; border-radius: 50%; }
+.structure3d-axes { position: absolute; left: 6px; bottom: 4px; pointer-events: none; }
+.structure3d-axes text { font-size: 11px; font-style: italic; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+.structure3d-readout { flex: none; display: flex; gap: 12px; padding: 3px 10px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.structure3d-readout-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.structure3d-orientation { flex: none; color: var(--text); }
+.structure3d-message { margin: auto; color: var(--muted); }
+
+/* A Structure's Templates tab and process. */
+.templates-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  min-height: 0;
+  overflow: auto;
+}
+.templates-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.templates-tab .templates-panes {
+  margin: 0;
+}
+.templates-tab .orix-plot {
+  max-width: 320px;
+}
+.zone-axis-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.zone-axis-row .uvw-input {
+  width: 120px;
+}
+.zone-axis-angle {
+  width: 52px;
+}
+
+/* The Structure tab under a 4D-STEM pattern: the 3D view filling it. */
+.structure-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* The pattern's Match tab (template matching at the cursors). */
+.match-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.match-scale {
+  width: 80px;
+  height: 8px;
+  border-radius: 2px;
+}
+.match-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.match-table tr.selected td {
+  background: var(--hover, rgba(127, 127, 127, 0.15));
+}
+
+/* Bragg vectors' magnitude histogram (VectorMaskSection) */
+.magnitude-plot { display: block; margin: 4px 0; }
+.magnitude-bars { fill: var(--accent, #4f8cff); opacity: 0.85; }
+.magnitude-axis { stroke: var(--muted, #888); stroke-width: 1; }
+.magnitude-tick { fill: var(--muted, #888); font-size: 8px; }
+.magnitude-reflection { stroke: var(--text, #ddd); stroke-width: 0.75; stroke-dasharray: 3 2; opacity: 0.7; }
+.magnitude-hkl { fill: var(--text, #ddd); font-size: 8px; }

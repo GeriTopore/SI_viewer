@@ -55,7 +55,7 @@ FIELDS = (
     "thickness", "deconvolution", "quantity", "source_frame", "map_options", "rebinned", "zlp_aligned",
     "ops", "copied_at", "filters", "alignment", "technique_source", "eels_role", "eels_role_source",
     "eels_group", "eels_linked", "derived_from", "custom_title", "survey", "dpc", "pca", "microscope", "curve_model", "atomic", "mask",
-    "virtual", "disks", "beam", "calibration", "origin_map", "strain",
+    "virtual", "disks", "beam", "calibration", "origin_map", "strain", "orientation", "templates",
 )
 # Bytes of a raw file hashed for its fingerprint.
 FINGERPRINT_BYTES = 1 << 20
@@ -273,6 +273,11 @@ def save_project(
                 rec["kind"] = ds.kind.value
                 rec["title"] = ds.title
                 rec["stored"] = {}
+                # Every axis' calibration (a raw file's, edited in the app, is set again on open).
+                if ds.insitu is None:
+                    rec["axes"] = [{"size": int(a.size), "scale": float(a.scale), "offset": float(a.offset),
+                                    "units": a.units if isinstance(a.units, str) else None}
+                                   for a in ds.signal.axes_manager._axes]
                 # A cropped in-situ series: its crop, remade from the raw files on open.
                 crop_series = ds.insitu is not None and ds.insitu.crop is not None
                 if crop_series:
@@ -383,11 +388,29 @@ def read_project(path: str | Path) -> tuple[dict, dict]:
         raise ProjectError(f"{path.name} can't be read: {e}") from None
 
 
+def _example_id(path: str | Path) -> str | None:
+    """The bundled example a saved file is (its path ``example:<id>``), if it
+    is one still bundled."""
+    from .examples import get_example
+
+    text = str(path)
+    if not text.startswith("example:"):
+        return None
+    try:
+        get_example(text[len("example:"):])
+    except KeyError:
+        return None
+    return text[len("example:"):]
+
+
 def _find(saved: dict, base: Path, locations: dict | None = None) -> Path | None:
     """A saved file or folder: where it was located (``locations``: id ->
     path), else next to the project as it was, else where it was, else in a
     folder another file was located in."""
     locations = locations or {}
+    example = _example_id(saved["path"])
+    if example is not None:
+        return Path(saved["path"])
     name = Path(saved["path"]).name
     candidates = [Path(locations[saved["id"]])] if saved.get("id") in locations else []
     candidates += [base / saved["relative"], Path(saved["path"])]
@@ -413,6 +436,20 @@ def missing_raw(project: dict, base: Path, locations: dict | None = None) -> lis
         for fe in project["files"]
         if not fe.get("stored") and not fe.get("embedded") and _find(fe, base, locations) is None
     ]
+
+
+def _restore_axes(ds, axes: list[dict] | None) -> None:
+    """A raw dataset's axes as they were saved (calibrations edited in the
+    app), where its axes still have the sizes they had."""
+    if not axes or ds.insitu is not None:
+        return
+    now = ds.signal.axes_manager._axes
+    if len(now) != len(axes) or any(int(a.size) != s["size"] for a, s in zip(now, axes)):
+        return
+    for a, s in zip(now, axes):
+        a.scale, a.offset = s["scale"], s["offset"]
+        if s.get("units") is not None:
+            a.units = s["units"]
 
 
 def open_project(
@@ -489,7 +526,8 @@ def open_project(
                 session.files[fe["id"]] = entry
             continue
         p = found[fe["id"]]
-        entry = session.open_file(p)
+        example = _example_id(p)
+        entry = session.open_example(example) if example is not None else session.open_file(p)
         if entry.id in project_file_ids:
             continue  # already opened with another (e.g. an in-situ SI brings its ADF)
         if fe["id"] in extracted:
@@ -546,6 +584,7 @@ def open_project(
             ds.set_microscope(**rec["microscope"])
         if rec.get("filters"):
             ds.filter_rev += 1
+        _restore_axes(ds, rec.get("axes"))
         if rec.get("calibration"):
             # 4D-STEM patterns calibrated: the raw file's axes set again.
             ds.calibration = rec["calibration"]

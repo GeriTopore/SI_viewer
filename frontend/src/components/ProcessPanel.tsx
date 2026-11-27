@@ -13,8 +13,12 @@ import { RebinDialog, canRebin } from "./RebinDialog";
 import { BadPixelSection } from "./BadPixelSection";
 import { PatternBackgroundSection } from "./PatternBackgroundSection";
 import { StrainSection } from "./StrainSection";
+import { VectorMagnitudesSection, VectorMaskSection } from "./VectorMaskSection";
 import { CalibrationSection } from "./CalibrationSection";
 import { CentringSection } from "./CentringSection";
+import { OrientationSection } from "./OrientationSection";
+import { PolarSection } from "./PolarSection";
+import { TemplatesSection } from "./TemplatesSection";
 import { DiskDetectionSection } from "./DiskDetectionSection";
 import { VirtualImageSection } from "./VirtualImageSection";
 import { AlignSection } from "./AlignSection";
@@ -301,7 +305,7 @@ export function ProcessPanel() {
   const split = useUi((s) => s.processSplit);
   const files = useDatasets((s) => s.files);
   // Other kinds have no processes, except Bragg vectors (their Calibration).
-  const processable = (x: DatasetSummary) => x.kind !== "other" || x.origin === "disks";
+  const processable = (x: DatasetSummary) => x.kind !== "other" || x.origin === "disks" || !!x.structure;
   const main = !d ? (
     <p className="muted">Select a dataset to filter it.</p>
   ) : !processable(d) ? (
@@ -574,15 +578,40 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       tip: "The direct beam found in every pattern, the descan as a plane, and every pattern shifted so the beam is at its centre",
       body: <CentringSection key={d.id} d={d} />,
     },
+    d.kind === "4dstem" && d.signal_type !== "polar_diffraction" && {
+      id: "polar", title: "Polar transform", section: "Pre-processing",
+      tip: "Every pattern as radius × azimuth (pyxem's get_azimuthal_integral2d), as a copy or in place: what orientation mapping matches against",
+      body: <PolarSection key={d.id} d={d} />,
+    },
     d.kind === "4dstem" && {
       id: "disks", title: "Disk detection", section: "Analysis",
       tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
       body: <DiskDetectionSection key={d.id} d={d} />,
     },
+    d.structure && {
+      id: "templates", title: "Templates",
+      tip: "Diffraction templates of this structure (diffsims) over orix's orientations, optionally only near some zone axes; each run a Templates object under it",
+      body: <TemplatesSection key={d.id} d={d} />,
+    },
+    d.kind === "4dstem" && {
+      id: "orientation", title: "Orientation mapping", section: "Analysis",
+      tip: "Orientation and phase mapping as pyxem does it: templates simulated from the Structures (diffsims), matched to the polar transform of every pattern",
+      body: <OrientationSection key={d.id} d={d} />,
+    },
     braggCube && {
       id: "calibration", title: "Calibration",
       tip: "The Bragg vectors' calibration: each position's origin (descan), the QR rotation (least curl), the pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
       body: <CalibrationSection key={braggCube.id} d={braggCube} />,
+    },
+    braggCube && {
+      id: "vector-magnitudes", title: "Magnitudes",
+      tip: "A histogram of the vectors' distances from the pattern's centre (pyxem), with a Structure's reflections marked: does the phase and the calibration fit?",
+      body: <VectorMagnitudesSection key={braggCube.id} d={braggCube} vectors={d} />,
+    },
+    braggCube && {
+      id: "vector-mask", title: "Vector mask",
+      tip: "The data times discs at its vectors (pyxem's to_mask): only the diffraction spots left, as pyxem's orientation mapping tutorial does before matching",
+      body: <VectorMaskSection key={braggCube.id} d={braggCube} />,
     },
     braggCube && {
       id: "strain", title: "Strain mapping",
@@ -604,7 +633,7 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
       body: <ZlpSection d={d} />,
     },
     // Not on Bragg vectors (a table: nothing to filter).
-    d.origin !== "disks" && {
+    d.origin !== "disks" && !d.structure && {
       id: "filters", title: "Filters", tip: "Applied whenever the data is shown; the loaded data is unchanged",
       ...(d.kind === "4dstem" && { section: "Pre-processing" }),
       summary: active,

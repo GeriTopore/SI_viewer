@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import (
-    atomic, background, crop, curve_fit, datasets, decomposition, deconvolution, dpc, eds, eels, eels_fit, examples, export, files, fourd, fs, insitu, jobs, masks, plot_export, process,
+    atomic, background, crop, curve_fit, datasets, decomposition, deconvolution, dpc, eds, eels, eels_fit, examples, export, files, fourd, fs, orientation, insitu, jobs, masks, plot_export, process,
     project, registration, thickness, zlp,
 )
 from .auth import TokenAuth, new_token
@@ -56,6 +56,7 @@ def create_app(session: Session | None = None, token: str | None = None) -> Fast
     app.include_router(atomic.router)
     app.include_router(masks.router)
     app.include_router(fourd.router)
+    app.include_router(orientation.router)
     app.include_router(jobs.router)
     app.include_router(process.router)
     app.include_router(export.router)

@@ -74,6 +74,8 @@ export function kindLabel(d: DatasetSummary): string {
   if (d.atomic?.kind === "cage") return "Disp";
   if (d.atomic) return ATOMIC_LABEL[d.atomic.output];
   if (d.origin === "mask") return "Mask";
+  if (d.structure) return "Structure";
+  if (d.origin === "templates") return "Templates";
   if (d.origin === "disks") return "Bragg";
   if (d.origin === "bragg-map") return "BVM";
   if (d.origin === "beam-shift") return "Shift";

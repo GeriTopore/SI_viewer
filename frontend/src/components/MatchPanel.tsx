@@ -70,7 +70,7 @@ export function MatchPanel({ templatesId, cursors, activeId, at, busy, error, ma
   return (
     <div className="templates-tab">
       {error && <p className="field-error">{error}</p>}
-      <div className="templates-panes">
+      <div className="templates-panes match-panes">
         <figure>
           {ipf?.id === shown && m ? (
             <>

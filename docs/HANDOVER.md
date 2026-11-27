@@ -205,8 +205,12 @@ phase 7, "Phase map" and "All matches".
 
 The Fe grains session is saved as
 `/Users/gt622/Documents/Dev/SI_viewer/examples/4dstem/Fe grains phase analysis.hspy`.
-Not yet checked in the browser after the phase map: that the saved SPED-Ag
-analysis still reads.
+The saved SPED-Ag analysis still reads after the phase map (checked in the
+browser).
+
+**Since then:** the Process tab is tiles only (the list view and the
+numbers removed), every process has an icon, and the Match tab keeps its
+IPF centred above the tables.
 
 ## Open items (nearest first)
 

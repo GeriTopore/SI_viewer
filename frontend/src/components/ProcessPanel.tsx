@@ -3,7 +3,6 @@ import { create } from "zustand";
 import type { DatasetSummary, Filters, SpatialFilter, SpectralFilter } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { applyFilters } from "../state/filters";
-import { useAlignment } from "../state/alignment";
 import { PANE_SIZES, useUi, type SplitSide } from "../state/ui";
 import { Splitter } from "./Splitter";
 import { followProcess } from "./ProcessLink";
@@ -41,7 +40,6 @@ import { PldSection } from "./PldSection";
 import { CurveFitPanel } from "./CurveFitPanel";
 import { canNormalise } from "../state/normalise";
 import { ProcessIcon } from "./ProcessIcons";
-import { GridIcon, ListIcon } from "./DatasetList";
 
 const SPATIAL: { id: SpatialFilter; label: string; title: string }[] = [
   { id: "none", label: "None", title: "No spatial filter" },
@@ -129,7 +127,7 @@ interface Process {
 const SECTION_ORDER = ["Pre-processing", "Analysis"];
 
 /** ``processes`` sorted by section (``SECTION_ORDER``, then as they come),
- * keeping their order within each, so the numbers run through. */
+ * keeping their order within each. */
 function bySection(processes: Process[]): Process[] {
   const first = new Map<string, number>();
   processes.forEach((p, i) => first.set(p.section ?? "General", first.get(p.section ?? "General") ?? i));
@@ -141,15 +139,14 @@ function bySection(processes: Process[]): Process[] {
   return processes.map((p, i) => ({ p, i })).sort((a, b) => rank(a.p) - rank(b.p) || a.i - b.i).map(({ p }) => p);
 }
 
-/** The processes by section, in order of their first process; numbered
- * through. */
-function sectionsOf(processes: Process[]): { name: string; items: { p: Process; n: number }[] }[] {
-  const out: { name: string; items: { p: Process; n: number }[] }[] = [];
-  processes.forEach((p, i) => {
+/** The processes by section, in order of their first process. */
+function sectionsOf(processes: Process[]): { name: string; items: Process[] }[] {
+  const out: { name: string; items: Process[] }[] = [];
+  processes.forEach((p) => {
     const name = p.section ?? "General";
     let s = out.find((x) => x.name === name);
     if (!s) out.push((s = { name, items: [] }));
-    s.items.push({ p, n: i + 1 });
+    s.items.push(p);
   });
   return out;
 }
@@ -171,7 +168,7 @@ function SectionHeader({ name, count }: { name: string; count: number }) {
 }
 
 /** The processes in sections (headed when there are several). */
-function Sections({ processes, render }: { processes: Process[]; render: (items: { p: Process; n: number }[]) => ReactNode }) {
+function Sections({ processes, render }: { processes: Process[]; render: (items: Process[]) => ReactNode }) {
   const sections = sectionsOf(processes);
   const collapsed = useUi((s) => s.processCollapsed);
   if (sections.length < 2) return <>{render(sections[0]?.items ?? [])}</>;
@@ -187,57 +184,12 @@ function Sections({ processes, render }: { processes: Process[]; render: (items:
   );
 }
 
-/** List view: every process as a card whose title folds it away,
- * remembered per browser. */
-function ProcessList({ processes }: { processes: Process[] }) {
-  return (
-    <Sections
-      processes={processes}
-      render={(items) => (
-        <div className="process-list">
-          {items.map(({ p, n }) => (
-            <ProcessGroup key={p.id} p={p} n={n} />
-          ))}
-        </div>
-      )}
-    />
-  );
-}
-
-function ProcessGroup({ p, n }: { p: Process; n: number }) {
-  const collapsed = useUi((s) => s.processCollapsed.includes(p.id));
-  const toggle = useUi((s) => s.toggleProcess);
-  return (
-    <div className={`process-group${collapsed ? " collapsed" : ""}`} data-process={p.id}>
-      <h3 className="process-group-title">
-        <button
-          className="process-group-toggle"
-          aria-expanded={!collapsed}
-          onClick={() => toggle(p.id)}
-          title={`${p.tip}\nDrag onto the tab to show it beside the others`}
-          {...dragProps(p.id)}
-        >
-          <span className="process-chevron" aria-hidden="true" />
-          <ProcessIcon id={p.id} size={20} />
-          {n}. {p.title}
-        </button>
-        {collapsed && p.summary && <span className="muted small">{p.summary}</span>}
-      </h3>
-      {!collapsed && (
-        <div className="process-group-body" onPointerDownCapture={() => followProcess(p.id)}>
-          {p.body}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Icon view: a tile per process; a tile opens its process in the tab. */
+/** A tile per process; a tile opens its process in the tab (dragged onto
+ * the tab, beside the others). */
 function ProcessGrid({ processes }: { processes: Process[] }) {
   const openId = useUi((s) => s.processOpen);
   const setOpen = useUi((s) => s.setProcessOpen);
-  const i = processes.findIndex((p) => p.id === openId);
-  const open = processes[i];
+  const open = processes.find((p) => p.id === openId);
   if (open)
     return (
       <div className="process-group process-open">
@@ -247,7 +199,7 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
           </button>
           <span className="process-drag-handle" title={`${open.tip}\nDrag onto the tab to show it beside the others`} {...dragProps(open.id)}>
             <ProcessIcon id={open.id} size={20} />
-            {i + 1}. {open.title}
+            {open.title}
           </span>
         </h3>
         <div className="process-group-body" onPointerDownCapture={() => followProcess(open.id)}>
@@ -260,7 +212,7 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
       processes={processes}
       render={(items) => (
         <div className="process-grid">
-          {items.map(({ p, n }) => (
+          {items.map((p) => (
             <button
               key={p.id}
               className="process-tile"
@@ -271,7 +223,6 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
               title={`${p.tip}\nDrag onto the tab to show it beside the others`}
               {...dragProps(p.id)}
             >
-              <span className="process-tile-n">{n}</span>
               <ProcessIcon id={p.id} />
               <span className="process-tile-name">{p.title}</span>
               {p.summary && <span className="process-tile-summary">{p.summary}</span>}
@@ -280,21 +231,6 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
         </div>
       )}
     />
-  );
-}
-
-function ProcessModeToggle() {
-  const mode = useUi((s) => s.processMode);
-  const setMode = useUi((s) => s.setProcessMode);
-  return (
-    <div className="segmented" role="group" aria-label="Process view">
-      <button className={mode === "list" ? "active" : undefined} aria-pressed={mode === "list"} title="List view" onClick={() => setMode("list")}>
-        <ListIcon />
-      </button>
-      <button className={mode === "grid" ? "active" : undefined} aria-pressed={mode === "grid"} title="Icon view" onClick={() => setMode("grid")}>
-        <GridIcon />
-      </button>
-    </div>
   );
 }
 
@@ -472,8 +408,6 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   const [draft, setDraft] = useState<Filters>(d.filters);
   const [error, setError] = useState<string | null>(null);
   const [rebinOpen, setRebinOpen] = useState(false);
-  // No dataset name while its alignment workspace is open.
-  const aligning = useAlignment((s) => s.openId) === d.id;
 
   // Follow changes made elsewhere (e.g. "Apply to all maps" from another map).
   const sent = useRef(JSON.stringify(d.filters));
@@ -536,7 +470,6 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   const braggCube = d.origin === "disks" ? allDatasets(files).find((x) => x.id === d.parent_id && x.kind === "4dstem") : undefined;
   const unfiltered: Filters = { ...draft, spatial: "none", spectral: "none" };
   const active = filterLabel(draft);
-  const mode = useUi((s) => s.processMode);
   // The processes that apply, in workflow order.
   const rebinBody = (
     <button className="process-rebin" onClick={() => setRebinOpen(true)}>
@@ -875,12 +808,11 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   ] as (Process | false)[]).filter((x): x is Process => !!x));
 
   if (only) {
-    const k = processes.findIndex((p) => p.id === only);
-    const p = processes[k];
+    const p = processes.find((x) => x.id === only);
     return (
       <div className="quantify process">
         <div className="process-group process-open">
-          <SplitHeader id={only} title={p ? `${k + 1}. ${p.title}` : only} tip={p?.tip} on={d} pinned={pinned} />
+          <SplitHeader id={only} title={p ? p.title : only} tip={p?.tip} on={d} pinned={pinned} />
           {p ? (
             <div className="process-group-body" onPointerDownCapture={() => followProcess(only)}>
               {p.body}
@@ -895,13 +827,7 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
   }
   return (
     <div className="quantify process">
-      {!aligning && (
-        <section className="process-header">
-          <span className="panel-tabs-spacer" />
-          <ProcessModeToggle />
-        </section>
-      )}
-      {mode === "grid" ? <ProcessGrid processes={processes} /> : <ProcessList processes={processes} />}
+      <ProcessGrid processes={processes} />
       {rebinOpen && <RebinDialog d={d} onClose={() => setRebinOpen(false)} />}
     </div>
   );

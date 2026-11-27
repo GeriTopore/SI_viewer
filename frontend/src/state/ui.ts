@@ -196,8 +196,6 @@ interface UiState {
   processCollapsed: string[];
   toggleProcess: (id: string) => void;
   /** The Process tab as a list of foldable sections or a grid of icons. */
-  processMode: ListMode;
-  setProcessMode: (mode: ListMode) => void;
   /** The process opened from the icon grid (null: the grid). */
   processOpen: string | null;
   setProcessOpen: (id: string | null) => void;
@@ -392,11 +390,6 @@ export const useUi = create<UiState>((set, get) => ({
     save("si-viewer.processCollapsed", processCollapsed.join(","));
     set({ processCollapsed });
   },
-  processMode: load<ListMode>("si-viewer.processMode", "list"),
-  setProcessMode: (processMode) => {
-    save("si-viewer.processMode", processMode);
-    set({ processMode });
-  },
   processOpen: null,
   setProcessOpen: (processOpen) => set({ processOpen }),
   processSplit: loadProcessSplit(),
@@ -491,10 +484,10 @@ export const useUi = create<UiState>((set, get) => ({
   setBrowserOpen: (browserOpen, browserMode = "data") => set({ browserOpen, browserMode }),
 }));
 
-/** Whether process ``id`` is on screen in the Process tab: opened from the
- * icon view, unfolded in the list view, or split off beside the others. */
+/** Whether process ``id`` is on screen in the Process tab: opened from its
+ * tile, or split off beside the others. */
 export const useProcessShown = (id: string): boolean =>
   useUi((s) =>
     s.rightTab === "process"
-    && (s.processSplit?.id === id || (s.processMode === "list" ? !s.processCollapsed.includes(id) : s.processOpen === id)),
+    && (s.processSplit?.id === id || s.processOpen === id),
   );

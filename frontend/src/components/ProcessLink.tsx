@@ -24,11 +24,7 @@ export function openProcess(to: string, from?: string, image?: string | null) {
     return;
   }
   if (from && split?.id === from) {
-    if (ui.processMode === "grid") ui.setProcessOpen(to);
-    else {
-      if (ui.processCollapsed.includes(to)) ui.toggleProcess(to);
-      requestAnimationFrame(() => document.querySelector(`[data-process="${to}"]`)?.scrollIntoView({ block: "start" }));
-    }
+    ui.setProcessOpen(to);
   } else {
     ui.setProcessSplit({ id: to, side: split?.side ?? "bottom", image: image ?? null });
     if (ui.processOpen === to) ui.setProcessOpen(null);

@@ -3674,26 +3674,7 @@ button.primary.danger {
   margin: 0 0 8px;
 }
 
-/* Process tab: the dataset's name and the list/icon toggle */
-.process-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.process-header .q-title {
-  flex: 1;
-  min-width: 0;
-}
-
 /* A process of the Process tab, as a card */
-.process-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-}
-
 .process-group {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -3774,14 +3755,6 @@ button.primary.danger {
 .process-tile:hover {
   background: var(--hover);
   border-color: var(--accent);
-}
-
-.process-tile-n {
-  position: absolute;
-  top: 4px;
-  left: 6px;
-  font-size: 10px;
-  color: var(--muted);
 }
 
 .process-tile-name {
@@ -6870,6 +6843,17 @@ kbd {
   width: 9px;
   height: 9px;
   border-radius: 50%;
+}
+/* The Match tab: the correlation's IPF always above the tables, centred. */
+.templates-tab .templates-panes.match-panes {
+  grid-template-columns: minmax(0, 1fr);
+}
+.match-panes > figure:last-child {
+  align-items: stretch;
+  min-width: 0;
+}
+.match-panes .orix-plot {
+  width: 100%;
 }
 .match-table tr.selected td {
   background: var(--hover, rgba(127, 127, 127, 0.15));

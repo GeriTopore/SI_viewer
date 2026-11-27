@@ -2589,12 +2589,14 @@ data, not pictures**, and every view of them is linked.
 
 ### 4.26b Process pane split (built)
 
+(2026-11-27: the list view was removed; the Process tab is tiles only,
+unnumbered, every process with an icon.)
+
 Multi-step analyses (columns → sublattices → neighbourhoods → cells, cages)
 moved between processes and plots at every step. Now:
-- Dragging a process's icon (grid tile, open process's title) or title
-  (list view) onto the Process tab splits it: the left / right third puts
-  it beside, the middle above or below, the tab's own view (grid or list)
-  in the other half, as the bottom pane's tabs split (same drop zones and
+- Dragging a process's icon (its tile, or the open process's title) onto
+  the Process tab splits it: the left / right third puts it beside, the
+  middle above or below, the tab's own tiles in the other half, as the bottom pane's tabs split (same drop zones and
   divider; the share is remembered).
 - The split-off process has its own title: its icon (dragged to move it
   to another side, or to swap in another process), the dataset it works on,

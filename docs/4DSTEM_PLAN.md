@@ -470,8 +470,7 @@ grid's *Merged* mode with each group's colour), and presets.
   when an analysis is reopened. polyAu: Au 111 at r 22.92 px, 6.1 %
   ellipticity → 0.1853 1/nm per px.
 - Overlays of a process (disks, beam, ring) are drawn while it is on screen
-  in the Process tab: open (icon view), unfolded (list view) or split off
-  (`useProcessShown`).
+  in the Process tab: open from its tile, or split off (`useProcessShown`).
 - **Calibrated Bragg vectors and BVM (py4DSTEM-style; built 2026-11-26).**
   The vectors keep their raw positions (the Bragg vectors store the pattern
   calibration they were found with, so pattern pixels come back exactly);
@@ -760,7 +759,7 @@ Rebin, Remove bad pixels, Background, Fix descan (was Centring), Filters;
 *Analysis*: Virtual imaging (was Virtual image), Disk detection (DPC /
 iCOM removed later the same day: see phase 4). The Bragg vectors keep Calibration and Strain mapping (was
 Strain). Sections are ordered Pre-processing, Analysis, then the others as
-they come (`ProcessPanel` `SECTION_ORDER`, `bySection`), numbered through.
+they come (`ProcessPanel` `SECTION_ORDER`, `bySection`).
 Calibration's step 1 and the Info tab's row are now "Descan".
 
 ### Phase 7: orientation and phase mapping

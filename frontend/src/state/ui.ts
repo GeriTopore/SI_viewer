@@ -15,11 +15,11 @@ export type GridContext = "si" | "images" | "stacks";
  * a stored one that is not shown falls back, see BottomPane). */
 export type BottomTab =
   | "spectrum" | "profile" | "histogram" | "exploded" | "alignment" | "pca-component" | "pca-scree" | "neighbourhood"
-  | "cell" | "templates" | "symmetry" | "sites" | "structure" | "match" | `eels:${string}`;
+  | "cell" | "templates" | "symmetry" | "sites" | "structure" | "match" | "ipf-key" | `eels:${string}`;
 const isBottomTab = (t: string | undefined): t is BottomTab =>
   t === "spectrum" || t === "profile" || t === "histogram" || t === "exploded" || t === "alignment" ||
   t === "pca-component" || t === "pca-scree" || t === "neighbourhood" || t === "cell" ||
-  t === "templates" || t === "symmetry" || t === "sites" || t === "structure" || t === "match" ||
+  t === "templates" || t === "symmetry" || t === "sites" || t === "structure" || t === "match" || t === "ipf-key" ||
   (!!t && t.startsWith("eels:") && t.length > 5);
 export const eelsTab = (datasetId: string): BottomTab => `eels:${datasetId}`;
 /** Two tabs of the bottom pane shown side by side (left, right) or stacked (top, bottom). */

@@ -4,6 +4,7 @@ import { api, dataVersion, type DatasetSummary, type JobSummary, type MatchResul
 import { useDatasets } from "./datasets";
 import { useLayers } from "./layers";
 import { jobRunning } from "./centring";
+import { runJob } from "./strain";
 import type { SceneOrientation } from "../components/StructureScene";
 
 /** A Structure's templates: the defaults of pyxem's SPED-Ag tutorial. */
@@ -75,9 +76,20 @@ interface OrientationState {
   /** Match ``dsId`` (4D-STEM data, or polar patterns: ``polar`` null) at
    * ``positions`` ([x, y]) against ``templates``; kept under ``key``. */
   runMatch: (key: string, dsId: string, templates: string, polar: string | null, positions: number[][]) => Promise<void>;
+  /** Orientation maps at scan positions (the tutorial's markers), by
+   * ``mapKey`` then "x,y". */
+  mapAtCache: Record<string, Record<string, MatchResult>>;
+  fetchMapAt: (key: string, omapId: string, positions: number[][]) => Promise<void>;
   /** "Match orientation" in the Structure view: it turns to the match at the active cursor. */
   followMatch: boolean;
   setFollowMatch: (on: boolean) => void;
+  /** The whole scan matched (a job), per 4D-STEM data: its orientation map. */
+  mapJobs: Record<string, JobSummary | undefined>;
+  mapErrors: Record<string, string | null>;
+  /** The fraction of the templates fully matched after the fast pass (the tutorial's 0.5). */
+  fracKeep: Record<string, number>;
+  runMap: (dsId: string, templates: string, polar: string | null) => Promise<void>;
+  cancelMap: (dsId: string) => Promise<void>;
   /** The polar patterns matched against, per 4D-STEM data (else ``polarFor``'s default). */
   polarChoice: Record<string, string>;
   choosePolar: (cubeId: string, polarId: string) => void;
@@ -178,8 +190,44 @@ export const useOrientation = create<OrientationState>()(persist((set, get) => {
       set((s) => ({ matchBusy: { ...s.matchBusy, [key]: false } }));
     }
   },
+  mapAtCache: {},
+  fetchMapAt: async (key, omapId, positions) => {
+    const have = get().mapAtCache[key] ?? {};
+    const missing = positions.filter(([x, y]) => !have[`${x},${y}`]);
+    if (!missing.length) return;
+    try {
+      const r = await api.mapAt(omapId, missing);
+      const found = Object.fromEntries(r.matches.map((m) => [`${m.x},${m.y}`, m]));
+      set((s) => ({ mapAtCache: { ...s.mapAtCache, [key]: { ...s.mapAtCache[key], ...found } } }));
+    } catch {
+      /* the map gone or changed: nothing drawn */
+    }
+  },
   followMatch: false,
   setFollowMatch: (on) => set({ followMatch: on }),
+  mapJobs: {},
+  mapErrors: {},
+  fracKeep: {},
+  runMap: async (dsId, templates, polar) => {
+    set((s) => ({ mapErrors: { ...s.mapErrors, [dsId]: null } }));
+    try {
+      const job = await runJob(
+        `/api/datasets/${dsId}/4d/orientation/map`,
+        { templates, polar, options: { n_best: 1, frac_keep: get().fracKeep[dsId] ?? 0.5 } },
+        (j) => set((s) => ({ mapJobs: { ...s.mapJobs, [dsId]: j } })),
+      );
+      if (job.status === "done" && job.result) {
+        useDatasets.getState().replaceFile(job.result.file);
+        useLayers.getState().notify("Orientation map added under the data: its correlation and IPF-x, y, z.");
+      }
+    } catch (e) {
+      set((s) => ({ mapErrors: { ...s.mapErrors, [dsId]: (e as Error).message } }));
+    }
+  },
+  cancelMap: async (dsId) => {
+    const job = get().mapJobs[dsId];
+    if (job) set((s) => ({ mapJobs: { ...s.mapJobs, [dsId]: undefined } })), await api.cancelJob(job.id);
+  },
   setView: (structureId, o) => set((s) => ({ views: { ...s.views, [structureId]: o } })),
   setLinked: (id, on) => set((s) => ({ linked: { ...s.linked, [id]: on } })),
   pick: (id, index) => set((s) => ({ picked: { ...s.picked, [id]: index }, shown: { id, index } })),
@@ -225,6 +273,7 @@ export const useOrientation = create<OrientationState>()(persist((set, get) => {
   storage: createJSONStorage(() => safeStorage),
   partialize: (s) => ({
     chosen: s.chosen, polarChoice: s.polarChoice, followMatch: s.followMatch, scale: s.scale, views: s.views, linked: s.linked,
+    fracKeep: s.fracKeep,
   }),
 }));
 
@@ -266,6 +315,17 @@ export function polarStale(polar: DatasetSummary, all: DatasetSummary[]): boolea
   const now = source.axes.filter((a) => !a.navigate);
   return polar.polar.axes.some((a, i) => !now[i] || Math.abs(now[i].scale - a.scale) > 1e-9 * Math.abs(a.scale)
     || Math.abs(now[i].offset - a.offset) > 1e-9 * Math.max(1, Math.abs(a.offset)) || now[i].units !== a.units);
+}
+
+/** Where an orientation map's positions are kept. */
+export const mapKey = (omap: DatasetSummary) => `${omap.id}|${dataVersion(omap)}`;
+
+/** The orientation map drawn on ``d``'s patterns: one made from it or from
+ * its polar patterns (by ``polar``), the one matching its choices first. */
+export function mapFor(all: DatasetSummary[], d: DatasetSummary, polar: DatasetSummary | null, templates: string | null) {
+  const maps = all.filter((x) => x.orientation?.output === "map"
+    && (x.parent_id === d.id || x.orientation.polar === d.id || (polar && x.orientation.polar === polar.id)));
+  return maps.find((x) => x.orientation!.polar === polar?.id && x.orientation!.templates === templates) ?? maps[maps.length - 1] ?? null;
 }
 
 /** Where the matches of polar patterns ``polar`` against ``templates`` are kept. */

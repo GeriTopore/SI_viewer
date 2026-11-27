@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { colourFrame, fetchArray, fetchFrame, fetchStackFrame, type Frame } from "../api/arrays";
-import { dataVersion, type DatasetSummary } from "../api/client";
+import { api, dataVersion, type DatasetSummary, type MatchResult, type TemplatesIpf } from "../api/client";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { ImageView, type AxisCal, type Interaction, type Pt, type Transform } from "../components/ImageView";
 import { AnnotationsToggle } from "../components/AnnotationsToggle";
@@ -11,7 +11,7 @@ import { LineOverlay } from "../components/LineOverlay";
 import { RoiOverlay } from "../components/RoiOverlay";
 import { useCalibration } from "../state/calibration";
 import { planeOf, useCentring } from "../state/centring";
-import { chosenFor, isPolar, matchKey, perAngstrom, polarFor, useOrientation } from "../state/orientation";
+import { chosenFor, isPolar, mapFor, mapKey, matchKey, perAngstrom, polarFor, useOrientation } from "../state/orientation";
 import { MatchPanel } from "../components/MatchPanel";
 import { useViewTemplate } from "../state/viewTemplate";
 import { StructureScene } from "../components/StructureScene";
@@ -93,6 +93,10 @@ export const RESPONSES: { id: Response; label: string; title: string }[] = [
 ];
 
 const TURN = 2 * Math.PI;
+/** The orientation map's marks on the patterns. */
+const OMAP_COLOR = "#64d2ff";
+/** Miller indices with bars over the negative ones. */
+const hklLabel = (hkl: number[]) => hkl.map((v) => (v < 0 ? `${-v}\u0305` : `${v}`)).join("");
 const asFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame => ({ data, height: shape[0], width: shape[1], bin: 1 });
 /** A virtual image: a colour one ("com": direction and magnitude, [2, h, w]) drawn as a DPC object is. */
 const asVirtualFrame = ({ data, shape }: { data: Float32Array; shape: number[] }): Frame =>
@@ -843,20 +847,24 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     const c = cursors.find((k) => k.id === id);
     return c ? matchAt?.[`${c.x},${c.y}`] : undefined;
   };
-  const matchOverlay = (t: Transform, id: string): ReactNode => {
-    const m = matchVisible ? matchOf(id) : undefined;
-    if (!m) return null;
-    const c = cursors.find((k) => k.id === id);
-    const colour = matchLayer.colour ?? c?.color ?? "#ff9f0a";
+  /** Where a match's reflections are on this data's patterns (pixel coordinates). */
+  const spotsOf = (m: MatchResult): [number, number][] => {
     const [ky, kx] = ds.axes.filter((a) => !a.navigate);
     const per = perAngstrom(ds);
-    const points: [number, number][] = polarData
+    return polarData
       // Polar transform: angle across (rad), radius down (1/Å).
       // (Axis values are at pixel centres: pixel i spans [i, i + 1).)
       ? m.polar.theta.map((th, i) => [(((th - kx.offset) % TURN) + TURN) % TURN / kx.scale + 0.5, (m.polar.r[i] - ky.offset) / ky.scale + 0.5])
       : per
         ? m.vectors.x.map((x, i) => [(x / per - kx.offset) / kx.scale + 0.5, (m.vectors.y[i] / per - ky.offset) / ky.scale + 0.5])
         : [];
+  };
+  const matchOverlay = (t: Transform, id: string): ReactNode => {
+    const m = matchVisible ? matchOf(id) : undefined;
+    if (!m) return null;
+    const c = cursors.find((k) => k.id === id);
+    const colour = matchLayer.colour ?? c?.color ?? "#ff9f0a";
+    const points = spotsOf(m);
     return (
       <g className="fourd-overlay" opacity={matchLayer.opacity ?? 1}>
         {points.map(([px, py], i) => {
@@ -879,6 +887,113 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // The orientation matched at the active cursor, for the Structure tab.
   const activeBest = matchOf(activeCursor.id)?.best;
   const activeMatchView = activeBest?.view && activeBest.up ? { view: activeBest.view, up: activeBest.up } : null;
+  // ---------- the orientation map on the patterns (the tutorial's
+  // to_markers(annotate=True) and to_ipf_markers): at each cursor, the
+  // map's best template, its reflections labelled, and where its beam
+  // direction falls in the inverse pole figure (an inset) ----------
+  const omap = mapFor(allDatasets(files), ds, matchPolar, matchTemplates);
+  const omapKey = omap ? mapKey(omap) : "";
+  const omapAt = useOrientation((s) => (omapKey ? s.mapAtCache[omapKey] : undefined));
+  useEffect(() => {
+    if (omap) void useOrientation.getState().fetchMapAt(omapKey, omap.id, cursors.map((c) => [c.x, c.y]));
+  }, [omapKey, cursorKeys.join(";")]); // eslint-disable-line react-hooks/exhaustive-deps
+  const omapLayer = ovOf("omap");
+  const omapVisible = !!omap && (omapLayer.visible ?? true);
+  const omapStyle = omapLayer.style === "cross" ? "cross" : "circle";
+  const omapLabels = omapLayer.labels ?? true;
+  const omapInset = omapLayer.inset ?? true;
+  const omapColour = omapLayer.colour ?? OMAP_COLOR;
+  const omapTemplates = omap?.orientation?.templates ?? null;
+  const [omapIpf, setOmapIpf] = useState<{ id: string; ipf: TemplatesIpf } | null>(null);
+  useEffect(() => {
+    if (!omapTemplates || !omapInset) return;
+    let live = true;
+    api.templatesIpf(omapTemplates).then((ipf) => live && setOmapIpf({ id: omapTemplates, ipf }), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [omapTemplates, omapInset]);
+  const omapOverlay = (t: Transform, id: string): ReactNode => {
+    const c = cursors.find((k) => k.id === id);
+    const m = omapVisible && c ? omapAt?.[`${c.x},${c.y}`] : undefined;
+    if (!m) return null;
+    const points = spotsOf(m);
+    const ipf = omapInset && omapIpf?.id === omapTemplates ? omapIpf.ipf : null;
+    let inset: ReactNode = null;
+    if (ipf) {
+      // Top right of the pattern, a fifth of its size (as pyxem's).
+      const [ax, ay] = t.toScreen(0, 0);
+      const [bx, by] = t.toScreen(patternG.width, patternG.height);
+      const size = 0.22 * Math.min(Math.abs(bx - ax), Math.abs(by - ay));
+      const { x: ox, y: oy } = ipf.sector.outline;
+      const x0 = Math.min(...ox), x1 = Math.max(...ox), y0 = Math.min(...oy), y1 = Math.max(...oy);
+      const k = size / Math.max(x1 - x0, y1 - y0);
+      const rx = Math.max(ax, bx) - size - 8, ry = Math.min(ay, by) + 8;
+      const at = (x: number, y: number) => [rx + (x - x0) * k, ry + (y1 - y) * k];
+      const path = ox.map((x, i) => `${i ? "L" : "M"}${at(x, oy[i]).join(",")}`).join("") + "Z";
+      const [px, py] = at(ipf.points.x[m.best.index], ipf.points.y[m.best.index]);
+      const rgb = ipf.points.rgb[m.best.index];
+      inset = (
+        <g className="omap-inset">
+          <path d={path} fill="rgba(0,0,0,0.45)" stroke="#fff" strokeWidth={1} />
+          <circle cx={px} cy={py} r={4} fill={rgb ? `rgb(${rgb.join(",")})` : omapColour} stroke="#000" strokeWidth={1}>
+            <title>{`[${m.best.uvw.map((v) => formatValue(v)).join(" ")}] · ${formatValue(m.best.correlation)}`}</title>
+          </circle>
+        </g>
+      );
+    }
+    return (
+      <g className="fourd-overlay" opacity={omapLayer.opacity ?? 1}>
+        {points.map(([px, py], i) => {
+          const [sx, sy] = t.toScreen(px, py);
+          const r = 2.5 + 4 * Math.sqrt(m.vectors.intensity[i] ?? 0);
+          const hkl = m.vectors.hkl[i];
+          return (
+            <g key={i}>
+              {omapStyle === "cross"
+                ? <path d={`M${sx - r},${sy}H${sx + r}M${sx},${sy - r}V${sy + r}`} stroke={omapColour} strokeWidth={1.5} strokeLinecap="round" />
+                : <circle cx={sx} cy={sy} r={r} fill="none" stroke={omapColour} strokeWidth={1.5} />}
+              {omapLabels && hkl && (
+                <text x={sx} y={sy - r - 2} className="omap-label" fill={omapColour} textAnchor="middle">{hklLabel(hkl)}</text>
+              )}
+            </g>
+          );
+        })}
+        {inset}
+      </g>
+    );
+  };
+  const omapRow = omap ? [{
+    id: "fd:omap",
+    label: omap.title,
+    visible: omapVisible,
+    opacity: omapLayer.opacity ?? 1,
+    display: undefined,
+    removable: false,
+    colour: omapColour,
+    properties: [
+      {
+        label: "Mark",
+        control: (
+          <select className="layer-choice" value={omapStyle} title="How each spot of the map's template is marked"
+            onChange={(e) => setOverlay(ds.id, "omap", { style: e.target.value as "circle" | "cross" })}>
+            <option value="circle">Circle</option>
+            <option value="cross">Cross</option>
+          </select>
+        ),
+      },
+      {
+        label: "hkl",
+        control: <input type="checkbox" checked={omapLabels} title="Label each reflection"
+          onChange={(e) => setOverlay(ds.id, "omap", { labels: e.target.checked })} />,
+      },
+      {
+        label: "IPF",
+        control: <input type="checkbox" checked={omapInset} title="Where the beam direction falls in the inverse pole figure"
+          onChange={(e) => setOverlay(ds.id, "omap", { inset: e.target.checked })} />,
+      },
+    ],
+  }] : [];
   const matchRow = matchOn ? [{
     id: "fd:match",
     label: "Best match",
@@ -1470,6 +1585,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         {beamOverlay(t, id)}
         {ringOverlay(t)}
         {zoneOverlay(t)}
+        {omapOverlay(t, id)}
         {matchOverlay(t, id)}
         {othersOverlay(t)}
         {detectorOverlay(t)}
@@ -1767,6 +1883,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
       })),
       ...(vectorsDs || diskOpen ? [disksRow] : []),
       ...templateRow,
+      ...omapRow,
       ...matchRow,
     ],
     onActivate: (id) => id.startsWith("fd:det:") && selectGroup(id.slice("fd:det:".length)),

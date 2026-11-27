@@ -523,6 +523,7 @@ button.primary:disabled {
 .badge-mask { background: var(--badge-mask); }
 .badge-4dstem { background: var(--badge-4dstem); }
 .badge-polar { background: var(--badge-polar); }
+.ipf-key { max-width: 260px; margin: 6px auto; }
 
 /* 4D-STEM: the scan and the diffraction pattern side by side. */
 .view.fourd-view { flex-direction: column; gap: 6px; }
@@ -6882,3 +6883,4 @@ kbd {
 .magnitude-reflection { stroke: var(--text, #ddd); stroke-width: 0.75; stroke-dasharray: 3 2; opacity: 0.7; }
 .magnitude-hkl { fill: var(--text, #ddd); font-size: 8px; }
 
+.omap-label { font-size: 9px; paint-order: stroke; stroke: rgba(0, 0, 0, 0.75); stroke-width: 2px; pointer-events: none; }

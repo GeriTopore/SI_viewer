@@ -275,6 +275,9 @@ export interface OverlayLayer {
   /** Bragg disks: a circle of the disk's size, or a dot at its position;
    * the best match: circles or crosses. */
   style?: "circle" | "dot" | "cross";
+  /** The orientation map: its reflections labelled (hkl), its IPF inset. */
+  labels?: boolean;
+  inset?: boolean;
   /** A dot's size (× its default). */
   size?: number;
 }

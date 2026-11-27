@@ -476,7 +476,12 @@ def match(polar, sim, o: MatchOptions, phase=None) -> list[dict]:
     ``hkl``; ``polar``: ``theta`` in radians, ``r`` in 1/Å, as
     ``to_polar_markers``), and the correlation of every template matched
     (``correlations``, by template index; null where not matched)."""
-    res = polar.get_orientation(sim, n_best=o.n_best, frac_keep=o.frac_keep)
+    return describe(polar.get_orientation(sim, n_best=o.n_best, frac_keep=o.frac_keep), sim, phase)
+
+
+def describe(res, sim, phase=None) -> list[dict]:
+    """``match``'s description of each pattern of an ``OrientationMap``
+    (pyxem's, 1D navigation) against ``sim``."""
     data = np.asarray(res.data, float)  # patterns × kept × [index, correlation, rotation, factor]
     oris = res.to_single_phase_orientations()
     euler = np.degrees(np.asarray(oris.to_euler())).reshape(data.shape[0], -1, 3)[:, 0]
@@ -512,4 +517,81 @@ def match(polar, sim, o: MatchOptions, phase=None) -> list[dict]:
             },
             "correlations": corr,
         })
+    return out
+
+
+# ---------- the whole scan: the orientation map (pyxem's OrientationMap) ----------
+
+
+class MapOptions(BaseModel):
+    """``get_orientation`` over the whole scan, as the tutorial does: the best
+    match kept per pattern, the full match on the half of the templates that
+    did best in the fast 1D pass."""
+
+    n_best: int = Field(1, ge=1, le=10)
+    frac_keep: float = Field(0.5, gt=0, le=1)
+
+
+def match_scan(polar, sim, o: MapOptions, report=None, rows: int = 8) -> np.ndarray:
+    """pyxem's ``get_orientation`` of every pattern of ``polar`` (a
+    ``PolarDiffraction2D`` with a 2D scan) against ``sim``, a block of
+    ``rows`` scan rows at a time (``report(fraction, message)`` after each,
+    which may raise to cancel): float32 [y, x, n_best, 4] (template index,
+    correlation, in-plane rotation °, mirror factor), as OrientationMap holds."""
+    import pyxem
+
+    if not isinstance(polar, pyxem.signals.PolarDiffraction2D):  # e.g. opened from an analysis
+        data = polar
+        polar = pyxem.signals.PolarDiffraction2D(np.asarray(data.data))
+        for new, old in zip(polar.axes_manager._axes, data.axes_manager._axes):
+            new.name, new.scale, new.offset, new.units = old.name, old.scale, old.offset, old.units
+    ny = polar.axes_manager.navigation_shape[1]
+    parts = []
+    for y0 in range(0, ny, rows):
+        block = polar.inav[:, y0:min(ny, y0 + rows)]
+        res = block.get_orientation(sim, n_best=o.n_best, frac_keep=o.frac_keep)
+        data = res.data.compute() if hasattr(res.data, "compute") else res.data
+        parts.append(np.asarray(data, np.float32).reshape(block.data.shape[0], block.data.shape[1], o.n_best, 4))
+        if report:
+            report(min(ny, y0 + rows) / ny, f"Rows {min(ny, y0 + rows)} of {ny}")
+    return np.concatenate(parts, axis=0)
+
+
+def orientation_map(results: np.ndarray, sim, scan_axes=None):
+    """pyxem's ``OrientationMap`` of ``results`` (``match_scan``) against
+    ``sim``, on ``scan_axes`` ([(name, scale, offset, units)] x then y)."""
+    from pyxem.signals import OrientationMap
+
+    omap = OrientationMap(np.asarray(results, float))
+    omap.metadata.set_item("simulation", sim)
+    for axis, (name, scale, offset, units) in zip(omap.axes_manager.navigation_axes, scan_axes or []):
+        axis.name, axis.scale, axis.offset, axis.units = name, scale, offset, units
+    return omap
+
+
+IPF_DIRECTIONS = ("x", "y", "z")
+
+
+def ipf_colours(omap, direction: str) -> np.ndarray:
+    """The best orientation at each position coloured by orix's
+    ``IPFColorKeyTSL`` along the sample's ``direction`` ("x", "y", "z": z
+    along the beam), as pyxem's ``to_ipf_colormap``: float32 [y, x, 3], 0–1."""
+    from orix.plot import IPFColorKeyTSL
+    from orix.vector import Vector3d
+
+    oris = omap.to_single_phase_orientations()[:, :, 0]
+    v = {"x": Vector3d.xvector(), "y": Vector3d.yvector(), "z": Vector3d.zvector()}[direction]
+    rgb = IPFColorKeyTSL(oris.symmetry, v).orientation2color(oris)
+    return np.asarray(rgb, np.float32).reshape(*oris.shape, 3)
+
+
+def map_at(results: np.ndarray, sim, phase, positions) -> list[dict]:
+    """The orientation map ``results`` (``match_scan``) at scan ``positions``
+    ([(x, y)]), described as ``match`` describes a match (the best template's
+    reflections, labelled; the view): the tutorial's ``to_markers``."""
+    picked = np.stack([np.asarray(results[y, x], float) for x, y in positions])
+    out = describe(orientation_map(picked, sim), sim, phase)
+    for m, (x, y) in zip(out, positions):
+        m["x"], m["y"] = int(x), int(y)
+        del m["correlations"]  # only the kept ones: see the Match tab for all
     return out

@@ -9,7 +9,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..processing.orientation import MatchOptions, PolarOptions, TemplateOptions
+from ..processing.orientation import MapOptions, MatchOptions, PolarOptions, TemplateOptions
 from .fourd import _cube
 
 router = APIRouter(tags=["orientation"])
@@ -148,6 +148,97 @@ def match_at(dataset_id: str, body: MatchBody, request: Request) -> dict:
         m["x"], m["y"] = x, y
         m["best"]["uvw"] = orientation.direction_of(sim.rotations[m["best"]["index"]], phase)
     return {"polar": polar.id, "matches": matches}
+
+
+class MapBody(BaseModel):
+    templates: str  # a Templates object's id
+    polar: str | None = None  # as MatchBody's
+    options: MapOptions = MapOptions()
+
+
+@router.post("/api/datasets/{dataset_id}/4d/orientation/map")
+def orientation_map_run(dataset_id: str, body: MapBody, request: Request) -> dict:
+    """The orientation map (a job): pyxem's ``get_orientation`` of every
+    pattern of the polar patterns (as the tutorial: the best match kept, the
+    full match on half the templates), kept as an "Orientation map" under
+    the data with its correlation and IPF-x/y/z images. The job's result is
+    ``{file, id}`` (the map)."""
+    from ..processing import orientation
+
+    session = request.app.state.session
+    ds = _cube(request, dataset_id)
+    polar = _polar_of(request, ds, body.polar)
+    tds, sim, phase = _templates(request, body.templates)
+
+    def run(job) -> dict:
+        job.report(0.0, "Matching")
+        results = orientation.match_scan(polar.signal, sim, body.options, lambda f, m: job.report(0.97 * f, m))
+        job.report(0.98, "Keeping the map")
+        record = {"templates": tds.id, "polar": polar.id, "options": body.options.model_dump(), "phase": phase.name}
+        made = session.set_orientation_map(ds, results, record)
+        return {"file": session.file_of(ds).summary(session), "id": made.id}
+
+    return request.app.state.jobs.submit("orientation-map", f"Orientation map of {ds.title}", run).summary()
+
+
+class MapAtBody(BaseModel):
+    positions: list[tuple[int, int]] = Field(min_length=1, max_length=64)  # scan (x, y)
+
+
+@router.post("/api/datasets/{dataset_id}/orientation/at")
+def orientation_map_at(dataset_id: str, body: MapAtBody, request: Request) -> dict:
+    """An orientation map (its "Orientation map" object) at scan
+    ``positions``: ``{matches}``, each as ``match`` gives them (the best
+    template's reflections, labelled; its beam direction and view), for the
+    tutorial's markers on the patterns (``to_markers``, ``to_ipf_markers``)."""
+    from ..processing import orientation
+
+    session = request.app.state.session
+    try:
+        omap = session.get_dataset(dataset_id)
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    rec = omap.orientation or {}
+    if rec.get("output") != "map":
+        raise HTTPException(400, f"{omap.title} is not an orientation map")
+    results = np.asarray(omap.signal.data)
+    ny, nx = results.shape[:2]
+    for x, y in body.positions:
+        if not (0 <= x < nx and 0 <= y < ny):
+            raise HTTPException(422, f"({x}, {y}) is outside the scan")
+    _, sim, phase = _templates(request, rec["templates"])
+    matches = orientation.map_at(results, sim, phase, body.positions)
+    for m in matches:
+        m["best"]["uvw"] = orientation.direction_of(sim.rotations[m["best"]["index"]], phase)
+    return {"matches": matches}
+
+
+@router.get("/api/datasets/{dataset_id}/orientation/ipf")
+def orientation_ipf(dataset_id: str, request: Request):
+    """An IPF image of an orientation map: float32 [4, y, x], its value (the
+    correlation) then the IPF colour (r, g, b; 0–1, orix's IPFColorKeyTSL
+    along its direction)."""
+    from ..processing import orientation
+    from .datasets import array_response
+
+    session = request.app.state.session
+    try:
+        ds = session.get_dataset(dataset_id)
+        rec = ds.orientation or {}
+        omap = session.get_dataset(rec.get("map_id", ""))
+    except KeyError:
+        raise HTTPException(404, f"Unknown dataset id: {dataset_id}")
+    if rec.get("output") != "ipf":
+        raise HTTPException(400, f"{ds.title} is not an IPF image")
+    key = (omap.id, rec["direction"])
+    rgb = session.orientation_cache.get(key)
+    if rgb is None:
+        _, sim, _ = _templates(request, rec["templates"])
+        rgb = orientation.ipf_colours(orientation.orientation_map(np.asarray(omap.signal.data), sim), rec["direction"])
+        with session._lock:
+            session.orientation_cache[key] = rgb
+    value = np.asarray(ds.signal.data, np.float32)
+    return array_response(np.concatenate([value[None], np.moveaxis(rgb, -1, 0)]).astype(np.float32))
 
 
 # ---------- Templates objects (under their Structures) and orix's plots ----------

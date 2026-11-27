@@ -7,6 +7,7 @@ import { chosenFor, isPolar, matchKey, perAngstrom, polarFor, polarStale, polars
 import { useFourDState } from "../views/FourDView";
 import { done } from "./FourDCalibrationInfo";
 import { templatesLabel } from "./TemplatesView";
+import { JobProgress } from "./StrainSection";
 
 /** Orientation and phase mapping as pyxem does it (its SPED-Ag tutorial):
  * the Templates object (made on a Structure) drawn on the patterns and
@@ -73,7 +74,7 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
           </button>
         </div>
       )}
-
+      {chosen && matchedOn && <MapScan d={d} templates={chosen.id} polar={polar ? null : matchedOn.id} />}
     </section>
   );
 }
@@ -133,6 +134,41 @@ function TemplateScale({ d }: { d: DatasetSummary }) {
           Use as pixel size
         </button>
       </div>
+    </>
+  );
+}
+
+/** The whole scan matched as the tutorial does (the best match kept, the
+ * full match on a fraction of the templates): an Orientation map under the
+ * data, with its correlation and IPF-x, y, z images. */
+function MapScan({ d, templates, polar }: { d: DatasetSummary; templates: string; polar: string | null }) {
+  const job = useOrientation((s) => s.mapJobs[d.id]);
+  const error = useOrientation((s) => s.mapErrors[d.id] ?? null);
+  const frac = useOrientation((s) => s.fracKeep[d.id] ?? 0.5);
+  const running = !!job && (job.status === "queued" || job.status === "running");
+  return (
+    <>
+      <h4 className="process-heading">Orientation map</h4>
+      <label title="The fraction of the templates fully matched, the best of the fast match on the radial profiles (the tutorial's 0.5)">
+        <span>Fraction kept</span>
+        <input type="number" min={0.01} max={1} step={0.05} value={frac}
+          onChange={(e) => {
+            const v = Number(e.target.value);
+            if (e.target.value !== "" && v > 0 && v <= 1) useOrientation.setState((s) => ({ fracKeep: { ...s.fracKeep, [d.id]: v } }));
+          }} />
+      </label>
+      {error && <p className="field-error">{error}</p>}
+      {running ? (
+        <JobProgress job={job!} cancel={() => void useOrientation.getState().cancelMap(d.id)} />
+      ) : (
+        <div className="process-actions">
+          <button className="primary" onClick={() => void useOrientation.getState().runMap(d.id, templates, polar)}
+            title="Match every pattern (pyxem's get_orientation, the best match kept): an Orientation map with its correlation and IPF-x, y, z">
+            Map
+          </button>
+        </div>
+      )}
+      {job?.status === "failed" && !running && <p className="field-error">{job.error}</p>}
     </>
   );
 }

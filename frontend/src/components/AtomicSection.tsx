@@ -8,7 +8,8 @@ import { cropDataset } from "../state/datasets";
 import { useUi } from "../state/ui";
 
 /** Images only (not maps of a spectrum image). */
-export const canAnalyseAtomic = (d: DatasetSummary) => d.kind === "image" && !d.is_element_map && d.origin !== "atomic";
+export const canAnalyseAtomic = (d: DatasetSummary) =>
+  d.kind === "image" && !d.is_element_map && d.origin !== "atomic" && d.origin !== "orientation-map";
 
 /** Pixel size along y and x (Å when a length, else its units or px). */
 export function pixelSize(d: DatasetSummary) {

@@ -591,7 +591,7 @@ export interface DatasetSummary {
   origin:
     | "file" | "computed" | "fitted" | "aligned-average" | "window" | "background" | "background-r"
     | "thickness" | "zlp-shift" | "deconvolved" | "line-scan" | "aligned-sum" | "rebinned" | "zlp-aligned" | "aligned" | "dpc" | "atomic"
-    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map" | "beam-shift" | "centred" | "origin-map" | "strain-fit" | "templates";
+    | "pca" | "pca-factors" | "pca-denoised" | "cropped" | "curve-fit" | "curve-model" | "mask" | "virtual" | "disks" | "bragg-map" | "beam-shift" | "centred" | "origin-map" | "strain-fit" | "templates" | "polar" | "vector-masked" | "orientation-map";
   /** Window maps: the energy window (in the spectrum's units) it sums. */
   window: { lo: number; hi: number; units: string } | null;
   /** Element symbol of an element map. */
@@ -639,7 +639,17 @@ export interface DatasetSummary {
   /** A crystal structure (a CIF, read as an orix phase). */
   structure?: StructureInfo | null;
   /** 4D-STEM data: orientation and phase mapping (pyxem). */
-  orientation?: Record<string, unknown> | null;
+  /** Orientation mapping results: an orientation map ("map") and its
+   * images ("correlation", "ipf" along ``direction``), with what was matched. */
+  orientation?: {
+    output: "map" | "correlation" | "ipf";
+    direction?: "x" | "y" | "z";
+    templates: string;
+    polar: string;
+    phase: string;
+    options: { n_best: number; frac_keep: number };
+    map_id?: string;
+  } | null;
   /** A Structure's templates (origin "templates"). */
   templates?: TemplatesInfo | null;
   /** Polar patterns: what they were made from (the source's pattern axes
@@ -1665,6 +1675,11 @@ export const api = {
     request<{ index: number; angle: number; hkl: number[][]; intensity: number[] }>(
       `/api/datasets/${id}/templates/toward?u=${uvw[0]}&v=${uvw[1]}&w=${uvw[2]}`),
   /** pyxem's template matching at scan ``positions`` of the data's polar transform. */
+  /** An orientation map at scan positions: its best template there, described as a match is. */
+  mapAt: (omapId: string, positions: number[][]) =>
+    request<{ matches: MatchResult[] }>(`/api/datasets/${omapId}/orientation/at`, {
+      method: "POST", body: JSON.stringify({ positions }),
+    }),
   matchAt: (id: string, templates: string, positions: number[][], polar?: string | null) =>
     request<{ polar: string; matches: MatchResult[] }>(`/api/datasets/${id}/4d/orientation/match`, {
       method: "POST", body: JSON.stringify({ templates, positions, polar: polar ?? null }),

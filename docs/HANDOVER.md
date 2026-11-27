@@ -1,171 +1,215 @@
-# Handover (2026-11-23)
+# Handover (2026-11-27, evening)
 
-Read this first, then `docs/PLAN.md` (the design and milestones; §4.11 EELS,
-§4.13 in-situ, §4.14 experiments, §4.25–4.27 atomic-resolution work). This file covers what PLAN.md doesn't: how
-the work is done, the state of the working tree, and what is open.
+Read this first. Then:
+- `docs/4DSTEM_PLAN.md`: the 4D-STEM design and what is built; phase 7 is the
+  current orientation-mapping work.
+- `docs/PLAN.md`: the rest of the app.
+- `docs/REMOTE_PLAN.md`, on the `remote` branch: the SSH and CX3 work.
+- The user's todo list, which decides what is planned:
+  `/Users/gt622/Documents/Obsidian Vault/Codes/Si-viewer.md`.
+
+This file covers what those don't: the checkouts and branches, the servers,
+the uncommitted work, how the user works, and what is open.
 
 ## The project
 
-SI Viewer: a local web app for STEM spectrum images (EDS and EELS), images,
-stacks and in-situ series. FastAPI + HyperSpy/exSpy backend
-(`backend/si_viewer`), React + TypeScript + Zustand + uPlot frontend
-(`frontend/src`). Repo: GitHub `GeriTopore/SI_viewer`, branch `main`.
+SI Viewer is a local web app for STEM spectrum images (EDS, EELS), images,
+stacks, in-situ series and 4D-STEM.
+- **Backend:** FastAPI, HyperSpy, exSpy, pyxem, diffsims and orix
+  (`backend/si_viewer`).
+- **Frontend:** React, TypeScript, Zustand, uPlot and three.js (`frontend/src`).
+- **Repo:** GitHub `GeriTopore/SI_viewer`.
 
-- Run: `/Users/gt622/miniforge3/envs/si-viewer/bin/si-viewer --no-browser`
-  (port 8765). In the desktop app: `preview_start` with the `si-viewer`
-  configuration in `.claude/launch.json`; `si-viewer-test` is the same on
-  port 8766, for testing.
-- Build the frontend: `npm --prefix frontend run build` (runs `tsc -b`, writes
-  into `backend/si_viewer/static`, which the server serves). Type check only:
-  `npm --prefix frontend run typecheck`.
-- Tests: `conda run -n si-viewer --cwd backend python -m pytest -q` (about
-  2.5 min; 507 pass, 6 skip). Run only the relevant files while iterating.
-- Example data: `examples/` (git-ignored). `InSitu (3)`: an in-situ EELS
-  series (28 GB of `.raw`) with its survey and ADF. `InSitu (10)`: a dual EELS
-  pair (HL/LL summed, 96×415) with survey and ADF. `LSMO_linescan*.hspy`: a
-  low/core-loss line-scan pair (no DM role tags: mark the low loss by hand).
-  `iDPC_BTFMO_test.tif`: atomic columns with three sublattices (A, B and an
-  oxygen site C that moves up and down with the octahedral tilt: one site, not
-  two); its saved analysis is `iDPC_BTFMO_test analysis.hspy`. The user's
-  kemstem notebook for it: `~/Documents/scripts/BTFMO_polarisation_mapping.ipynb`.
-  The test fixtures (`backend/tests/conftest.py`) look in subfolders too.
+## Checkouts and branches (git worktrees of one repo)
+
+| Folder | Branch | State |
+|---|---|---|
+| `/Users/gt622/Documents/Dev/SI_viewer` | `abtem-plugin` (43ae9c9) | The abTEM plugin's work, separate. Holds `.claude/launch.json` and `examples/` (git-ignored). |
+| `/Users/gt622/Documents/Dev/SI_viewer-4dstem` | `4dstem` | **Current work.** `f7b2d37` pushed; the orientation-map work since is **uncommitted** (see below). |
+| `/Users/gt622/Documents/Dev/SI_viewer-remote` | `remote` (a773a1d, pushed, clean) | `si-viewer remote HOST` (SSH launcher, token auth, install). |
+
+- `main` and `origin/main` are at `d652fa6`, the merge of the remote work and
+  4D-STEM's COM and calibration changes.
+- Since `d652fa6`, `4dstem` and `remote` have moved apart:
+  - `4dstem` has the orientation work (`780b69d`, `f7b2d37` and the
+    uncommitted work).
+  - `remote` has one fix: a server deletes the session files of servers no
+    longer running.
+- Merge them when the user asks.
+
+`frontend/node_modules` in the 4dstem and remote worktrees is a symlink to the
+main checkout's. Never commit it, `.claude/` or `examples/`.
+
+## Run, build, test (4dstem worktree)
+
+- **Build:** `npm --prefix /Users/gt622/Documents/Dev/SI_viewer-4dstem/frontend run build`.
+  It writes `backend/si_viewer/static`, which the server serves. After a
+  frontend change, reload the page; the server can stay up.
+- **Test:**
+  `PYTHONPATH=/Users/gt622/Documents/Dev/SI_viewer-4dstem/backend /Users/gt622/miniforge3/envs/si-viewer/bin/python -m pytest -q -p no:cacheprovider /Users/gt622/Documents/Dev/SI_viewer-4dstem/backend/tests`
+  - It takes about 2.5 min; run it in the background.
+  - Last run: **464 passed, 140 skipped**, including the uncommitted work.
+  - While iterating, run only `tests/test_orientation.py` (11 tests, about 30 s).
+- **Token auth:** since the remote merge, a server needs its token unless
+  started with `--no-token`. Every 4dstem configuration in `.claude/launch.json`
+  has `--no-token`.
+
+### Servers (launch configurations in the main checkout's `.claude/launch.json`)
+
+| Port | Configuration | What |
+|---|---|---|
+| 8768 | `si-viewer-4dstem` | **The user's own server.** 4dstem code from 26 Nov, so it predates all the orientation work. **Ask before restarting it.** |
+| 8769, 8770 | `si-viewer-4dstem-test`, `-claude` | Old test servers. |
+| 8771 | `si-viewer-4dstem-orientation` | **The orientation test server**: 4dstem code with the latest backend, `--no-token`. The user also uses it in the browser pane (tab-7). |
+
+**Restarting 8771** (needed after any backend change). Everything is held in
+memory, so save first:
+1. Save:
+   `curl -s -X POST localhost:8771/api/project/save -H 'Content-Type: application/json' -d '{"path": "<file>.hspy", "level": "link", "overwrite": true}'`
+2. Stop and start it: `preview_stop`, then `preview_start` with
+   `si-viewer-4dstem-orientation`.
+3. Reopen: `POST /api/project/open {"path": …}`, then reload the tab.
+
+The latest save is
+`/Users/gt622/Documents/Dev/SI_viewer/examples/4dstem/SPED-Ag orientation analysis.hspy`.
+It holds:
+- SPED-Ag, its polar patterns, the Bragg vectors and BVM, and the Orientation
+  map with its images (made from the polar patterns and Ag · 1°);
+- Ag and its "Templates · 1°".
+
+Orientation choices (Templates, Polar patterns, Match orientation, Scale,
+structure views) are kept in the browser's localStorage, so a reload keeps
+them. Match results aren't kept.
+
+### Test data
+
+- **SPED-Ag:** Examples → "Ag, precession (pyxem)", `example:pyxem-sped-ag`.
+  - Its pattern pixel size must be 0.02673 1/Å: the tutorial's ×2 fix of the
+    raw 0.01336.
+  - In the saved analysis it is already set, and saved analyses now keep
+    edited calibrations.
+  - The Ag structure is `examples/4dstem/Ag.cif` in the main checkout.
+- **The tutorial followed:**
+  `/Users/gt622/Documents/Dev/Hyperspy_Workshop_2025/pyxem/Orientation_mapping_SPED-Ag.ipynb`.
+
+## Orientation mapping: what is built (details in 4DSTEM_PLAN.md phase 7)
+
+- **Structures and templates:**
+  - Structures from `.cif`, with a 3D view (Structure tab; main zone axes in a
+    dropdown).
+  - Templates (diffsims) as a process of a Structure.
+  - Polar transform, which makes **polar patterns**: their own object, badge
+    Polar, with only Filters, Virtual imaging and Orientation mapping.
+- **Orientation mapping** (Process tab of the 4D data or its polar patterns):
+  - **Templates** dropdown: drawn as a layer, following the Structure tab's
+    view.
+  - **Scale**: log slider ¼× to 4×, plus "Use as pixel size".
+  - **Polar patterns** choice: warns when its source's calibration changed.
+  - **Match current position**: matches at every cursor. Matches are cached
+    by polar patterns, templates and position in `useOrientation.matchCache`,
+    so the data and its polar patterns share them.
+  - **Map**: the whole scan as a job, 12 s on SPED-Ag. It makes an
+    "Orientation map" object with Correlation and IPF-x, IPF-y, IPF-z images.
+- **Display:**
+  - The viewer draws **RGB layers**: `LayerData.rgb`, colours darkened by the
+    value through the contrast. That is the IPF maps' correlation overlay.
+  - The IPF images have an "IPF key" bottom tab.
+  - On the patterns, at every cursor:
+    - Best match (orange): from Match current position.
+    - Orientation map (cyan): from the map, with hkl labels and an IPF inset,
+      as the tutorial's `to_markers(annotate=True)` and `to_ipf_markers`.
+    - Template layer (pink).
+    All three are drawn at angle and radius on polar patterns.
+- **Shared state:**
+  - Cursors are shared by a file's 4D-STEM data with the same scan
+    (`useFourD.scans`, keyed by `scanKey`).
+  - Matches are shared too, so switching between the data and its polar
+    patterns shows the same match.
+- **Match orientation** (Structure tab checkbox) turns the 3D view to the
+  match at the active cursor; its template then lands exactly on the best
+  match.
+- **Conventions that took work to get right** (each has a test):
+  - `processing/orientation.py: view_of`: towards the viewer is orientation ×
+    z, the screen's up is orientation × −y, both as [uvw].
+    - A pattern exactly on a zone axis can't check this: a half turn about
+      [101] is a crystal symmetry. The test uses a pattern 3° off.
+    - When a convention matters, check it numerically on the real data
+      through the API first.
+  - pyxem's `to_vectors` hkl are the turned template's, rounded. The app
+    labels reflections with the crystal's hkl (`_crystal_hkl`).
+  - Marks on patterns are drawn at pixel centres (+0.5).
+  - diffsims 0.7 crashes when an orientation has no reflection (for example,
+    no precession with s = 0.001 1/Å). The app turns that into a message
+    saying what to change.
+
+### Uncommitted in the 4dstem worktree (18 files, tests pass)
+
+The whole-scan **Map** and everything it needs:
+- `match_scan`, `orientation_map`, `ipf_colours`, `map_at` and `describe` in
+  `processing/orientation.py`;
+- `/4d/orientation/map`, `/orientation/ipf` and `/orientation/at` in
+  `api/orientation.py`;
+- `session.set_orientation_map`;
+- the RGB renderer;
+- `fetchIpfFrame`;
+- the IPF key tab (`views/ImagesView.tsx`);
+- the Orientation map layer (FourDView);
+- the "Map" button (`OrientationSection.tsx`);
+- persistence of the choices was committed in `f7b2d37`.
+
+Commit and push only when the user asks.
+
+## Open items (nearest first)
+
+1. **Phase map:** templates of several Structures, since pyxem matches
+   several phases. Not started.
+2. **The vector-masked copy:** in the saved analysis it was deleted, but if it
+   is made again, check its pixel size. It inherits whatever the data had when
+   it was made, and its polar patterns would map at the wrong scale.
+3. **Absolute strain** (todo list): strain against a reference lattice rather
+   than the scan's own.
+4. **Remote** (`docs/REMOTE_PLAN.md`):
+   - R2 next: per-host settings, tmux reconnect, kemstem examples in remote
+     installs;
+   - R3 CX3 (PBS);
+   - R4 speed;
+   - R5 upload and download;
+   - R6 JupyterHub;
+   - R7 Connect… dialog.
+   - kspace has three test installs; tidying them was offered, not done.
+5. The rest of the todo list: decomposition of 4D data, the py4DSTEM plugin,
+   abTEM 4D, licence (GPL).
 
 ## How the user works (also in the memory files)
 
-Planning
-- The Obsidian note `/Users/gt622/Documents/Obsidian Vault/Codes/Si-viewer.md`
-  is the user's todo list and decides what is planned. Read it before "what's
-  next". When it changes, bring `docs/PLAN.md` in line; when a feature is
-  built, tick it there and record it in PLAN.md.
-
-Implementation
-- Small fixes and features: do them directly. Subagents (`model: "sonnet"`)
-  only for large or parallel work, with a self-contained brief; they start
-  cold and are slow. Never two writers on one file. Review a subagent's report
-  before calling the work done.
-- Use the dependencies' implementations (HyperSpy, exSpy, kemstem,
-  scikit-learn, scikit-image, rosettasciio) and write only glue. A custom
-  algorithm only when none of them does it.
-- Commit and push only when asked, and don't offer it after each step. Never
-  commit `.claude/` or `examples/STO`.
-
-UI
-- UI text is terse: labels, values, data-loss warnings; short tooltips are
-  fine. No explanatory paragraphs, provenance notes or hints in the UI.
-- New UI reuses existing classes: dialogs `modal rebin-dialog` with
-  `rebin-subtitle` and `rebin-actions`; editable values the `axes` table with
-  `cell-input`; Info-tab entries `props` rows with a `link-button`; toolbar
-  toggles `label.field`. Compare a screenshot with a neighbouring element
-  before reporting.
-- Tunable processing is guided: the user decides each step, with settings in
-  the Process tab, a live preview and diagnostics drawn in the viewer, and the
-  heavy part as a cancellable job when the user asks (see background removal
-  and deconvolution). No one-click pipelines.
-- Processes run on the highlighted dataset, including derived images such as
-  crops and gratings, never silently on a parent.
-- Dataset pane: click shows only that dataset, shift-click adds or removes it
-  from the view, ⌘/Ctrl-click toggles selection.
-- General tools stay general: masks are made from any image and aren't tied to
-  sublattices.
-
-Testing
-- Test in the built-in browser on the test server (8766), in a separate tab
-  brought to the front so the user can watch. Never use or navigate the user's
-  tab ("seed") for a test. Afterwards stop the test server, close its tab,
-  switch back to "seed" and reload it. Reload "seed" after every rebuild or
-  restart too.
-- When driving a page, take refs from a fresh `find`. Stale refs have clicked
-  the wrong control in the user's session.
-- Don't run tests of long processes. Use kemstem's example images for atomic
-  work where possible. Test curve fitting on
-  `examples/003_EELS-SI_1.7nm_2mmAp_TiO_Stack_Averaged_x_1_38_y_1_235_445.05_488.05_eV_PCA_4.hspy`.
-  No new synthetic datasets unless asked; backend tests may use small arrays.
-
-Server and shell
-- Backend changes need the user's server restarted, which loses the session
-  (everything is in memory). Ask each time: an earlier yes doesn't carry over.
-  Prefer saving the session to a file and reopening it afterwards. Otherwise,
-  before restarting, record the open files, in-situ views (`insitu.view`),
-  window maps (`window: {lo, hi}`) and renamed titles from `GET /api/files`;
-  after, reopen them (`POST /api/files/folder` + `POST /api/files` with
-  `experiment_id` for an experiment; `POST …/insitu/reduce` or `PUT
-  …/insitu/frame`; `POST …/window-maps {lo, hi, label}`), then reload the tab.
-  Display settings (contrast, zoom, cursor) live in the browser.
-- Shell: never `cd X && …` (a hook blocks it). Use absolute paths, `git -C`,
-  `npm --prefix`, `conda run -n si-viewer --cwd <dir>`. Subagents: no `sed -i`
-  or heredoc rewrites, short single commands, temporary files in the
-  scratchpad. Free a port with `lsof -sTCP:LISTEN`, never plain `lsof` (it
-  once killed an app process).
-- The user's own EELS code is at `~/Documents/Dev/EELS` (outside the working
-  folders: read it with Bash).
-
-## State of the working tree
-
-Last commit: `8eff709` (2026-11-16), level with `origin/main`. Everything in
-"Built since the last commit" is **uncommitted** (33 tracked files changed, plus
-new files). On 2026-11-23 the full test suite passed (507, 6 skipped) and the
-type check was clean. `.claude/` and `examples/STO` must stay out of commits.
-
-Neither server is running, so the next start of `si-viewer` picks up the current
-code. The in-memory session is gone, and the crop session saved to the
-scratchpad (`idpc_crop_session.h5`) no longer exists: the crop analysis has to
-be redone unless `examples/iDPC_BTFMO_test analysis.hspy` (saved 2026-11-17
-13:10) holds what is needed. Its contents have not been checked.
-
-## Built since the last commit
-
-Details are in PLAN.md §4.25–4.27.
-
-Atomic columns
-- Masks from any image or an image made from it: `processing/masks.py`,
-  `api/masks.py`, `state/masks.ts`, `components/MaskSection.tsx`. A mask adds
-  one sublattice of the columns inside it, next to the existing ones.
-- Find: template cross-correlation and a background σ. Seeded guesses are
-  appended, and only they are fitted (`append_columns`).
-- Cages: sites at the centre of a cage, and each origin's displacement from it
-  drawn as vectors. The cage is picked clusters or the k nearest (shape check
-  plus origin inside the cage).
-- Sublattices by position in cell: `state/cell.ts`, `components/CellPlot.tsx`,
-  the Cell bottom tab. Sites are circles or clusters. Clusters use seeded
-  DBSCAN (`cluster_sites`), because Gaussian ellipses took in strays near
-  (½, 0).
-- Picks (lattice vectors, cage, cell sites) are kept with the analysis:
-  `state/picks.ts`, `PUT /api/datasets/{id}/atomic/picks`.
-
-Workflow
-- Process pane split by dragging a process icon, with links between processes
-  (`components/ProcessPanel.tsx`, `components/ProcessLink.tsx`). Dataset titles
-  removed from process headers.
-- Processes run on the highlighted dataset (fixes crops running on the full
-  image).
-- Dataset pane: new click behaviour and a stronger focused row.
-
-Results on `iDPC_BTFMO_test.tif`
-- Full image: 4094 columns (template σ 3.5, blur 1.5, distance 8, threshold
-  0.4), split A 1404, B 1142, C 1299. C displacement from its 4 nearest A:
-  median 58.7 pm, largest 119.7 pm, 362 of 1299 left out.
-- Crop (737 columns): circles at 16 px give A 262, B 207, C 197, 71 left out.
-  Clusters give A 262, B 207, C 248, 20 left out, mostly unclaimed groups near
-  (½, 0).
-
-## Open items
-
-The Obsidian note holds the full todo list. Nearest to the current work:
-- Keep the reference's neighbourhoods when splitting by position in cell.
-- Cages: polarisation (−displacement), smoothed vectors, calibrated units.
-- PLD results: no hover readout for displacements; grid panels are black where
-  an image is implied.
-- Decide the licence before packaging (kemstem is GPL-3.0).
-
-Carried over from 2026-11-10, not rechecked since:
-- **Waiting on the user:** should a spectrum whose energy axis covers 0 eV be
-  marked low loss automatically? (Roles come only from DM's dual-EELS tag;
-  everything else is core loss until set in the Info tab.) A test in
-  `test_eels_links.py` asserts that nothing is guessed; change it with the rule.
-- Known gaps: thickness and ZLP results aren't titled with the in-situ frame;
-  the ZLP section shows its "Overwrites…" warning even when disabled; no
-  non-square in-situ test data; FFT-comparison panels don't draw the
-  bandpass/mask rings; PNG export doesn't include survey regions or the FFT
-  comparison; opening a single SI file doesn't bring its survey (only the
-  folder does); survey rectangle rotation is ignored; deconvolution previews
-  use the raw (unfiltered) data.
+- **Planning:** the Obsidian todo decides what is planned. Keep
+  `4DSTEM_PLAN.md` and `PLAN.md` in line, and tick items when built.
+- **Code:** use the dependencies (pyxem, diffsims, orix, HyperSpy, kemstem…)
+  and write only glue. Small work directly; subagents only for large or
+  parallel work.
+- **Commits:** commit and push only when asked. Don't offer it after each
+  step.
+- **UI text:** terse. Labels, values and data-loss warnings only; no
+  explanatory paragraphs.
+- **UI elements:** new ones reuse existing classes (`q-form`, `field`,
+  `layer-choice`, `cell-input`, `process-actions`…).
+- **Views:** grid and single views show the same tabs under a viewer; never
+  gate a tab on `!grid`.
+- **Objects:** a process belongs on the object it acts on. Strain mapping and
+  vector mask live on the Bragg vectors; polar patterns are their own object.
+- **Guided processing:** settings in the Process tab, a live preview, and the
+  heavy part as a cancellable job.
+- **Testing:**
+  - Test in the browser pane and check numerically, through the API or the
+    DOM.
+  - The user is often looking at the same tab (8771), so tell them before a
+    reload resets their view.
+  - Don't run long processes as tests.
+- **Shell:**
+  - Never `cd X && …` (a hook blocks it). Use absolute paths, `git -C` and
+    `npm --prefix`.
+  - Use `lsof -sTCP:LISTEN`, never plain `lsof`.
+- **Speed:** the user noticed slow turns.
+  - Group backend changes so the server restarts once.
+  - Check a convention on real data before writing tests.
+  - Don't add work that wasn't asked for; propose it instead.

@@ -702,6 +702,8 @@ class Session:
         self.undoable: dict[str, dict] = {}
         # Templates objects' simulations (diffsims), by id: (made with, simulation).
         self.template_sims: dict[str, tuple[dict, object]] = {}
+        # Orientation maps' IPF colours, by (map id, direction).
+        self.orientation_cache: dict[tuple[str, str], np.ndarray] = {}
         self._lock = threading.RLock()
 
     def open_file(self, path: str | Path, experiment_id: str | None = None) -> FileEntry:
@@ -2624,6 +2626,71 @@ class Session:
                 ids.insert(ids.index(after[-1] if after else fit.id) + 1, ds.id)
             made.append(ds)
         return made
+
+    def set_orientation_map(self, data: Dataset, results: np.ndarray, record: dict) -> Dataset:
+        """The orientation map of ``data`` (4D-STEM data or polar patterns:
+        ``processing.orientation.match_scan``'s ``results``, [y, x, n_best,
+        4]) as an "Orientation map" under it (origin "orientation-map", kind
+        "other", the results as its data), with its images under that: the
+        correlation and the IPF colours along x, y and z (whose values are
+        the correlation; colours from ``ipf_colours``). ``record``: what was
+        matched (templates, polar, options, phase), kept in each one's
+        ``orientation``. Made again in place for the same polar patterns and
+        templates. Returns the map."""
+        import hyperspy.api as hs
+
+        from .processing.orientation import IPF_DIRECTIONS
+
+        if data.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{data.title} is not 4D-STEM data")
+        scan = data.signal.axes_manager.navigation_axes  # x, y
+        same = lambda d: (d.orientation or {}).get("polar") == record["polar"] and (  # noqa: E731
+            (d.orientation or {}).get("templates") == record["templates"])
+        with self._lock:
+            omap = next((d for d in self.datasets.values()
+                         if d.origin == "orientation-map" and d.parent_id == data.id and same(d)), None)
+        holder = hs.signals.BaseSignal(np.ascontiguousarray(results, dtype=np.float32))
+        holder.metadata.General.title = f"Orientation map · {record['phase']}"
+        info = {**record, "output": "map", "source_id": data.id}
+        if omap is not None:
+            omap.replace_signal(holder)
+            omap.orientation = info
+        else:
+            omap = Dataset(id=_new_id(), file_id=data.file_id, signal=holder, kind=DatasetKind.OTHER,
+                           origin="orientation-map", parent_id=data.id, orientation=info)
+            with self._lock:
+                self.datasets[omap.id] = omap
+                ids = self.files[data.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == data.id]
+                ids.insert(ids.index(after[-1] if after else data.id) + 1, omap.id)
+        corr = np.ascontiguousarray(results[:, :, 0, 1], dtype=np.float32)
+        with self._lock:
+            earlier = {(d.orientation or {}).get("key"): d for d in self.datasets.values() if d.parent_id == omap.id}
+        made = [omap]
+        for key, title in [("correlation", "Correlation")] + [(f"ipf-{v}", f"IPF-{v}") for v in IPF_DIRECTIONS]:
+            signal = hs.signals.Signal2D(corr.copy())
+            for axis, src in zip(signal.axes_manager.signal_axes, scan):
+                axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
+            signal.metadata.General.title = title
+            signal.metadata.set_item("Signal.quantity", "Correlation")
+            out = {**info, "output": "ipf" if key.startswith("ipf") else "correlation", "key": key, "map_id": omap.id}
+            if key.startswith("ipf"):
+                out["direction"] = key[-1]
+            ds = earlier.get(key)
+            if ds is not None:
+                ds.replace_signal(signal)
+                ds.orientation = out
+                continue
+            ds = Dataset(id=_new_id(), file_id=data.file_id, signal=signal, kind=DatasetKind.IMAGE,
+                         origin="orientation-map", parent_id=omap.id, orientation=out)
+            with self._lock:
+                self.datasets[ds.id] = ds
+                ids = self.files[data.file_id].dataset_ids
+                after = [i for i in ids if self.datasets[i].parent_id == omap.id and i != ds.id]
+                ids.insert(ids.index(after[-1] if after else omap.id) + 1, ds.id)
+        with self._lock:
+            self.orientation_cache = {k: v for k, v in self.orientation_cache.items() if k[0] != omap.id}
+        return omap
 
     def set_calibration_switches(self, cube: Dataset, enabled: dict | None = None, view: str | None = None) -> None:
         """Switch parts of 4D-STEM data's calibration on or off for its

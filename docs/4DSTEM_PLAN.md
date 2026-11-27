@@ -912,13 +912,33 @@ Calibration's step 1 and the Info tab's row are now "Descan".
       hkl from that view (pyxem's `to_vectors` hkl are the turned template's,
       rounded).
     - Marks on the pattern drawn at pixel centres (half a pixel off before).
-  - **Still to do, in the tutorial's order:** the whole scan as a job
-    (`get_orientation(n_best=1, frac_keep=0.5)` on the masked data's polar
-    transform): an orientation map with markers on the patterns
-    (`to_markers(annotate=True)`, `to_ipf_markers`), then `to_crystal_map`:
-    IPF-x/y/z maps (`IPFColorKeyTSL`) with the correlation as overlay, phase
-    map. The IPF maps are RGB: the viewer's images are one channel through a
-    colormap, so RGB images are needed first.
+  - **Orientation map (2026-11-27):** Orientation mapping's "Map the scan"
+    runs pyxem's `get_orientation` over every pattern of the chosen polar
+    patterns (the tutorial's n_best 1, "Fraction kept" 0.5; 8 scan rows at a
+    time, as a job: 12 s for SPED-Ag's 13,312 patterns × 1,081 templates).
+    The results ([y, x, n_best, 4], as `OrientationMap` holds) are an
+    "Orientation map" object under the data (badge Orient; record of the
+    templates, polar patterns, options), with images under it: Correlation,
+    and IPF-x, IPF-y, IPF-z (orix's `IPFColorKeyTSL` along the sample's
+    direction, z the beam). Made again in place for the same polar patterns
+    and templates; saved with the analysis (colours made again from the
+    templates' record).
+  - **RGB images:** a layer may carry colours (r, g, b): drawn instead of
+    the colormap, darkened by its value through the contrast (the IPF maps'
+    correlation overlay: drag the upper limit down to the lower for plain
+    colours). An IPF image's bottom pane has an "IPF key" tab (orix's key of
+    its phase). Orientation results don't offer kemstem's processes.
+  - **The map on the patterns (2026-11-27):** the tutorial's
+    `to_markers(annotate=True)` and `to_ipf_markers`: an "Orientation map"
+    layer on the pattern (and on the polar patterns) at every cursor, read
+    from the map (`/orientation/at`, `processing.orientation.map_at`: the
+    same description as matching there gives, tested): the best template's
+    reflections (circles or + crosses), each labelled with the crystal's hkl
+    (Layers: hkl), and an inverse pole figure inset in the pattern's top
+    right with the beam direction (Layers: IPF). The button is "Map".
+  - **Still to do:** the phase map (several phases: templates of more than
+    one Structure), and the masked copy's calibration (made before the
+    original's pixel size was corrected).
 - orix's crystal-map tutorial loads EBSD orientations indexed by EMsoft
   (dictionary indexing, `dp` its score); orix itself doesn't index. pyxem
   indexes by template matching and hands orix its results

@@ -349,3 +349,114 @@ def test_the_matched_view_shows_the_template_on_the_match(tmp_path):
         assert np.mean(np.asarray(near) < 0.03) > 0.9, sorted(near)[-5:]
         # Turned half way round, it doesn't.
         assert np.mean([np.min(np.hypot(*(spots + p).T)) < 0.03 for p in drawn]) < 0.8
+
+
+def test_orientation_map_of_the_scan(tmp_path):
+    """The whole scan matched (pyxem's get_orientation, the tutorial's n_best
+    1, frac_keep 0.5): an Orientation map under the data with its correlation
+    and IPF-x/y/z images; IPF-z green for patterns down [101] (orix's key);
+    kept with the analysis."""
+    from test_4dstem import _write_emdfile
+    from si_viewer.project import open_project, save_project
+    from si_viewer.session import Session
+
+    ag = phase_from_cif(AG, "Ag")
+    K, scale = 96, 0.025
+    t = orientation.zone_template(ag, [1, 0, 1], orientation.TemplateOptions(precession_angle=1, max_excitation_error=0.02))
+    yy, xx = np.mgrid[0:K, 0:K] + 0.5
+
+    def pattern(turn):
+        c, s = np.cos(np.radians(turn)), np.sin(np.radians(turn))
+        img = np.zeros((K, K), np.float32)
+        for x, y, i in zip(t["x"], t["y"], t["intensity"]):
+            px, py = K / 2 + (c * x - s * y) / scale, K / 2 + (s * x + c * y) / scale
+            img += i * np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / 2)
+        return img
+
+    cube = np.stack([np.stack([pattern(0), pattern(30), pattern(60)])] * 2).astype(np.float32)  # 2 × 3 scan
+    _write_emdfile(tmp_path / "ag.h5", cube, q=(scale, "A^-1"), extra_2d=False)
+    (tmp_path / "Ag.cif").write_text(AG)
+    session = Session()
+    client = TestClient(create_app(session))
+    cube_id, ag_id = (client.post("/api/files", json={"path": str(tmp_path / n)}).json()["datasets"][0]["id"]
+                      for n in ("ag.h5", "Ag.cif"))
+    for ax in session.get_dataset(cube_id).signal.axes_manager.signal_axes:
+        ax.offset = -K / 2 * scale
+    templates = _wait(client, client.post(f"/api/datasets/{ag_id}/templates/make", json={}).json())["result"]["id"]
+    url = f"/api/datasets/{cube_id}/4d/orientation/map"
+    assert client.post(url, json={"templates": templates}).status_code == 409  # no polar patterns yet
+    polar = _wait(client, client.post(f"/api/datasets/{cube_id}/4d/polar", json={}).json())["result"]["id"]
+    job = _wait(client, client.post(url, json={"templates": templates}).json())
+    assert job["status"] == "done", job["error"]
+    omap = session.get_dataset(job["result"]["id"])
+    assert omap.origin == "orientation-map" and omap.parent_id == cube_id
+    assert omap.orientation["polar"] == polar and omap.orientation["options"] == {"n_best": 1, "frac_keep": 0.5}
+    results = np.asarray(omap.signal.data)
+    assert results.shape == (2, 3, 1, 4)
+    images = {d.orientation["key"]: d for d in session.datasets.values() if d.parent_id == omap.id}
+    assert set(images) == {"correlation", "ipf-x", "ipf-y", "ipf-z"}
+    np.testing.assert_allclose(np.asarray(images["correlation"].signal.data), results[:, :, 0, 1])
+    r = client.get(f"/api/datasets/{images['ipf-z'].id}/orientation/ipf")
+    assert r.status_code == 200 and r.headers["X-Array-Shape"] == "4,2,3"
+    rgb = np.frombuffer(r.content, np.float32).reshape(4, 2, 3)[1:]
+    assert ((rgb >= 0) & (rgb <= 1)).all()
+    assert (rgb[1] > rgb[0]).all() and (rgb[1] > rgb[2]).all()  # [101]: green
+    assert client.get(f"/api/datasets/{images['correlation'].id}/orientation/ipf").status_code == 400
+    # Made again: the same datasets.
+    again = _wait(client, client.post(url, json={"templates": templates}).json())
+    assert again["result"]["id"] == omap.id
+    # Kept with the analysis; the colours made again from the templates' record.
+    saved = save_project(session, tmp_path / "p.hspy")
+    other = Session()
+    open_project(other, saved)
+    c2 = TestClient(create_app(other))
+    r2 = c2.get(f"/api/datasets/{images['ipf-z'].id}/orientation/ipf")
+    assert r2.status_code == 200
+    np.testing.assert_allclose(np.frombuffer(r2.content, np.float32), np.frombuffer(r.content, np.float32), atol=1e-5)
+    # Deleted with its images.
+    assert client.delete(f"/api/datasets/{omap.id}").status_code == 200
+    assert not any(d.parent_id == omap.id for d in session.datasets.values())
+
+
+def test_the_map_at_positions_is_what_matching_there_gives(tmp_path):
+    """The tutorial's markers from the orientation map (``orientation/at``):
+    at each position the map's best template, as matching there gives it."""
+    from test_4dstem import _write_emdfile
+
+    ag = phase_from_cif(AG, "Ag")
+    K, scale = 96, 0.025
+    t = orientation.zone_template(ag, [1, 0, 1], orientation.TemplateOptions(precession_angle=1, max_excitation_error=0.02))
+    yy, xx = np.mgrid[0:K, 0:K] + 0.5
+
+    def pattern(turn):
+        c, s = np.cos(np.radians(turn)), np.sin(np.radians(turn))
+        img = np.zeros((K, K), np.float32)
+        for x, y, i in zip(t["x"], t["y"], t["intensity"]):
+            px, py = K / 2 + (c * x - s * y) / scale, K / 2 + (s * x + c * y) / scale
+            img += i * np.exp(-((xx - px) ** 2 + (yy - py) ** 2) / 2)
+        return img
+
+    cube = np.stack([np.stack([pattern(0), pattern(30)])] * 2).astype(np.float32)
+    _write_emdfile(tmp_path / "ag.h5", cube, q=(scale, "A^-1"), extra_2d=False)
+    (tmp_path / "Ag.cif").write_text(AG)
+    client = TestClient(create_app())
+    session = client.app.state.session
+    cube_id, ag_id = (client.post("/api/files", json={"path": str(tmp_path / n)}).json()["datasets"][0]["id"]
+                      for n in ("ag.h5", "Ag.cif"))
+    for ax in session.get_dataset(cube_id).signal.axes_manager.signal_axes:
+        ax.offset = -K / 2 * scale
+    templates = _wait(client, client.post(f"/api/datasets/{ag_id}/templates/make", json={}).json())["result"]["id"]
+    _wait(client, client.post(f"/api/datasets/{cube_id}/4d/polar", json={}).json())
+    omap = _wait(client, client.post(f"/api/datasets/{cube_id}/4d/orientation/map",
+                                     json={"templates": templates, "options": {"frac_keep": 1}}).json())["result"]["id"]
+    at = client.post(f"/api/datasets/{omap}/orientation/at", json={"positions": [[0, 0], [1, 1]]})
+    assert at.status_code == 200, at.text
+    matched = client.post(f"/api/datasets/{cube_id}/4d/orientation/match",
+                          json={"templates": templates, "positions": [[0, 0], [1, 1]]}).json()["matches"]
+    for a, m in zip(at.json()["matches"], matched):
+        assert (a["x"], a["y"]) == (m["x"], m["y"])
+        assert a["best"]["index"] == m["best"]["index"] and abs(a["best"]["rotation"] - m["best"]["rotation"]) < 1e-6
+        np.testing.assert_allclose(a["vectors"]["x"], m["vectors"]["x"], atol=1e-5)
+        assert a["vectors"]["hkl"] == m["vectors"]["hkl"] and a["best"]["view"] == m["best"]["view"]
+    assert client.post(f"/api/datasets/{omap}/orientation/at", json={"positions": [[5, 0]]}).status_code == 422
+    assert client.post(f"/api/datasets/{cube_id}/orientation/at", json={"positions": [[0, 0]]}).status_code == 400

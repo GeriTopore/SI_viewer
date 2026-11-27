@@ -77,6 +77,9 @@ export function kindLabel(d: DatasetSummary): string {
   if (d.structure) return "Structure";
   if (d.origin === "templates") return "Templates";
   if (d.signal_type === "polar_diffraction") return "Polar";
+  if (d.orientation?.output === "map") return "Orient";
+  if (d.orientation?.output === "correlation") return "Corr";
+  if (d.orientation?.output === "ipf") return "IPF";
   if (d.origin === "disks") return "Bragg";
   if (d.origin === "bragg-map") return "BVM";
   if (d.origin === "beam-shift") return "Shift";

@@ -25,20 +25,21 @@ stacks, in-situ series and 4D-STEM.
 | Folder | Branch | State |
 |---|---|---|
 | `/Users/gt622/Documents/Dev/SI_viewer` | `abtem-plugin` (43ae9c9) | The abTEM plugin's work, separate. Holds `.claude/launch.json` and `examples/` (git-ignored). |
-| `/Users/gt622/Documents/Dev/SI_viewer-4dstem` | `4dstem` | **Current work.** Everything committed and pushed (the phase map and the Match tab's "All matches" list are the last commit). |
-| `/Users/gt622/Documents/Dev/SI_viewer-remote` | `remote` (a773a1d, pushed, clean) | `si-viewer remote HOST` (SSH launcher, token auth, install). |
+| `/Users/gt622/Documents/Dev/SI_viewer-4dstem` | `4dstem` | **Current work.** Everything committed; at `main` (merged in). |
+| `/Users/gt622/Documents/Dev/SI_viewer-remote` | `remote` (a773a1d, pushed, clean; merged into `main`) | `si-viewer remote HOST` (SSH launcher, token auth, install). |
 
-- `main` and `origin/main` are at `d652fa6`, the merge of the remote work and
-  4D-STEM's COM and calibration changes.
-- Since `d652fa6`, `4dstem` and `remote` have moved apart:
-  - `4dstem` has the orientation work (`780b69d`, `f7b2d37`, `3f2513c`,
-    `590b050`, then the phase map).
-  - `remote` has one fix: a server deletes the session files of servers no
-    longer running.
-- Merge them when the user asks.
+- `main` (`origin/main` at `9140982`) holds everything: `4dstem` (the
+  orientation and phase mapping work) fast-forwarded, then `remote` (a
+  server deletes the session files of servers no longer running) merged.
+  The full suite passed on it (465 passed, 141 skipped).
+- `4dstem` was then moved up to `main`; `remote` hasn't been (merge `main`
+  into it before more remote work).
 
-`frontend/node_modules` in the 4dstem and remote worktrees is a symlink to the
-main checkout's. Never commit it, `.claude/` or `examples/`.
+`frontend/node_modules`: the 4dstem worktree has its own (with three.js,
+needed by the Structure view); the remote worktree's is a symlink to the main
+checkout's, which lacks three.js, so the current frontend builds only with the
+4dstem one (link it for a temporary checkout). Never commit `node_modules`,
+`.claude/` or `examples/`.
 
 ## Run, build, test (4dstem worktree)
 

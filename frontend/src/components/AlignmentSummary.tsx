@@ -59,7 +59,7 @@ export function AlignmentSummary({ ds, calX }: { ds: DatasetSummary; calX: AxisC
           <button onClick={() => downloadUrl(alignmentShiftsUrl(ds.id))}>Shifts (CSV)</button>
           <button
             onClick={() => downloadUrl(alignmentNpyUrl(ds.id))}
-            title="(frames, 2): the x and y shift that aligns each frame, in this stack's pixels; NaN for frames left out"
+            title="(frames, 2) shifts in this stack's pixels; NaN: frame left out"
           >
             Shifts (.npy)
           </button>

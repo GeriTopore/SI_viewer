@@ -130,12 +130,12 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
   const addItems: MenuItem[] = [
     {
       label: "Circle",
-      title: "A disc (e.g. bright field); ⌘/Ctrl-click the pattern for more",
+      title: "A disc; ⌘/Ctrl-click the pattern for more",
       onSelect: () => add((gs) => [newGroup(gs, circleDetector(w, h))]),
     },
     // Every shape starts centred on the pattern.
     ...SHAPES.map((s) => ({ label: s.label, title: s.title, onSelect: () => add((gs) => [newGroup(gs, defaultDetector(w, h, s.id))]) })),
-    { label: "Aperture array", title: "Apertures at O + i g1 + j g2: drag O, g1 and g2 on the pattern", onSelect: () => void addArray() },
+    { label: "Aperture array", title: "Apertures on a lattice: drag O, g1 and g2", onSelect: () => void addArray() },
     {
       label: "From the disks",
       title: vectorsDs ? "An aperture on each disk found at the cursor shown" : NO_VECTORS,
@@ -185,7 +185,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
               const ok = mergeable(g.detector) && mergeable(o.detector);
               return {
                 label: o.name, color: o.color, indent: true, disabled: !ok,
-                title: ok ? `${g.name}'s apertures join ${o.name}'s (each keeps its size); ${g.name} goes` : MERGE_ONLY,
+                title: ok ? `${g.name}'s apertures join ${o.name}'s; ${g.name} goes` : MERGE_ONLY,
                 onSelect: () => merge(g.id, o.id),
               };
             }),
@@ -273,7 +273,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
       case "apertures":
         return [sizeControl(
           "Radius",
-          ddf ? "Every aperture's radius: the match tolerance of the digital dark field" : "Every circle's radius (merged ones too)",
+          ddf ? "Every aperture's radius (the match tolerance)" : "Every circle's radius",
           // One circle (no array) as a disc; several, as apertures on disks.
           det.r, placed <= 1 && !det.lattice ? discMax : apertureMax, (r) => setDetector(sizeApertures(det, Math.max(0.5, r))),
         )];
@@ -368,7 +368,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
               if (at === "merge") merge(id, g.id);
               else reorder(id, g.id, at === "after");
             }}
-            title="Click to edit; double-click the name to rename; drag to reorder, or onto another circle or array group to merge; right-click for more"
+            title="Double-click to rename; drag to reorder or merge"
           >
             <button
               className="layer-eye"
@@ -448,7 +448,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
             label: "Bragg vectors",
             disabled: !vectorsDs,
             title: vectorsDs
-              ? "Digital dark field: the disks found inside the detector, centred per position while the descan is corrected; an aperture's radius is the match tolerance"
+              ? "Digital dark field: the disks found inside the detector"
               : `Digital dark field: ${NO_VECTORS}`,
           },
         ], ddf ? "vectors" : "pixels", (v) => patchGroup(group.id, { source: v }))}
@@ -494,7 +494,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
             className="secondary"
             onClick={() => redoDisks(disks)}
             disabled={finding || !vectorsDs}
-            title={vectorsDs ? "Place them again on the disks at the cursor shown (or the last one used)" : NO_VECTORS}
+            title={vectorsDs ? "Place them again on the disks at the cursor shown" : NO_VECTORS}
           >
             {finding ? "Finding…" : "At the cursor"}
           </button>
@@ -502,7 +502,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
       )}
       {det.shape === "apertures" && (
         <div className="virtual-row">
-          <button className="secondary" onClick={bfRadius} title="Size the circles as the bright-field disk of the mean pattern">
+          <button className="secondary" onClick={bfRadius} title="Size the circles as the bright-field disk">
             BF radius
           </button>
           {placed > 1 && (
@@ -544,7 +544,7 @@ export function VirtualImageSection({ d }: { d: DatasetSummary }) {
           className="primary"
           onClick={() => void saveGroups([group])}
           disabled={saving}
-          title={`Keep ${group.name}'s virtual image as an image dataset under the 4D-STEM data`}
+          title={`Keep ${group.name}'s virtual image as a dataset`}
         >
           {saving ? "Saving…" : "Save image"}
         </button>

@@ -4,12 +4,12 @@ import { jobRunning, templateOptionsOf, useOrientation } from "../state/orientat
 type NumberKey = Exclude<keyof TemplateOptions, "zone_axes">;
 
 const FIELDS: { key: NumberKey; label: string; title: string; min: number; max: number; step: number }[] = [
-  { key: "kv", label: "Voltage (kV)", title: "Accelerating voltage (diffsims SimulationGenerator)", min: 1, max: 1000, step: 10 },
+  { key: "kv", label: "Voltage (kV)", title: "Accelerating voltage", min: 1, max: 1000, step: 10 },
   { key: "precession_angle", label: "Precession (°)", title: "Precession angle; 0: none", min: 0, max: 5, step: 0.5 },
   { key: "minimum_intensity", label: "Minimum intensity", title: "Reflections weaker than this are left out", min: 0, max: 1, step: 1e-5 },
-  { key: "resolution", label: "Resolution (°)", title: "Angular step of the orientations over the reduced fundamental zone (orix get_sample_reduced_fundamental)", min: 0.1, max: 10, step: 0.5 },
+  { key: "resolution", label: "Resolution (°)", title: "Angular step between orientations", min: 0.1, max: 10, step: 0.5 },
   { key: "reciprocal_radius", label: "Reciprocal radius (1/Å)", title: "Largest reflection simulated", min: 0.05, max: 10, step: 0.1 },
-  { key: "max_excitation_error", label: "Excitation error (1/Å)", title: "Largest excitation error s of a reflection (relrod length)", min: 0.0001, max: 1, step: 0.001 },
+  { key: "max_excitation_error", label: "Excitation error (1/Å)", title: "Largest excitation error of a reflection", min: 0.0001, max: 1, step: 0.001 },
 ];
 
 /** A Structure's templates (diffsims) over orix's orientations, optionally
@@ -59,7 +59,7 @@ export function TemplatesSection({ d }: { d: DatasetSummary }) {
         </div>
       ))}
       <button className="link-button" onClick={() => setZones([...o.zone_axes, { uvw: [1, 0, 1], angle: 5 }])}
-        title="Only the orientations within an angle of a zone axis (none: all of them)">
+        title="Only orientations near a zone axis; none: all">
         + Zone axis
       </button>
       {error && <p className="field-error">{error}</p>}
@@ -77,7 +77,7 @@ export function TemplatesSection({ d }: { d: DatasetSummary }) {
         <div className="process-actions">
           <button className="primary" disabled={o.zone_axes.some((z) => z.uvw.every((x) => x === 0))}
             onClick={() => void makeTemplates(d.id, o)}
-            title="Simulate the templates (diffsims): a new Templates object under the Structure">
+            title="Simulate the templates">
             Make templates
           </button>
         </div>

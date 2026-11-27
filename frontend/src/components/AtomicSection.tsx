@@ -107,7 +107,7 @@ export function AtomicSection({ d }: { d: DatasetSummary }) {
         </table>
       )}
       <div className="segmented process-choice" role="group" aria-label="Refinement">
-        {([["gauss", "Gaussian", "2D Gaussian fits (kemstem refine_peaks_gf)"], ["com", "Centre of mass", "Iterated centre of mass (kemstem refine_peaks_com)"]] as const).map(([id, label, tip]) => (
+        {([["gauss", "Gaussian", "2D Gaussian fits"], ["com", "Centre of mass", "Iterated centre of mass"]] as const).map(([id, label, tip]) => (
           <button key={id} className={st.options.method === id ? "active" : undefined} aria-pressed={st.options.method === id} onClick={() => setOptions({ method: id })} title={tip}>
             {label}
           </button>
@@ -147,9 +147,9 @@ export function AtomicSection({ d }: { d: DatasetSummary }) {
 
 const OUTPUTS: [AtomicOutput, string, string][] = [
   ["amplitude", "Amplitude", "|filtered image|: where the lattice planes are (domains)"],
-  ["grating", "Grating", "The filtered image's real part: the lattice planes as fringes"],
+  ["grating", "Grating", "The filtered image's real part: lattice fringes"],
   ["phase", "Phase", "The planes' local phase (lock-in or GPA), 0–2π"],
-  ["strain", "Strain ε∥, ε⊥", "From the phase's gradient, along and across the peak's direction"],
+  ["strain", "Strain ε∥, ε⊥", "Phase gradient along and across the peak direction"],
 ];
 
 /** Fourier filtering round the peaks used (kemstem), and the phase and
@@ -176,11 +176,11 @@ function FourierFiltering({ d }: { d: DatasetSummary }) {
   return (
     <>
       <h4 className="process-heading">Fourier filtering</h4>
-      <label title="Gaussian round each peak (σ, FFT pixels): larger keeps finer detail, and more noise">
+      <label title="Gaussian round each peak (σ, FFT pixels)">
         <span>σ (px)</span>
         <input type="number" min={0.5} step={1} value={st.fourier.sigma} onChange={(e) => set({ sigma: Math.max(0.5, Number(e.target.value)) })} />
       </label>
-      <p className="muted small q-elements" title="Real-space coarsening radius (kemstem's coarsening_length)">
+      <p className="muted small q-elements" title="Real-space coarsening radius">
         Coarsening {formatValue(r * px.x)} {px.units}
         {px.units !== "px" && ` (${formatValue(r)} px)`}
       </p>
@@ -202,14 +202,14 @@ function FourierFiltering({ d }: { d: DatasetSummary }) {
       {phaseNeeded && (
         <>
           <div className="segmented process-choice" role="group" aria-label="Phase">
-            {([["lockin", "Lock-in", "Phase lock-in (kemstem phaselock)"], ["gpa", "GPA", "Geometric phase (kemstem gpa)"]] as const).map(([id, label, tip]) => (
+            {([["lockin", "Lock-in", "Phase lock-in"], ["gpa", "GPA", "Geometric phase analysis"]] as const).map(([id, label, tip]) => (
               <button key={id} className={st.fourier.phase === id ? "active" : undefined} aria-pressed={st.fourier.phase === id} onClick={() => set({ phase: id })} title={tip}>
                 {label}
               </button>
             ))}
           </div>
           {st.fourier.phase === "lockin" && (
-            <label title="The lock-in's low-pass (σ, FFT pixels); empty: twice the filter's">
+            <label title="Lock-in low-pass (σ, FFT pixels); empty: twice the filter's">
               <span>Lock-in σ (px)</span>
               <input
                 type="number"
@@ -222,7 +222,7 @@ function FourierFiltering({ d }: { d: DatasetSummary }) {
             </label>
           )}
           {(st.outputs.includes("strain") || tensor) && (
-            <label title="Strains beyond ±this are replaced by their median-filtered surroundings; empty: kept">
+            <label title="Strains beyond ±this are median-filtered; empty: kept">
               <span>Outlier limit |ε|</span>
               <input
                 type="number"

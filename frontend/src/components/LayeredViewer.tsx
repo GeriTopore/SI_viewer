@@ -49,7 +49,7 @@ import { stretch } from "../views/si/scan";
 
 /** Tooltip of the FFT box tool (the image views' and the navigator's). */
 export const FFT_TOOL_TITLE =
-  "FFT region: drag to draw a square (its FFT shows in the FFT panel), drag a corner or the inside to change it, Delete removes it";
+  "FFT region: drag to draw a square, Delete removes it";
 
 /** Drag-and-drop type for datasets dragged from the sidebar. */
 export const DATASET_MIME = "application/x-si-viewer-dataset";
@@ -130,7 +130,7 @@ interface Props {
   /** In focus mode's navigator flap: a menu in the image area's top-left
    * corner (e.g. which navigator is shown), fixed there whatever the zoom. */
   focusCorner?: ReactNode;
-  /** Maps can be overlaid here (drop target and hint); default true. */
+  /** Maps can be overlaid here (a drop target); default true. */
   overlays?: boolean;
   /** Several images can be shown merged or as a grid; the choice is
    * remembered per kind of view. Without it they are always merged. */
@@ -202,11 +202,11 @@ export const BASE_LAYER = BASE;
 
 const TOOL_LABELS = { line: "╱", fft: "FFT", rect: "▭", ellipse: "◯", polygon: "⬠" } as const;
 const TOOL_TITLES = {
-  line: "Line profile: drag to draw (Shift snaps the angle), drag ends or the line to change it, Delete removes it",
+  line: "Line profile: drag to draw, Shift snaps the angle",
   fft: FFT_TOOL_TITLE,
-  rect: "Rectangle region: drag to draw, drag inside to move; right-click it to crop",
-  ellipse: "Ellipse region: drag to draw, drag inside to move",
-  polygon: "Polygon region: click vertices; click the first, double-click or Enter to close",
+  rect: "Rectangle region: drag to draw, right-click to crop",
+  ellipse: "Ellipse region: drag to draw",
+  polygon: "Polygon region: click vertices, Enter to close",
 } as const;
 
 /** The viewer's image tools (line, FFT box, rectangle, ellipse, polygon):
@@ -492,7 +492,7 @@ export function LayeredViewer({
       ...(r.shape.kind === "rect" && target
         ? [{
             label: `Crop ${target.title} to ${r.name}`,
-            title: "A new dataset of the pixels in this rectangle (a stack: every frame)",
+            title: "A new dataset of the pixels in this rectangle",
             onSelect: () => void cropDataset(target, { region: shapeToRegion(r.shape) }),
           }]
         : []),
@@ -897,7 +897,6 @@ export function LayeredViewer({
               )}
               analysisKey={activeLayer && isItem(activeLayer.key) ? (itemImage(activeLayer.key) ?? undefined) : activeLayer?.key}
               scanFactor={scanFactor}
-              hint={showPanel || !overlays ? undefined : "click or drag maps to overlay them"}
             >
               {children}
             </ImageView>

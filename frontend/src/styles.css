@@ -1533,6 +1533,8 @@ button.primary:disabled {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
+  /* Empty until something is hovered: keep the line. */
+  min-height: 18px;
 }
 
 .readout-pos {

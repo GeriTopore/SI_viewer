@@ -378,7 +378,7 @@ export function StructureScene({ d, onOrientation, initial, matched }: {
           ⟳
         </button>
         {matched !== undefined && (
-          <label className="field" title="Turn the structure as matched at the active cursor (Match current position)">
+          <label className="field" title="Turn the structure as matched at the active cursor">
             <input type="checkbox" checked={followMatch} onChange={(e) => useOrientation.getState().setFollowMatch(e.target.checked)} />
             Match orientation
           </label>
@@ -420,7 +420,7 @@ export function StructureScene({ d, onOrientation, initial, matched }: {
           Bonds
         </label>
         {showBonds && (
-          <label className="field" title="Bonded when closer than this × the sum of the covalent radii">
+          <label className="field" title="Bond atoms closer than this × the covalent radii">
             ×
             <input
               className="cell-input"
@@ -436,9 +436,6 @@ export function StructureScene({ d, onOrientation, initial, matched }: {
         )}
         {repeatError && <span className="structure3d-zone-error" role="alert">{repeatError}</span>}
         <span className="spacer" />
-        <span className="muted">
-          {`${atoms.xyz.length.toLocaleString()} atoms${showBonds ? ` · ${bonds.length.toLocaleString()} bonds` : ""}`}
-        </span>
         <button title="Save the view as PNG, with a transparent background" onClick={savePng}>Save PNG</button>
       </div>
       <div className="structure3d-canvas" ref={canvasRef}>

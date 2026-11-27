@@ -118,7 +118,9 @@ export function MatchPanel({ templatesId, cursors, activeId, at, busy, error, ma
           </table>
           {m?.ranked && m.ranked.length > 0 && (
             <details className="match-ranked">
-              <summary className="small muted">All matches at ({active.x}, {active.y}) · {m.ranked.length}</summary>
+              <summary className="small muted">
+                All matches at <span className="match-dot" style={{ background: active.color }} /> ({active.x}, {active.y}) · {m.ranked.length}
+              </summary>
               <div className="match-ranked-scroll">
                 <table className="axes match-table">
                   <thead>

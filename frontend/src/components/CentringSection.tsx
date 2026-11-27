@@ -54,7 +54,7 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
         ], beam.method, (v) => setBeam(d.id, { method: v }))}
       </div>
       {beam.method === "center_of_mass" ? (
-        <label title="Intensities below this × the pattern's mean are left out (diffuse scattering)">
+        <label title="Ignore intensities below this × the mean">
           <span>Threshold (× mean)</span>
           <input type="number" min={0} step={0.5} value={beam.threshold}
             onChange={(e) => e.target.value !== "" && setBeam(d.id, { threshold: Math.max(0, Number(e.target.value)) })} />
@@ -66,14 +66,14 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
             onChange={(e) => e.target.value !== "" && setBeam(d.id, { sigma: Math.max(0.5, Number(e.target.value)) })} />
         </label>
       )}
-      <label title="Half the side of the square searched around the bright-field disk of the mean pattern; empty: 3 × its radius">
+      <label title="Half the side of the search square; empty: 3 × the disk radius">
         <span>Search (± px)</span>
         <input type="number" min={2} step={1} placeholder="3 r" value={beam.half_width ?? ""}
           onChange={(e) => setBeam(d.id, { half_width: e.target.value === "" ? null : Math.max(2, Math.round(Number(e.target.value))) })} />
       </label>
       <div className="process-actions">
         <button className={found ? "secondary" : "primary"} disabled={running} onClick={() => void find(d.id)}
-          title="Find the beam in every pattern: Beam shift x and y join the dataset pane, the beam is marked on the pattern">
+          title="Find the beam in every pattern">
           {found ? "Find again" : "Find the beam"}
         </button>
       </div>
@@ -88,7 +88,7 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
         {segmented("Descan", [
           { id: "none", label: "Each pattern", title: "Every pattern centred on its own beam" },
           { id: "plane", label: "Plane", title: "A linear plane fitted to the beam over the whole scan" },
-          { id: "corners", label: "Corners", title: "A linear plane fitted to the scan's corners only (when the middle deflects the beam)" },
+          { id: "corners", label: "Corners", title: "A plane fitted to the scan's corners only" },
         ], plane.mode, (v) => setPlane(d.id, { mode: v }))}
       </div>
       {plane.mode === "corners" && (
@@ -119,7 +119,7 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
       ) : (
         <div className="process-actions">
           <button className="primary" disabled={!current} onClick={() => void centre(d.id, inPlace)}
-            title="Shift every pattern (sub-pixel) so the beam is at its centre; the pattern axes then start from 0 there">
+            title="Shift every pattern so the beam is at its centre">
             Centre the patterns
           </button>
         </div>

@@ -46,7 +46,7 @@ function DecomposeControls({ d }: { d: DatasetSummary }) {
   const invalid = options.lo !== null && options.hi !== null && options.hi <= options.lo ? "The window needs a start below its end." : null;
   return (
     <section className="q-form">
-      <label title="HyperSpy's decomposition algorithm">
+      <label title="Decomposition algorithm">
         <span>Algorithm</span>
         <select
           value={options.algorithm}
@@ -94,7 +94,7 @@ function DecomposeControls({ d }: { d: DatasetSummary }) {
       </label>
       <label
         className="q-check"
-        title="Decompose each spectrum normalised as in Normalisation (also the plot's Normalised checkbox); denoised spectra are put back on their own scale"
+        title="Decompose the normalised spectra"
       >
         <input
           type="checkbox"

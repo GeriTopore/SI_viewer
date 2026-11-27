@@ -86,7 +86,7 @@ export function InsituAlignSection({ d }: { d: DatasetSummary }) {
             aria-pressed={source === "npy"}
             disabled={summing}
             onClick={() => setSource("npy")}
-            title="Shifts from a .npy file: (frames, 2), the x and y shift that aligns each frame; NaN leaves a frame out"
+            title="Shifts from a .npy file, (frames, 2); NaN leaves a frame out"
           >
             Import .npy
           </button>
@@ -151,7 +151,7 @@ export function InsituAlignSection({ d }: { d: DatasetSummary }) {
           className="primary"
           disabled={!check || running}
           onClick={() => choice && useInsitu.getState().alignedSum(d.id, choice)}
-          title="Shift every frame into register and add them up (a sum, for the counts): a new spectrum image"
+          title="Align and sum the frames into a new spectrum image"
         >
           Align and sum
         </button>

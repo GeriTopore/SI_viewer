@@ -44,8 +44,8 @@ const deleteTitle = (d: DatasetSummary) =>
     : d.origin === "fitted" || d.origin === "curve-fit" || isWindowMap(d) || isThickness(d) || isZlpShift(d)
       ? "Delete this map"
       : d.is_element_map
-      ? `Delete this map (also unticks ${elementOf(d)} in the periodic table)` +
-        (d.origin === "file" ? ". The file on disk is not changed." : "")
+      ? `Delete this map (unticks ${elementOf(d)})` +
+        (d.origin === "file" ? "; the file on disk is unchanged" : "")
       : "Delete (and what was made from it)";
 
 export function DatasetList() {

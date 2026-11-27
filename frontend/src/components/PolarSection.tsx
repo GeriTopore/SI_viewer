@@ -37,7 +37,7 @@ export function PolarSection({ d }: { d: DatasetSummary }) {
         </label>
       ))}
       {d.calibration?.ring && (
-        <label className="q-check-line small" title="The ring made circular with the calibration's ellipse (pyxem's affine)">
+        <label className="q-check-line small" title="Make the ring circular using the calibrated ellipse">
           <input type="checkbox" checked={polar.ellipse} onChange={(e) => setPolar(d.id, { ellipse: e.target.checked })} />
           Correct the ellipticity
         </label>
@@ -61,7 +61,7 @@ export function PolarSection({ d }: { d: DatasetSummary }) {
       ) : (
         <div className="process-actions">
           <button className="primary" disabled={!calibrated} onClick={() => void transform(d.id, polar, inPlace)}
-            title="Transform every pattern to radius × azimuth (pyxem)">
+            title="Transform every pattern to radius × azimuth">
             Transform
           </button>
         </div>

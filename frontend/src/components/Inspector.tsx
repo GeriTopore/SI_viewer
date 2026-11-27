@@ -115,7 +115,7 @@ export function Inspector() {
         {filterLabel(d.filters) && (
           <>
             <dt>Filtered</dt>
-            <dd title="Applied when the data is shown (Process tab); the loaded data is unchanged">
+            <dd title="Applied when shown; the loaded data is unchanged">
               {filterLabel(d.filters)}
             </dd>
           </>
@@ -153,7 +153,7 @@ function MicroscopeRow({ d }: { d: DatasetSummary }) {
           {v(m.beam_energy)} kV · α {v(m.convergence_angle)} · β {v(m.collection_angle)} mrad
         </span>
       )}
-      <button className="link-button" onClick={() => setEditing(true)} title="Set the beam energy and the convergence and collection angles">
+      <button className="link-button" onClick={() => setEditing(true)} title="Set beam energy, convergence and collection angles">
         Edit…
       </button>
       {editing && <MicroscopeDialog d={d} onClose={() => setEditing(false)} />}

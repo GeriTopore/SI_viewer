@@ -749,7 +749,6 @@ export function SpectrumPlot({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [placing, onPlace]);
-  const hasBands = windows.some((w) => w.kind === "background" || w.kind === "signal");
 
   // Esc deselects the window.
   useEffect(() => {
@@ -828,7 +827,7 @@ export function SpectrumPlot({
           </button>
         </div>
         {onWindow && (
-          <label className="field" title="Show the energy windows on the plot (Shift-drag makes a new one)">
+          <label className="field" title="Show the energy windows (Shift-drag: new window)">
             <input type="checkbox" checked={showWindows} onChange={(e) => setShowWindows(e.target.checked)} />
             Windows
           </label>
@@ -850,7 +849,7 @@ export function SpectrumPlot({
         <button
           className="secondary small-button"
           onClick={resetZoom}
-          title="Full energy range and automatic counts range (or double-click the plot)"
+          title="Reset to the full range (or double-click the plot)"
         >
           Reset zoom
         </button>
@@ -928,21 +927,7 @@ export function SpectrumPlot({
                 </span>
               ))}
             </>
-          ) : (
-            <span className="muted">
-              {x.length} channels · {formatValue(x[0] ?? 0)}–{formatValue(x[x.length - 1] ?? 0)} {xUnits}
-              {" · drag to zoom"}
-              {onWindow && " · Shift-drag for a new energy window"}
-              {" · drag an axis to zoom it, Shift-drag to pan"}
-              {onWindow && showWindows && selectedId && " · drag a window's edges or inside to edit, or click its numbers to type them · right-click a window for more · Esc"}
-              {hasBands && (() => {
-                const bands = windows.filter((w) => w.kind === "background" || w.kind === "signal");
-                const inside = bands.some((w) => !w.edgesOnly);
-                return ` · drag the ${bands.map((w) => w.label).join(" and ")} band${bands.length > 1 ? "s'" : "'s"} edges${inside ? " or inside" : ""} to change ${bands.length > 1 ? "them" : "it"}`;
-              })()}
-              {onMarkerClick && markers.length > 0 && " · click a line label to map it"}
-            </span>
-          )}
+          ) : null}
         </span>
       </div>
       {menu}

@@ -196,7 +196,7 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
         )}
         <label
           className="q-check"
-          title="Fit the background components (PowerLaw, Exponential, Polynomial, Offset) over a window alone, e.g. the pre-edge, then keep them fixed while the rest are fitted"
+          title="Fit the background in its own window first"
         >
           <input
             type="checkbox"
@@ -211,7 +211,7 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
           Background window
         </label>
         {st.bgOn && st.bgLo !== null && st.bgHi !== null && (
-          <label title="The window the background is fitted over (drag the hatched band on the spectrum)">
+          <label title="Window the background is fitted over">
             <span>
               <i className="bg-swatch" style={{ background: CURVE_BG_COLOUR }} />
               Window
@@ -224,7 +224,7 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
             </span>
           </label>
         )}
-        <label title="Add one of HyperSpy's components (peaks are placed with a click; the others start from their estimate)">
+        <label title="Add a component; peaks are placed by clicking the spectrum">
           <span>Add</span>
           <select
             value=""
@@ -269,7 +269,7 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
           <div
             className="section-header curve-component-header"
             onClick={() => patch(ds, { selected: c.name === st.selected ? null : c.name })}
-            title="Click to select (its handles show on the spectrum); double-click the name to rename"
+            title="Click to select; double-click the name to rename"
           >
             <span className="curve-component-title">
               <input
@@ -344,7 +344,7 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
                 <th>Name</th>
                 <th>Value</th>
                 <th>±</th>
-                <th title="Free: fitted; Limit: fitted within Min–Max (shown on the spectrum when the row is selected); Fixed: kept as it is">Fit</th>
+                <th title="Free: fitted; Limit: fitted within Min–Max; Fixed: kept">Fit</th>
                 <th>Min</th>
                 <th>Max</th>
               </tr>
@@ -414,7 +414,7 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
                           <TextCell
                             value={p.twin.expr}
                             label={`${name}: formula of x`}
-                            title="A formula of x, the value it follows, e.g. x + 5.4 or 0.5*x (x alone: the same value)"
+                            title="Formula of x, the value it follows (x alone: the same)"
                             onCommit={(expr) => setTwin(ds, c.name, name, { expr: expr || "x" })}
                           />
                           <span className="muted" title="x is the value of">x:</span>
@@ -456,7 +456,7 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
           className="primary"
           disabled={!source || !st.components.length || st.busy}
           onClick={() => source && void fitModel(ds, source)}
-          title="Fit the free parameters (HyperSpy's default optimizer; bounded where a limit is set)"
+          title="Fit the free parameters, within any limits"
         >
           {st.busy ? "Fitting…" : "Fit"}
         </button>
@@ -497,13 +497,13 @@ export function CurveFitPanel({ ds }: { ds: DatasetSummary }) {
               className="secondary"
               disabled={!source || !st.components.length || st.busy}
               onClick={() => source && void startPixelFits(ds, source)}
-              title="Fit the model at every pixel, each starting from these values (amplitudes divided by the pixels of the spectrum they were set on): a map of each parameter that isn't fixed, and of the reduced χ²"
+              title="Fit every pixel: a map of each free parameter and χ²"
             >
               {ds.curve_pixel_fit ? "Fit every pixel again" : "Fit every pixel"}
             </button>
           )}
           {ds.curve_pixel_fit && !running && (
-            <label className="q-check" title="The cursor spectrum shows the fit of its pixel instead of the model being edited">
+            <label className="q-check" title="The cursor spectrum shows the fit of its pixel">
               <input
                 type="checkbox"
                 checked={st.showPixel}

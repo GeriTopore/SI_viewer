@@ -136,27 +136,27 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
           { id: "mean", label: "Mean", title: "The mean over the scan: rings (polycrystals, amorphous)" },
           {
             id: "bvm", label: "BVM", disabled: !hasVectors,
-            title: hasVectors ? "The Bragg vector map, each position moved by its origin: the sharpest rings" : "Find the disks first (Disk detection)",
+            title: hasVectors ? "Bragg vector map, each position moved by its origin" : "Find the disks first (Disk detection)",
           },
         ], search.source, (v) => setSearch(d.id, { ...search, source: v }))}
       </div>
       {search.source === "bvm" && (
         <div className="virtual-row">
           {segmented("Origin", [
-            { id: "beam", label: "Beam", title: "Each position's beam found by Fix descan (step 1), descan plane", disabled: !beamFound },
+            { id: "beam", label: "Beam", title: "Beam found by Fix descan (step 1), descan plane", disabled: !beamFound },
             { id: "direct", label: "Direct beam", title: "Each position's own direct-beam disk, descan plane" },
           ], origin, (v) => setSearch(d.id, { ...search, origin: v }))}
         </div>
       )}
-      {num("Inner radius (px)", "The annulus searched for the ring, from the bright-field disk's centre", search.r_min, (v) => setSearch(d.id, { ...search, r_min: v }))}
+      {num("Inner radius (px)", "Inner edge of the annulus searched for the ring", search.r_min, (v) => setSearch(d.id, { ...search, r_min: v }))}
       {num("Outer radius (px)", "The annulus searched for the ring", search.r_max, (v) => setSearch(d.id, { ...search, r_max: v }))}
       <div className="process-actions">
         <button className={ring ? "secondary" : "primary"} disabled={!!busy} onClick={() => void fit()}
-          title="Fit the ring in the annulus as an ellipse: its centre, radius and ellipticity, drawn on the pattern">
+          title="Fit the ring as an ellipse, drawn on the pattern">
           {busy === "fit" ? "Fitting…" : ring ? "Fit again" : "Fit ring"}
         </button>
         <button className={ellipseKept ? "secondary" : "primary"} disabled={!ring || !!busy || ellipseKept} onClick={() => void setEllipse()}
-          title="Keep the ellipse: the Bragg vectors made circular (before the rotation and pixel size)">
+          title="Keep the ellipse: makes the Bragg vectors circular">
           {busy === "ellipse" ? "Setting…" : ellipseKept ? "Set" : "Set ellipse"}
         </button>
       </div>
@@ -226,7 +226,7 @@ export function CalibrationSection({ d }: { d: DatasetSummary }) {
       {error && <p className="field-error">{error}</p>}
       <div className="process-actions">
         <button className="primary" disabled={!scale || !!busy} onClick={() => void apply()}
-          title="Set the pattern axes' scale (and 0 at the ring's centre); the data isn't resampled">
+          title="Set the pattern axes' scale; the data isn't resampled">
           {busy === "apply" ? "Calibrating…" : "Calibrate"}
         </button>
       </div>
@@ -295,7 +295,7 @@ function OriginStep({ d, hasVectors, beamFound }: { d: DatasetSummary; hasVector
       )}
       <div className="process-actions">
         <button className={made ? "secondary" : "primary"} disabled={!can || busy} onClick={() => void measure()}
-          title="Measure (and fit) the origin per scan position: Origin x / y maps join the dataset pane; applied to the Bragg vectors">
+          title="Measure the origin at each scan position">
           {busy ? "Measuring…" : made ? "Measure again" : "Measure origin"}
         </button>
       </div>
@@ -361,7 +361,7 @@ function RotationStep({ d }: { d: DatasetSummary }) {
   return (
     <>
       <h4 className="process-heading">Step 3 · QR rotation{done(!!made)}</h4>
-      <label title="The rotation of the pattern's axes into the scan's (degrees, counter-clockwise)">
+      <label title="Rotation of the pattern axes into the scan's (°, counter-clockwise)">
         <span>θ (°)</span>
         <input type="number" min={-360} max={360} step={0.5} value={Math.round(theta * 100) / 100}
           onChange={(e) => e.target.value !== "" && setTheta(Number(e.target.value))} />
@@ -378,11 +378,11 @@ function RotationStep({ d }: { d: DatasetSummary }) {
       {error && <p className="field-error">{error}</p>}
       <div className="process-actions">
         <button className="secondary" disabled={!measured || !!busy} onClick={() => void find()}
-          title={measured ? "The rotation and mirror leaving the least curl in the deflection: each origin less the descan plane (step 1)" : "Measure the origin first (step 1)"}>
+          title={measured ? "The rotation and mirror leaving the least curl" : "Measure the origin first (step 1)"}>
           {busy === "find" ? "Finding…" : "Find"}
         </button>
         <button className={kept ? "secondary" : "primary"} disabled={!!busy || kept} onClick={() => void keep()}
-          title="Keep θ and the mirror as the QR rotation: the Bragg vectors turned into the scan's frame">
+          title="Keep θ and the mirror as the QR rotation">
           {busy === "set" ? "Setting…" : kept ? "Set" : "Set rotation"}
         </button>
       </div>

@@ -56,7 +56,7 @@ export function VectorMagnitudesSection({ d, vectors }: { d: DatasetSummary; vec
 
   return (
     <section className="q-form virtual-form">
-      <label title="Mark its reflections (diffsims' powder pattern) on the histogram">
+      <label title="Mark its reflections on the histogram">
         <span>Structure</span>
         <select value={chosen} onChange={(e) => setStructure(e.target.value)}>
           <option value="">None</option>
@@ -158,7 +158,7 @@ export function VectorMaskSection({ d }: { d: DatasetSummary }) {
   const running = !!job && ACTIVE.has(job.status);
   return (
     <section className="q-form virtual-form">
-      <label title="Each vector's disc (pattern px): kept, the rest of the pattern set to 0">
+      <label title="Radius of each vector's disc (px); the rest is set to 0">
         <span>Disc radius (px)</span>
         <input
           type="number" min={0.5} max={100} step={0.1} value={radius}

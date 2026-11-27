@@ -118,7 +118,7 @@ export function ThicknessSection({ d }: { d: DatasetSummary }) {
   return (
     <section className="q-form">
       {!ll && <p className="muted small q-elements">No low loss in its group</p>}
-      <label className="q-check" title="Draw the zero-loss threshold on the low-loss spectrum; drag it to set a fixed one">
+      <label className="q-check" title="Show the zero-loss threshold; drag it to fix it">
         <input
           type="checkbox"
           checked={st.on}

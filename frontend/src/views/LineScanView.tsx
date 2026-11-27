@@ -240,7 +240,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
           key={roi.id}
           className={`series-chip roi-chip${roi.visible ? "" : " off"}${st.selected === roi.id ? " selected" : ""}`}
           onClick={() => patch(ds.id, { selected: roi.id })}
-          title="Click to select (drag its edges or inside on the image, Delete to remove)"
+          title="Click to select (Delete to remove)"
         >
           <input
             type="checkbox"
@@ -376,7 +376,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
                   className={log ? "active" : undefined}
                   aria-pressed={log}
                   onClick={() => setImageLog(imgDs.id, true)}
-                  title="Logarithm of the counts (zeros and negatives take the lowest value)"
+                  title="Logarithm of the counts (zeros take the lowest value)"
                 >
                   Log
                 </button>
@@ -409,7 +409,7 @@ export function LineScanView({ ds }: { ds: DatasetSummary }) {
               menuItems={[
                 {
                   label: "Exploded view",
-                  title: "The spectra as a cascade, coloured blue to red from the first row to the last",
+                  title: "The spectra as a cascade, coloured blue to red",
                   onSelect: openExploded,
                 },
               ]}

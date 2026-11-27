@@ -276,14 +276,7 @@ export function HistogramPanel({ frame: whole, label, display, regions }: {
                 ? series.map((sr, k) => `${sr.name} ${hover.counts[k]}`).join(" · ")
                 : `${hover.counts[0] ?? 0} px`}
             </>
-          ) : stats && stats.count ? (
-            <span className="muted">
-              {series.length > 1 ? `${series[0].name}: ` : ""}
-              {stats.count} px{stats.nan ? ` (+${stats.nan} not a number)` : ""} · mean {formatValue(stats.mean)} · σ{" "}
-              {formatValue(stats.std)} · median {formatValue(stats.median)} · {formatValue(stats.min)} –{" "}
-              {formatValue(stats.max)} · drag to zoom · double-click resets
-            </span>
-          ) : (
+          ) : stats && stats.count ? null : (
             <span className="muted">{!frame ? "No image" : series.length ? "No values" : "Nothing ticked"}</span>
           )}
         </div>

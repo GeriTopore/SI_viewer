@@ -113,10 +113,10 @@ export const RESPONSES: { id: Response; label: string; title: string }[] = [
   { id: "sum", label: "Sum", title: "The total intensity inside the detector" },
   { id: "mean", label: "Mean", title: "The mean intensity inside the detector" },
   { id: "max", label: "Max", title: "The brightest pixel inside the detector" },
-  { id: "com", label: "COM", title: "The centre of mass of the pixels inside the detector from the pattern's centre, as in the data (no descan or rotation), in colour: the direction round the colour wheel, the magnitude as brightness" },
-  { id: "com_x", label: "COM x", title: "The centre of mass of the pixels inside the detector along the pattern's x, from its centre, as in the data" },
-  { id: "com_y", label: "COM y", title: "The centre of mass of the pixels inside the detector along the pattern's y, from its centre, as in the data" },
-  { id: "icom", label: "iCOM", title: "The centre of mass of the pixels inside the detector, integrated (the projected potential, up to scale, once the data is centred and in the scan's frame)" },
+  { id: "com", label: "COM", title: "Centre of mass: direction as hue, size as brightness" },
+  { id: "com_x", label: "COM x", title: "Centre of mass along x" },
+  { id: "com_y", label: "COM y", title: "Centre of mass along y" },
+  { id: "icom", label: "iCOM", title: "Integrated centre of mass: the projected potential" },
 ];
 
 const TURN = 2 * Math.PI;
@@ -1571,10 +1571,20 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         .map((g) => <g key={g.id} opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1)}</g>)}
     </g>
   );
+  /** Marks of the data (spots, templates, labels) drawn only over the
+   * pattern: a nested svg its size clips them (no clip-path ids, which
+   * would clash with the magnifier's copy of the overlay). */
+  const onPattern = (t: Transform, children: ReactNode): ReactNode => {
+    const [x0, y0] = t.toScreen(0, 0);
+    const [x1, y1] = t.toScreen(patternG.width, patternG.height);
+    const x = Math.min(x0, x1), y = Math.min(y0, y1), w = Math.abs(x1 - x0), h = Math.abs(y1 - y0);
+    if (!(w > 0 && h > 0)) return null;
+    return <svg x={x} y={y} width={w} height={h} viewBox={`${x} ${y} ${w} ${h}`} overflow="hidden">{children}</svg>;
+  };
   const patternOverlay = (t: Transform, key?: string): ReactNode => {
     const id = grid && key ? key.replace(/^dp:/, "") : source;
     // The strain lattice on the Bragg vector map, without the detectors (they'd hide it).
-    if (strainShown && id === SCAN_BVM) return <>{sourceBorder(t, key)}{strainOverlay(t)}</>;
+    if (strainShown && id === SCAN_BVM) return <>{sourceBorder(t, key)}{onPattern(t, strainOverlay(t))}</>;
     // The last preview stays until the next arrives (no flicker while dragging).
     const at = strainPreviewOn && strainPreview
       ? (() => {
@@ -1582,16 +1592,18 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
           return c ? strainPreview.at[`${c.x},${c.y}`] : undefined;
         })()
       : undefined;
-    if (at) return <>{sourceBorder(t, key)}{strainAtOverlay(t, at)}</>;
+    if (at) return <>{sourceBorder(t, key)}{onPattern(t, strainAtOverlay(t, at))}</>;
     return (
       <>
         {sourceBorder(t, key)}
-        {disksOverlay(t, id)}
-        {beamOverlay(t, id)}
-        {ringOverlay(t)}
-        {zoneOverlay(t)}
-        {omapOverlay(t, id)}
-        {matchOverlay(t, id)}
+        {onPattern(t, <>
+          {disksOverlay(t, id)}
+          {beamOverlay(t, id)}
+          {ringOverlay(t)}
+          {zoneOverlay(t)}
+          {omapOverlay(t, id)}
+          {matchOverlay(t, id)}
+        </>)}
         {othersOverlay(t)}
         {detectorOverlay(t)}
       </>
@@ -1615,10 +1627,8 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   };
 
   // ---------- labels ----------
-  const scanCal = scanG.calX;
   const patCal = patternG.calX;
-  const at = (c: ScanCursor) =>
-    `(${c.x}, ${c.y}) · ${formatValue(c.x * scanCal.scale)}, ${formatValue(c.y * scanCal.scale)} ${scanCal.units}`;
+  const at = (c: ScanCursor) => `(${c.x}, ${c.y})`;
   const cursorText = `${cursors.length > 1 ? `${cursorName(activeCursor)} ` : ""}${at(activeCursor)}`;
   const patternLabel = sourceRoi
     ? `Mean pattern over ${sourceRoi.name}`
@@ -1657,13 +1667,13 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     { id: SCAN_MEAN, label: "Mean", title: "The mean pattern over the whole scan" },
     { id: SCAN_MAX, label: "Max", title: "The maximum of every pixel over the whole scan" },
     ...(hasVectors
-      ? [{ id: SCAN_BVM, label: "BVM", title: "The Bragg vector map on the pattern's pixels (centred while the descan is corrected)" }]
+      ? [{ id: SCAN_BVM, label: "BVM", title: "The Bragg vector map on the pattern's pixels" }]
       : []),
   ], source, (v) => setScan({ source: v }));
   // The image on the scan: a group's, live, or a map made from the data.
   const imagePicker = (
     <ListPicker
-      title="The image on the scan: a detector group's, live, or a map made from the data"
+      title="The image shown on the scan"
       label={shownSaved ? shownSaved.title : group.name}
       color={shownSaved ? undefined : group.color}
       items={[
@@ -1780,9 +1790,9 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   };
   const layoutSwitch = segmented("Layout", [
     { id: "single", label: "Single", title: "One virtual image and one pattern" },
-    { id: "grid", label: "Grid", title: "A virtual image per visible group, a pattern per cursor and region" },
-    { id: "merge", label: "Merge", title: "The visible groups' virtual images as one colour composite, each in its group's colour" },
-    { id: "list", label: "List", title: "A row per visible group: the pattern with its detector, and its virtual image (the wheel zooms; ⌘ + wheel or the scroll bar scrolls)" },
+    { id: "grid", label: "Grid", title: "A virtual image per group, a pattern per cursor" },
+    { id: "merge", label: "Merge", title: "The groups' images as one colour composite" },
+    { id: "list", label: "List", title: "A row per group: pattern and virtual image (⌘ + wheel scrolls)" },
   ], st.layout, setLayout);
   // Right-click a grid panel: open it in Single (the press made its group,
   // or its cursor or region, the one shown).
@@ -1837,7 +1847,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     removable: false,
     colour: disksLayer.colour ?? DISK_COLOR,
     properties: [
-      markChoice(disksStyle as MarkStyle, "A circle or \"+\" of the disk's size, or a dot at its position",
+      markChoice(disksStyle as MarkStyle, "Circle, \"+\" or dot for each disk",
         (v) => setOverlay(ds.id, "disks", { style: v }), true),
       ...(disksStyle === "dot"
         ? [{
@@ -1987,11 +1997,13 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
                       renderOverlay={(t) => (
                         <>
                           {sourceBorder(t)}
-                          {disksOverlay(t, source)}
-                          {beamOverlay(t, source)}
-                          {ringOverlay(t)}
-                          {zoneOverlay(t)}
-                          {matchOverlay(t, source)}
+                          {onPattern(t, <>
+                            {disksOverlay(t, source)}
+                            {beamOverlay(t, source)}
+                            {ringOverlay(t)}
+                            {zoneOverlay(t)}
+                            {matchOverlay(t, source)}
+                          </>)}
                           {on ? detectorOverlay(t) : detShown(g) && (
                             <g className="fourd-overlay" opacity={detOpacity(g)}>{outline(t, detectorForRequest(g.detector, patternG.width, patternG.height), g.color, 1.5)}</g>
                           )}
@@ -2056,7 +2068,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
               onChange={(e) => patch({ rowHeight: Number(e.target.value) })}
             />
           </label>
-          <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click or Delete removes one">
+          <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click removes">
             {cursorText}
           </span>
         </div>
@@ -2105,11 +2117,11 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
             <div className="stack-bar fourd-bar">
               {!grid && !merge && imagePicker}
               {merge && segmented("Combine", [
-                { id: "dominant", label: "Dominant", title: "At each pixel, only the group brightest there (for its contrast): one colour per pixel" },
+                { id: "dominant", label: "Dominant", title: "Only the brightest group at each pixel" },
                 { id: "max", label: "Max", title: "The brighter of the groups' colours, channel by channel" },
                 { id: "add", label: "Add", title: "The groups' colours added up" },
               ], mergeBlend, (v) => patch({ mergeBlend: v }))}
-              <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click or Delete removes one">
+              <span className="muted small fourd-readout" title="⌘/Ctrl-click adds a cursor; right-click removes">
                 {cursorText}
               </span>
             </div>

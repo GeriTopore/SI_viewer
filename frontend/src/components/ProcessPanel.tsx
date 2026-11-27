@@ -46,7 +46,7 @@ const SPATIAL: { id: SpatialFilter; label: string; title: string }[] = [
   { id: "gaussian", label: "Gaussian", title: "Gaussian blur" },
   { id: "median", label: "Median", title: "Median filter: removes outliers, keeps edges" },
   { id: "mean", label: "Mean", title: "Mean (box) filter" },
-  { id: "bandpass", label: "Bandpass", title: "Fourier bandpass: removes structures smaller than Small and larger than Large" },
+  { id: "bandpass", label: "Bandpass", title: "Fourier bandpass: keeps structures between Small and Large" },
 ];
 
 const SPECTRAL: { id: SpectralFilter; label: string; title: string }[] = [
@@ -197,7 +197,7 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
           <button className="link-button process-back" onClick={() => setOpen(null)} title="All processes">
             ‹ All
           </button>
-          <span className="process-drag-handle" title={`${open.tip}\nDrag onto the tab to show it beside the others`} {...dragProps(open.id)}>
+          <span className="process-drag-handle" title={`${open.tip}\nDrag to show beside the others`} {...dragProps(open.id)}>
             <ProcessIcon id={open.id} size={20} />
             {open.title}
           </span>
@@ -220,7 +220,7 @@ function ProcessGrid({ processes }: { processes: Process[] }) {
                 setOpen(p.id);
                 followProcess(p.id);
               }}
-              title={`${p.tip}\nDrag onto the tab to show it beside the others`}
+              title={`${p.tip}\nDrag to show beside the others`}
               {...dragProps(p.id)}
             >
               <ProcessIcon id={p.id} />
@@ -371,7 +371,7 @@ function SplitHeader({ id, title, tip, on, pinned }: {
         <button
           className={`icon-toggle${pinned ? " active" : ""}`}
           aria-pressed={!!pinned}
-          title={pinned ? `Stays on ${on.title} (click to follow the dataset clicked)` : "Follows the dataset clicked (click to keep it on this one)"}
+          title={pinned ? `Stays on ${on.title} (click to follow)` : "Follows the dataset clicked (click to keep it on this one)"}
           onClick={() => {
             const ui = useUi.getState();
             const cur = ui.processSplit;
@@ -487,72 +487,72 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     canMakeDpc(d) && {
       id: "dpc", title: "DPC / iDPC",
-      tip: "Differential phase contrast from the four quadrants of a segmented detector, and its integral",
+      tip: "Differential phase contrast and its integral",
       body: <DpcSection d={d} />,
     },
     // 4D-STEM data: Pre-processing (Rebin first), then Analysis.
     canRebin(d) && cartesian4d && {
-      id: "rebin", title: "Rebin", section: "Pre-processing", tip: "Sum neighbouring scan positions or pattern pixels; overwrites the loaded data",
+      id: "rebin", title: "Rebin", section: "Pre-processing", tip: "Sum neighbouring pixels; overwrites the loaded data",
       body: rebinBody,
     },
     d.kind === "4dstem" && {
       id: "virtual-image", title: "Virtual imaging", section: "Analysis",
-      tip: "The virtual detector drawn on the pattern: its shape, response, apertures; keep the image as a dataset",
+      tip: "Virtual detector on the pattern; keep the image as a dataset",
       body: <VirtualImageSection key={d.id} d={d} />,
     },
     cartesian4d && {
       id: "bad-pixels", title: "Remove bad pixels", section: "Pre-processing",
-      tip: "Hot and dead detector pixels, found in the mean pattern and repaired in every pattern",
+      tip: "Repair hot and dead detector pixels",
       body: <BadPixelSection key={d.id} d={d} />,
     },
     cartesian4d && {
       id: "background", title: "Background", section: "Pre-processing",
-      tip: "Diffuse scattering subtracted from every pattern (pyxem: median kernel, difference of Gaussians, radial median, h-dome), tried on the patterns shown",
+      tip: "Subtract diffuse scattering from every pattern",
       body: <PatternBackgroundSection key={d.id} d={d} />,
     },
     cartesian4d && {
       id: "centring", title: "Fix descan", section: "Pre-processing",
-      tip: "The direct beam found in every pattern, the descan as a plane, and every pattern shifted so the beam is at its centre",
+      tip: "Centre the direct beam in every pattern",
       body: <CentringSection key={d.id} d={d} />,
     },
     cartesian4d && {
       id: "polar", title: "Polar transform", section: "Pre-processing",
-      tip: "Every pattern as radius × azimuth (pyxem's get_azimuthal_integral2d), as a copy or in place: what orientation mapping matches against",
+      tip: "Every pattern as radius × azimuth",
       body: <PolarSection key={d.id} d={d} />,
     },
     cartesian4d && {
       id: "disks", title: "Disk detection", section: "Analysis",
-      tip: "Bragg disks in every pattern: matched with the probe, tuned on the patterns shown, kept as Bragg vectors and their map",
+      tip: "Find the Bragg disks in every pattern",
       body: <DiskDetectionSection key={d.id} d={d} />,
     },
     d.structure && {
       id: "templates", title: "Templates",
-      tip: "Diffraction templates of this structure (diffsims) over orix's orientations, optionally only near some zone axes; each run a Templates object under it",
+      tip: "Diffraction templates of this structure",
       body: <TemplatesSection key={d.id} d={d} />,
     },
     d.kind === "4dstem" && {
       id: "orientation", title: "Orientation mapping", section: "Analysis",
-      tip: "Orientation and phase mapping as pyxem does it: templates simulated from the Structures (diffsims), matched to the polar transform of every pattern",
+      tip: "Orientation and phase maps from template matching",
       body: <OrientationSection key={d.id} d={d} />,
     },
     braggCube && {
       id: "calibration", title: "Calibration",
-      tip: "The Bragg vectors' calibration: each position's origin (descan), the QR rotation (least curl), the pattern's pixel size from a ring of a standard (or the camera length), its centre and ellipticity",
+      tip: "Calibrate the Bragg vectors: origin, rotation, pixel size, ellipticity",
       body: <CalibrationSection key={braggCube.id} d={braggCube} />,
     },
     braggCube && {
       id: "vector-magnitudes", title: "Magnitudes",
-      tip: "A histogram of the vectors' distances from the pattern's centre (pyxem), with a Structure's reflections marked: does the phase and the calibration fit?",
+      tip: "Histogram of the vectors' distances from the centre",
       body: <VectorMagnitudesSection key={braggCube.id} d={braggCube} vectors={d} />,
     },
     braggCube && {
       id: "vector-mask", title: "Vector mask",
-      tip: "The data times discs at its vectors (pyxem's to_mask): only the diffraction spots left, as pyxem's orientation mapping tutorial does before matching",
+      tip: "Keep only the diffraction spots in the data",
       body: <VectorMaskSection key={braggCube.id} d={braggCube} />,
     },
     braggCube && {
       id: "strain", title: "Strain mapping",
-      tip: "Strain from the Bragg vectors: the lattice (O, g1, g2) placed on the Bragg vector map, every pattern's disks indexed and fitted to it, then εxx, εyy, εxy and ωxy against a reference",
+      tip: "Strain maps from the Bragg vectors",
       body: <StrainSection key={braggCube.id} d={braggCube} />,
     },
     canRebin(d) && d.origin !== "pca" && d.kind !== "4dstem" && {
@@ -561,17 +561,17 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     isInsituView(d) && d.kind === "spectrum_image" && !isLineScan(d) && {
       id: "aligned-sum", title: "Aligned sum",
-      tip: "Register every frame with the measured drift and sum them; makes a new spectrum image",
+      tip: "Drift-corrected sum; makes a new spectrum image",
       body: <InsituAlignSection d={d} />,
     },
     canEstimateThickness(d) && {
       id: "zlp", title: "ZLP alignment",
-      tip: "Shift every spectrum so its zero-loss peak is at 0 eV; linked core losses follow. Without a low loss: shift by hand",
+      tip: "Shift each spectrum's zero-loss peak to 0 eV",
       body: <ZlpSection d={d} />,
     },
     // Not on Bragg vectors (a table: nothing to filter).
     d.origin !== "disks" && !d.structure && {
-      id: "filters", title: "Filters", tip: "Applied whenever the data is shown; the loaded data is unchanged",
+      id: "filters", title: "Filters", tip: "Applied on display; the loaded data is unchanged",
       ...(d.kind === "4dstem" && { section: "Pre-processing" }),
       summary: active,
       body: (
@@ -745,42 +745,42 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     canNormalise(d) && {
       id: "normalise", title: "Normalisation",
-      tip: "Normalise the spectra on the plot: to 0–1, a value at an energy or a mean over a window",
+      tip: "Normalise the spectra on the plot",
       body: <NormaliseSection d={d} />,
     },
     canRemoveBackground(d) && {
       id: "background", title: "Background removal",
-      tip: "Fit and subtract the background under an edge; makes a new spectrum image",
+      tip: "Subtract the background under an edge; makes a new spectrum image",
       body: <BackgroundSection d={d} />,
     },
     canEstimateThickness(d) && {
       id: "thickness", title: "Thickness",
-      tip: "Thickness of the low loss from the share of its counts in the zero-loss peak; makes a new map",
+      tip: "Thickness from the low loss; makes a new map",
       body: <ThicknessSection d={d} />,
     },
     canDeconvolve(d) && {
       id: "deconvolution", title: "Deconvolution",
-      tip: "Remove plural scattering (or sharpen) with the low loss; makes a new spectrum image",
+      tip: "Remove plural scattering; makes a new spectrum image",
       body: <DeconvolutionSection d={d} />,
     },
     (d.kind === "spectrum" || d.kind === "spectrum_image") && {
       id: "curvefit", title: "Curve fitting",
-      tip: "Fit a model of HyperSpy's components (peaks, backgrounds, steps) to a spectrum",
+      tip: "Fit peaks and backgrounds to a spectrum",
       body: <CurveFitPanel key={d.id} ds={d} />,
     },
     canMakeMask(d) && {
       id: "mask", title: "Masks",
-      tip: "Masks of the image's pixels between thresholds, for other processes (e.g. sublattices)",
+      tip: "Masks of pixels between thresholds",
       body: <MaskSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
       id: "fourier", title: "Fourier filtering", section: "kemstem",
-      tip: "Pick FFT peaks, then filter round them: amplitude, phase and strain maps (kemstem)",
+      tip: "Amplitude, phase and strain maps from FFT peaks",
       body: <AtomicSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
       id: "columns", title: "Atomic columns", section: "kemstem",
-      tip: "Find the atomic columns and fit each with a 2D Gaussian (kemstem)",
+      tip: "Find atomic columns and fit each with a 2D Gaussian",
       body: <ColumnsSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
@@ -790,19 +790,19 @@ function ProcessTarget({ d, only, pinned }: { d: DatasetSummary; only?: string; 
     },
     canAnalyseAtomic(d) && {
       id: "neighbourhoods", title: "Neighbourhoods", section: "kemstem",
-      tip: "Vectors to each column's nearest neighbours, their clusters, and bonds along lattice vectors picked from them",
+      tip: "Vectors to nearest neighbours, clusters and bonds",
       body: <NeighbourhoodSection key={d.id} d={d} />,
     },
     canAnalyseAtomic(d) && {
       id: "pld", title: "Lattice displacements", section: "kemstem",
-      tip: "Periodic lattice displacements: damp the superlattice peaks into a reference, then measure how far each column moved",
+      tip: "How far each column moved from the periodic lattice",
       body: <PldSection key={d.id} d={d} />,
     },
     hasPcaSection(d) && {
       id: "pca", title: "Decomposition and denoising",
       tip: d.origin === "pca"
-        ? "Rebuild the spectrum image from its first components; makes a new spectrum image"
-        : "Decompose over an energy window (HyperSpy): the components' maps and spectra",
+        ? "Rebuild from the first components; makes a new spectrum image"
+        : "Decompose over an energy window",
       body: <PcaSection d={d} />,
     },
   ] as (Process | false)[]).filter((x): x is Process => !!x));

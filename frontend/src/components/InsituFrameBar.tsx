@@ -296,7 +296,7 @@ function RangeSlider({ n, range, disabled, onDrag, onDone, dragging }: {
       onPointerUp={onUp}
       onPointerCancel={onUp}
       aria-label="Frame range"
-      title="Drag the middle to move the range, an end to widen or narrow it (← / → move it)"
+      title="Drag the middle to move the range, an end to resize it"
     >
       <div ref={track} className="range-track">
         <div className="range-band" style={{ left: pct(s), width: pct(e + 1 - s) }} />

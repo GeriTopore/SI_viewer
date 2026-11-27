@@ -58,7 +58,7 @@ export function TemplatesPanel({ sets, chosen, onChoose }: { sets: DatasetSummar
           <span>{d.title}</span>
         )}
         <span className="muted">{templatesLabel(d)}</span>
-        <label className="q-check-line" title="The template nearest the way the Structure is seen (its 3D view, or a pattern's Structure tab), turned as the crystal is">
+        <label className="q-check-line" title="The template nearest the Structure's current view">
           <input type="checkbox" checked={linked} onChange={(e) => useOrientation.getState().setLinked(d.id, e.target.checked)} />
           Link to structure view
         </label>

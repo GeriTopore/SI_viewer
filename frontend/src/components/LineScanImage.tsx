@@ -187,8 +187,6 @@ export function LineScanImage({
   onCursor, onRangeAdd, onRangeChange, onSelect, onRangeRemove, onRangesClear, menuItems = [], energyMarks = [],
   selectedMark = null, onMarkSelect, onMarkChange,
 }: Props) {
-  // A time scan's rows are frames.
-  const rowsWord = rows.label === "Time" ? "frames" : "positions";
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -507,11 +505,7 @@ export function LineScanImage({
               {cols.units && ` ${cols.units}`}
               {values && <> · {formatValue(values.data[hover.row * values.width + hover.col])}</>}
             </>
-          ) : (
-            <span className="muted">
-              {rows.size} {rowsWord} × {cols.size} channels · drag to zoom · drag the cursor line · Shift+drag to select {rowsWord} to average
-            </span>
-          )}
+          ) : null}
         </span>
         <span className="readout-zoom">
           {zoom && (

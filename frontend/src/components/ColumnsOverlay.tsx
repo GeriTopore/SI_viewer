@@ -136,7 +136,7 @@ export function itemPanelLayer(
     },
     choice: {
       value: q.colourBy ?? "",
-      title: `Colour the ${info.kind === "bonds" ? "bonds" : vectors ? "vectors" : "columns"} by a value (its limits: select this layer)`,
+      title: `Colour the ${info.kind === "bonds" ? "bonds" : vectors ? "vectors" : "columns"} by a value`,
       options: [{ value: "", label: "Plain" }, ...info.values.map((c) => ({ value: c.id, label: c.label }))],
       onChange: (v: string) => {
         setProps(item.id, { colourBy: v || undefined });

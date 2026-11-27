@@ -44,7 +44,7 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
     const sameStructure = listed.find((y) => y.parent_id === x.parent_id);
     return {
       label: nameOf(x),
-      title: sameStructure ? `${structureOf(x)?.title ?? "Its Structure"} is listed already: one set of templates per phase` : templatesLabel(x),
+      title: sameStructure ? `${structureOf(x)?.title ?? "Its Structure"} is listed already` : templatesLabel(x),
       disabled: !!sameStructure,
       onSelect: () => setList([...listed.map((y) => y.id), x.id]),
     };
@@ -100,7 +100,7 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
       {chosen && calibrated && !polar && <TemplateScale d={d} />}
       {chosen && !polar && (
         polars.length ? (
-          <label title="The polar patterns matched against (the notebook matches the vector-masked data's)">
+          <label title="The polar patterns matched against">
             <span>Polar patterns</span>
             <select value={matchedOn?.id ?? ""} onChange={(e) => useOrientation.getState().choosePolar(d.id, e.target.value)}>
               {polars.map((x) => <option key={x.id} value={x.id}>{x.title}</option>)}
@@ -116,7 +116,7 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
       {chosen && matchedOn && (
         <div className="process-actions">
           <button className="primary" disabled={busy} onClick={() => void matchNow()}
-            title="pyxem's template matching (get_orientation, every template kept) of the polar transform at each cursor where it is now: the best template on the patterns, the correlations in the Match tab">
+            title="Match the templates at each cursor">
             Match current position
           </button>
         </div>
@@ -153,7 +153,7 @@ function TemplateScale({ d }: { d: DatasetSummary }) {
   };
   return (
     <>
-      <label title="The template drawn larger or smaller about the pattern's 0, to line it up with the pattern (camera length)">
+      <label title="Draw the template larger or smaller to fit the pattern">
         <span>Scale</span>
         <span className="size-control">
           <input type="range" min={-SCALE_LOG2} max={SCALE_LOG2} step={0.0005} value={Math.log2(f)}
@@ -177,7 +177,7 @@ function TemplateScale({ d }: { d: DatasetSummary }) {
           Reset
         </button>
         <button className="primary" disabled={f === 1} onClick={() => void apply()}
-          title="Set the pattern's pixel size (both axes, the centre kept) to the one the template is drawn at">
+          title="Set the pattern's pixel size to the template's">
           Use as pixel size
         </button>
       </div>
@@ -196,7 +196,7 @@ function MapScan({ d, templates, polar }: { d: DatasetSummary; templates: string
   return (
     <>
       <h4 className="process-heading">Orientation map</h4>
-      <label title="The fraction of the templates fully matched, the best of the fast match on the radial profiles (the tutorial's 0.5)">
+      <label title="Fraction of the templates fully matched">
         <span>Fraction kept</span>
         <input type="number" min={0.01} max={1} step={0.05} value={frac}
           onChange={(e) => {
@@ -210,7 +210,7 @@ function MapScan({ d, templates, polar }: { d: DatasetSummary; templates: string
       ) : (
         <div className="process-actions">
           <button className="primary" onClick={() => void useOrientation.getState().runMap(d.id, templates, polar)}
-            title="Match every pattern (pyxem's get_orientation, the best match kept): an Orientation map with its correlation and IPF-x, y, z">
+            title="Match every pattern: an Orientation map with IPF maps">
             Map
           </button>
         </div>

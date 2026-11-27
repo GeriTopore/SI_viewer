@@ -466,7 +466,7 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
             className={view === "3d" ? "active" : undefined}
             aria-pressed={view === "3d"}
             onClick={show3d}
-            title="A 3D plot over energy and the row axis: drag rotates, scroll zooms, right-drag pans"
+            title="3D plot: drag rotates, scroll zooms, right-drag pans"
           >
             3D
           </button>
@@ -482,7 +482,7 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
         )}
         <label
           className="profile-width"
-          title="Space between successive spectra (the intensity axis is arbitrary)"
+          title="Space between successive spectra"
           style={view === "3d" ? { display: "none" } : undefined}
         >
           Spacing
@@ -543,11 +543,7 @@ export function ExplodedPanel({ frame: raw, rows, cols, label, marksView, marks,
             <>
               {formatValue(hoverE)} {cols.units}
             </>
-          ) : (
-            <span className="muted">
-              {picked.length} of {n} spectra · drag to zoom · Shift+click a line, Shift+drag a window (drag to move, Delete) · double-click resets
-            </span>
-          )}
+          ) : null}
         </div>
         <div ref={wrapRef} className="profile-canvas" />
       </div>

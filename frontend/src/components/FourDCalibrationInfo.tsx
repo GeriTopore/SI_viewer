@@ -54,7 +54,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
       className="calibration-switch"
       checked={available && !!on[part]}
       disabled={!available || busy || !hasVectors}
-      title={hasVectors ? title : "Applied to the Bragg vectors: find the disks first (Disk detection)"}
+      title={hasVectors ? title : "Applied to the Bragg vectors: run Disk detection first"}
       onChange={(e) => void toggle(part, e.target.checked)}
     />
   );
@@ -81,7 +81,7 @@ export function FourDCalibrationInfo({ d }: { d: DatasetSummary }) {
         </dd>
         <dt>Descan{done(!!cal.origin)}</dt>
         <dd>
-          {sw("origin", !!cal.origin, "Subtract each scan position's fitted origin from its Bragg vectors (descan)")}
+          {sw("origin", !!cal.origin, "Subtract each position's fitted origin (descan)")}
           {cal.origin ? (
             <>
               {cal.origin.source === "vectors" ? "Bragg vectors" : "beam found"}

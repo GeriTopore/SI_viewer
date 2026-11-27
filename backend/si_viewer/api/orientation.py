@@ -97,7 +97,9 @@ def polar_transform(dataset_id: str, body: PolarBody, request: Request) -> dict:
 
 
 class MatchBody(BaseModel):
-    templates: str  # a Templates object's id
+    # A Templates object's id, or several (one per phase) joined by commas:
+    # a phase map, each position's phase the one matching best.
+    templates: str
     positions: list[tuple[int, int]] = Field(min_length=1, max_length=64)  # scan (x, y)
     # The polar transform matched (a dataset made by Polar transform); None:
     # the data itself when it is one, else its newest polar transform.
@@ -141,17 +143,24 @@ def match_at(dataset_id: str, body: MatchBody, request: Request) -> dict:
     for x, y in body.positions:
         if not (0 <= x < nx and 0 <= y < ny):
             raise HTTPException(422, f"({x}, {y}) is outside the scan")
-    _, sim, phase = _templates(request, body.templates)
+    phases = _phase_set(request, body.templates)
     patterns = orientation.polar_patterns(polar.signal, body.positions)
-    matches = orientation.match(patterns, sim, body.options, phase)
-    for m, (x, y) in zip(matches, body.positions):
-        m["x"], m["y"] = x, y
-        m["best"]["uvw"] = orientation.direction_of(sim.rotations[m["best"]["index"]], phase)
-    return {"polar": polar.id, "matches": matches}
+    per_phase = []
+    for tds, sim, phase in phases:
+        matches = orientation.match(patterns, sim, body.options, phase)
+        uvws = _uvws(tds, sim, phase)
+        for m, (x, y) in zip(matches, body.positions):
+            m["x"], m["y"] = x, y
+            m["best"]["uvw"] = orientation.direction_of(sim.rotations[m["best"]["index"]], phase)
+            for row in m["ranked"]:
+                row["uvw"] = uvws[row["index"]]
+        per_phase.append(matches)
+    names = [{"name": ph.name, "templates": tds.id} for tds, _, ph in phases]
+    return {"polar": polar.id, "matches": orientation.combine_matches(per_phase, names)}
 
 
 class MapBody(BaseModel):
-    templates: str  # a Templates object's id
+    templates: str  # as MatchBody's
     polar: str | None = None  # as MatchBody's
     options: MapOptions = MapOptions()
 
@@ -168,13 +177,23 @@ def orientation_map_run(dataset_id: str, body: MapBody, request: Request) -> dic
     session = request.app.state.session
     ds = _cube(request, dataset_id)
     polar = _polar_of(request, ds, body.polar)
-    tds, sim, phase = _templates(request, body.templates)
+    phases = _phase_set(request, body.templates)
+    n = len(phases)
 
     def run(job) -> dict:
-        job.report(0.0, "Matching")
-        results = orientation.match_scan(polar.signal, sim, body.options, lambda f, m: job.report(0.97 * f, m))
+        blocks = []
+        for k, (_, sim, phase) in enumerate(phases):
+            job.report(0.97 * k / n, f"Matching {phase.name}")
+            blocks.append(orientation.match_scan(
+                polar.signal, sim, body.options, lambda f, m, k=k, name=phase.name: job.report(0.97 * (k + f) / n, f"{name}: {m}")))
+        results = blocks[0] if n == 1 else np.stack(blocks)
         job.report(0.98, "Keeping the map")
-        record = {"templates": tds.id, "polar": polar.id, "options": body.options.model_dump(), "phase": phase.name}
+        record = {
+            "templates": ",".join(tds.id for tds, _, _ in phases), "polar": polar.id, "options": body.options.model_dump(),
+            "phase": " + ".join(ph.name for _, _, ph in phases),
+            "phases": [{"name": ph.name, "templates": tds.id, "colour": orientation.PHASE_COLOURS[k % len(orientation.PHASE_COLOURS)]}
+                       for k, (tds, _, ph) in enumerate(phases)],
+        }
         made = session.set_orientation_map(ds, results, record)
         return {"file": session.file_of(ds).summary(session), "id": made.id}
 
@@ -201,15 +220,21 @@ def orientation_map_at(dataset_id: str, body: MapAtBody, request: Request) -> di
     rec = omap.orientation or {}
     if rec.get("output") != "map":
         raise HTTPException(400, f"{omap.title} is not an orientation map")
-    results = np.asarray(omap.signal.data)
-    ny, nx = results.shape[:2]
+    blocks = orientation.phase_blocks(np.asarray(omap.signal.data))
+    ny, nx = blocks.shape[1:3]
     for x, y in body.positions:
         if not (0 <= x < nx and 0 <= y < ny):
             raise HTTPException(422, f"({x}, {y}) is outside the scan")
-    _, sim, phase = _templates(request, rec["templates"])
-    matches = orientation.map_at(results, sim, phase, body.positions)
-    for m in matches:
+    phases = _phase_set(request, rec["templates"])
+    which, _ = orientation.best_phase(blocks)
+    matches = []
+    for x, y in body.positions:
+        k = int(which[y, x])
+        tds, sim, phase = phases[k]
+        m = orientation.map_at(blocks[k], sim, phase, [(x, y)])[0]
         m["best"]["uvw"] = orientation.direction_of(sim.rotations[m["best"]["index"]], phase)
+        m["phase"], m["phase_index"], m["templates"] = phase.name, k, tds.id
+        matches.append(m)
     return {"matches": matches}
 
 
@@ -233,8 +258,13 @@ def orientation_ipf(dataset_id: str, request: Request):
     key = (omap.id, rec["direction"])
     rgb = session.orientation_cache.get(key)
     if rgb is None:
-        _, sim, _ = _templates(request, rec["templates"])
-        rgb = orientation.ipf_colours(orientation.orientation_map(np.asarray(omap.signal.data), sim), rec["direction"])
+        blocks = orientation.phase_blocks(np.asarray(omap.signal.data))
+        which, _ = orientation.best_phase(blocks)
+        # Each position in its own phase's colour key.
+        rgb = np.zeros((*which.shape, 3), np.float32)
+        for k, (_, sim, _) in enumerate(_phase_set(request, rec["templates"])):
+            colours = orientation.ipf_colours(orientation.orientation_map(blocks[k], sim), rec["direction"])
+            rgb[which == k] = colours[which == k]
         with session._lock:
             session.orientation_cache[key] = rgb
     value = np.asarray(ds.signal.data, np.float32)
@@ -242,6 +272,19 @@ def orientation_ipf(dataset_id: str, request: Request):
 
 
 # ---------- Templates objects (under their Structures) and orix's plots ----------
+
+
+def _phase_set(request: Request, key: str):
+    """The phases of a Templates key (ids joined by commas): [(Templates
+    object, simulation, phase)], one per Structure."""
+    ids = [i for i in key.split(",") if i]
+    if not ids:
+        raise HTTPException(422, "Choose the templates to match against")
+    out = [_templates(request, i) for i in dict.fromkeys(ids)]
+    names = [ph.name for _, _, ph in out]
+    if len(set(names)) < len(names):
+        raise HTTPException(422, "Choose one set of templates per phase (Structure)")
+    return out
 
 
 def _templates(request: Request, dataset_id: str):
@@ -283,6 +326,39 @@ def templates(dataset_id: str, request: Request) -> dict:
             "points": orientation.template_directions(sim.rotations, phase),
         }
     return ds.cache["ipf"]
+
+
+def _uvws(tds, sim, phase) -> list[list[float]]:
+    """Every template's beam direction [uvw] (kept with the Templates object)."""
+    from ..processing import orientation
+
+    if "uvw" not in tds.cache:
+        tds.cache["uvw"] = orientation.template_uvws(sim.rotations, phase).tolist()
+    return tds.cache["uvw"]
+
+
+class DescribeBody(BaseModel):
+    """One of a match's ranked templates: which, at what in-plane rotation."""
+
+    index: int = Field(ge=0)
+    rotation: float
+    mirror: bool = False
+    correlation: float = 0.0
+
+
+@router.post("/api/datasets/{dataset_id}/templates/describe")
+def describe_template(dataset_id: str, body: DescribeBody, request: Request) -> dict:
+    """A template at an in-plane rotation described as a match is (its
+    reflections on the pattern, labelled; its view): a match other than the
+    best, drawn on the patterns."""
+    from ..processing import orientation
+
+    _, sim, phase = _templates(request, dataset_id)
+    if body.index >= sim.rotations.size:
+        raise HTTPException(422, f"No template {body.index}")
+    m = orientation.describe_one(sim, phase, body.index, body.rotation, body.mirror, body.correlation)
+    m["best"]["uvw"] = orientation.direction_of(sim.rotations[body.index], phase)
+    return m
 
 
 @router.get("/api/datasets/{dataset_id}/templates/nearest")

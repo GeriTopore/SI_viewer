@@ -2639,7 +2639,7 @@ class Session:
         templates. Returns the map."""
         import hyperspy.api as hs
 
-        from .processing.orientation import IPF_DIRECTIONS
+        from .processing.orientation import IPF_DIRECTIONS, best_phase, phase_blocks
 
         if data.kind is not DatasetKind.DIFFRACTION4D:
             raise ValueError(f"{data.title} is not 4D-STEM data")
@@ -2663,17 +2663,32 @@ class Session:
                 ids = self.files[data.file_id].dataset_ids
                 after = [i for i in ids if self.datasets[i].parent_id == data.id]
                 ids.insert(ids.index(after[-1] if after else data.id) + 1, omap.id)
-        corr = np.ascontiguousarray(results[:, :, 0, 1], dtype=np.float32)
+        # Several phases ([phases, y, x, n_best, 4]): each position's best phase.
+        n_phases = phase_blocks(results).shape[0]
+        which, picked = best_phase(results)
+        corr = np.ascontiguousarray(picked[:, :, 0, 1], dtype=np.float32)
         with self._lock:
             earlier = {(d.orientation or {}).get("key"): d for d in self.datasets.values() if d.parent_id == omap.id}
         made = [omap]
-        for key, title in [("correlation", "Correlation")] + [(f"ipf-{v}", f"IPF-{v}") for v in IPF_DIRECTIONS]:
-            signal = hs.signals.Signal2D(corr.copy())
+        images = [("correlation", "Correlation")] + ([("phase", "Phase")] if n_phases > 1 else [])
+        for key, title in images + [(f"ipf-{v}", f"IPF-{v}") for v in IPF_DIRECTIONS]:
+            # The phase image holds each position's phase (0, 1, …), drawn in the phases' colours.
+            value = corr.copy()
+            if key.startswith("ipf") and n_phases > 1:
+                # The IPF colours darkened by the correlation as a fraction of
+                # its phase's best (phases correlate on different scales).
+                for k in range(n_phases):
+                    top = corr[which == k].max() if (which == k).any() else 0
+                    if top > 0:
+                        value[which == k] /= top
+            signal = hs.signals.Signal2D(which.astype(np.float32) if key == "phase" else value)
             for axis, src in zip(signal.axes_manager.signal_axes, scan):
                 axis.name, axis.scale, axis.offset, axis.units = src.name, src.scale, src.offset, src.units
             signal.metadata.General.title = title
-            signal.metadata.set_item("Signal.quantity", "Correlation")
-            out = {**info, "output": "ipf" if key.startswith("ipf") else "correlation", "key": key, "map_id": omap.id}
+            quantity = "Phase" if key == "phase" else (
+                "Correlation (of its phase's best)" if key.startswith("ipf") and n_phases > 1 else "Correlation")
+            signal.metadata.set_item("Signal.quantity", quantity)
+            out = {**info, "output": "ipf" if key.startswith("ipf") else key, "key": key, "map_id": omap.id}
             if key.startswith("ipf"):
                 out["direction"] = key[-1]
             ds = earlier.get(key)

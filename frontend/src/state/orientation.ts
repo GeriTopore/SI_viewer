@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
-import { api, dataVersion, type DatasetSummary, type JobSummary, type MatchResult, type TemplateOptions } from "../api/client";
+import { api, dataVersion, type DatasetSummary, type JobSummary, type MatchResult, type RankedMatch, type TemplateOptions } from "../api/client";
 import { useDatasets } from "./datasets";
 import { useLayers } from "./layers";
 import { jobRunning } from "./centring";
@@ -48,6 +48,10 @@ interface OrientationState {
   options: Record<string, Partial<TemplateOptions>>;
   /** The Templates object each 4D-STEM data uses (drawn on its patterns, matched against). */
   chosen: Record<string, string | null>;
+  /** More phases matched with it (a phase map): Templates objects of other
+   * Structures, per 4D-STEM data. */
+  others: Record<string, string[]>;
+  setOthers: (cubeId: string, ids: string[]) => void;
   /** The template drawn on each 4D-STEM data's patterns, scaled by this
    * (1: at the pattern's calibrated pixel size). */
   scale: Record<string, number>;
@@ -76,6 +80,14 @@ interface OrientationState {
   /** Match ``dsId`` (4D-STEM data, or polar patterns: ``polar`` null) at
    * ``positions`` ([x, y]) against ``templates``; kept under ``key``. */
   runMatch: (key: string, dsId: string, templates: string, polar: string | null, positions: number[][]) => Promise<void>;
+  /** The match shown at a position (``pickKey``): its rank in the match's
+   * ranked list (none: the best). */
+  matchPick: Record<string, number>;
+  /** Ranked matches described (their reflections), by ``describedKey``. */
+  described: Record<string, MatchResult>;
+  /** Show the match of ``rank`` at ``pos`` ("x,y") of matches ``key``
+   * (``templates``: the ids matched, joined by commas). */
+  pickMatch: (key: string, pos: string, rank: number, templates: string) => Promise<void>;
   /** Orientation maps at scan positions (the tutorial's markers), by
    * ``mapKey`` then "x,y". */
   mapAtCache: Record<string, Record<string, MatchResult>>;
@@ -167,6 +179,8 @@ export const useOrientation = create<OrientationState>()(persist((set, get) => {
   return {
   options: {},
   chosen: {},
+  others: {},
+  setOthers: (cubeId, ids) => set((s) => ({ others: { ...s.others, [cubeId]: ids } })),
   scale: {},
   views: {},
   linked: {},
@@ -193,6 +207,22 @@ export const useOrientation = create<OrientationState>()(persist((set, get) => {
       set((s) => ({ matchErrors: { ...s.matchErrors, [key]: (e as Error).message } }));
     } finally {
       set((s) => ({ matchBusy: { ...s.matchBusy, [key]: false } }));
+    }
+  },
+  matchPick: {},
+  described: {},
+  pickMatch: async (key, pos, rank, templates) => {
+    set((s) => ({ matchPick: { ...s.matchPick, [pickKey(key, pos)]: rank } }));
+    const row = get().matchCache[key]?.[pos]?.ranked?.[rank];
+    if (!rank || !row) return;
+    const id = templates.split(",")[row.phase];
+    const k = describedKey(id, row);
+    if (!id || get().described[k]) return;
+    try {
+      const d = await api.describeTemplate(id, row);
+      set((s) => ({ described: { ...s.described, [k]: d } }));
+    } catch (e) {
+      set((s) => ({ matchErrors: { ...s.matchErrors, [key]: (e as Error).message } }));
     }
   },
   mapAtCache: {},
@@ -289,7 +319,7 @@ export const useOrientation = create<OrientationState>()(persist((set, get) => {
   name: "si-viewer:orientation",
   storage: createJSONStorage(() => safeStorage),
   partialize: (s) => ({
-    chosen: s.chosen, polarChoice: s.polarChoice, followMatch: s.followMatch, scale: s.scale, views: s.views, linked: s.linked,
+    chosen: s.chosen, others: s.others, polarChoice: s.polarChoice, followMatch: s.followMatch, scale: s.scale, views: s.views, linked: s.linked,
     fracKeep: s.fracKeep,
   }),
 }));
@@ -348,6 +378,30 @@ export function mapFor(all: DatasetSummary[], d: DatasetSummary, polar: DatasetS
 /** Where the matches of polar patterns ``polar`` against ``templates`` are kept. */
 export const matchKey = (polar: DatasetSummary, templates: string) => `${polar.id}|${dataVersion(polar)}|${templates}`;
 
+/** A position of matches ``key``: the match shown there (``matchPick``). */
+export const pickKey = (key: string, pos: string) => `${key}#${pos}`;
+/** A ranked match of Templates ``id`` (``described``). */
+export const describedKey = (id: string, r: RankedMatch) => `${id}|${r.index}|${r.rotation}|${r.mirror}`;
+
+/** The match shown at ``pos`` of matches ``key`` (``templates``: the ids
+ * matched, joined by commas): the one picked in the Match tab's list, once
+ * described, else the best. */
+export function shownMatch(
+  s: Pick<OrientationState, "matchCache" | "matchPick" | "described">, key: string, pos: string, templates: string,
+): MatchResult | undefined {
+  const m = s.matchCache[key]?.[pos];
+  const rank = s.matchPick[pickKey(key, pos)] ?? 0;
+  const row = rank ? m?.ranked?.[rank] : undefined;
+  if (!m || !row) return m;
+  const id = templates.split(",")[row.phase];
+  const d = id ? s.described[describedKey(id, row)] : undefined;
+  if (!d) return m;
+  return {
+    ...m, best: { ...d.best, correlation: row.correlation }, vectors: d.vectors, polar: d.polar,
+    templates: m.templates !== undefined ? id : undefined, phase_index: row.phase, phase: m.phases?.[row.phase]?.name ?? m.phase,
+  };
+}
+
 /** The Templates object chosen for ``d``: its own, or (polar patterns) their
  * data's, or that of data matching against them. */
 export const chosenFor = (
@@ -357,3 +411,23 @@ export const chosenFor = (
   const user = Object.keys(s.polarChoice).find((id) => s.polarChoice[id] === d.id && s.chosen[id]);
   return (d.parent_id ? s.chosen[d.parent_id] : null) ?? (user ? s.chosen[user] : null) ?? null;
 };
+
+/** The other phases matched for ``d`` (its own, or its data's for polar patterns). */
+const NO_OTHERS: string[] = [];
+export const othersFor = (s: { others: Record<string, string[]> }, d: DatasetSummary): string[] =>
+  s.others[d.id] ?? (isPolar(d) && d.parent_id ? s.others[d.parent_id] : undefined) ?? NO_OTHERS;
+
+/** What ``d`` is matched against: the Templates chosen, then those of the
+ * other phases that are open, joined by commas (one phase: its id). */
+export const phasesFor = (
+  s: { chosen: Record<string, string | null>; polarChoice: Record<string, string>; others: Record<string, string[]> },
+  d: DatasetSummary, all: DatasetSummary[],
+): string | null => {
+  const main = chosenFor(s, d);
+  if (!main) return null;
+  const open = new Set(templatesOf(all).map((x) => x.id));
+  return [main, ...othersFor(s, d).filter((id) => id !== main && open.has(id))].join(",");
+};
+
+/** A phase map's colours, in the order of its phases (the backend's, matplotlib's tab10). */
+export const PHASE_COLOURS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"];

@@ -257,6 +257,16 @@ def test_match_at_positions(tmp_path):
         assert len(m["correlations"]) == n and len(corr) == n and abs(max(corr) - b["correlation"]) < 1e-5
         assert len(m["vectors"]["x"]) == len(m["vectors"]["hkl"]) == len(m["polar"]["r"]) > 0
         assert len(b["euler"]) == 3
+        # Every template ranked, best first, each with its beam direction; the
+        # best described again (as the Match tab's list draws a pick) is the match.
+        ranked = m["ranked"]
+        assert len(ranked) == n and ranked[0]["index"] == b["index"] and ranked[0]["phase"] == 0
+        assert all(a["correlation"] >= z["correlation"] for a, z in zip(ranked, ranked[1:]))
+        assert np.allclose(ranked[0]["uvw"], b["uvw"])
+        again = client.post(f"/api/datasets/{templates}/templates/describe", json=ranked[0]).json()
+        assert again["vectors"] == m["vectors"] and again["best"]["view"] == b["view"]
+        other = client.post(f"/api/datasets/{templates}/templates/describe", json=ranked[5]).json()
+        assert other["best"]["index"] == ranked[5]["index"] and np.allclose(other["best"]["uvw"], ranked[5]["uvw"])
     # The way the crystal is seen at each (view towards the viewer, up the
     # screen, as [uvw]): Ag's reflections across the view project (right,
     # against the rows) onto the spots each pattern was drawn with, turned
@@ -460,3 +470,77 @@ def test_the_map_at_positions_is_what_matching_there_gives(tmp_path):
         assert a["vectors"]["hkl"] == m["vectors"]["hkl"] and a["best"]["view"] == m["best"]["view"]
     assert client.post(f"/api/datasets/{omap}/orientation/at", json={"positions": [[5, 0]]}).status_code == 422
     assert client.post(f"/api/datasets/{cube_id}/orientation/at", json={"positions": [[0, 0]]}).status_code == 400
+
+
+FE_BCC = AU.replace("Au", "Fe").replace("4.0782", "2.866").replace("'F m -3 m'", "'I m -3 m'").replace("225", "229")
+FE_FCC = AU.replace("Au", "Fe").replace("4.0782", "3.571")
+
+
+def _fe_grains_truth(size=20, num_grains=2, seed=2):
+    """Which phase pyxem's ``fe_multi_phase_grains`` draws where (its seed
+    fixes the grains' places; their orientations are random): 0 bcc, 1 fcc."""
+    import skimage.segmentation
+
+    rng = np.random.default_rng(seed)
+    x = rng.integers(0, size, size=num_grains * 2)
+    y = rng.integers(0, size, size=num_grains * 2)
+    nav = np.zeros((size, size))
+    for i in range(num_grains * 2):
+        nav[x[i], y[i]] = i + 1
+    nav = skimage.segmentation.expand_labels(nav, distance=size)
+    return (nav > num_grains).astype(int)
+
+
+def test_phase_map_of_fe_grains(tmp_path):
+    """A phase map as pyxem matches several phases: pyxem's simulated bcc and
+    fcc Fe grains matched against both Structures' templates, each position
+    taking the phase that correlates best: at the cursors and over the scan."""
+    (tmp_path / "Fe-bcc.cif").write_text(FE_BCC)
+    (tmp_path / "Fe-fcc.cif").write_text(FE_FCC)
+    client = TestClient(create_app())
+    session = client.app.state.session
+    cube = next(d for d in client.post("/api/examples/pyxem-fe-grains").json()["datasets"] if d["kind"] == "4dstem")["id"]
+    ax = session.get_dataset(cube).signal.axes_manager.signal_axes[0]
+    assert abs(ax.offset + 1.27) < 1e-9  # the centre at the middle (pyxem's calibration.center = None)
+    opts = {"resolution": 2, "precession_angle": 0, "max_excitation_error": 0.1, "reciprocal_radius": 2.5}
+    ids = []
+    for name in ("Fe-bcc", "Fe-fcc"):
+        s = client.post("/api/files", json={"path": str(tmp_path / f"{name}.cif")}).json()["datasets"][0]["id"]
+        job = _wait(client, client.post(f"/api/datasets/{s}/templates/make", json={"options": opts}).json())
+        assert job["status"] == "done", job
+        ids.append(job["result"]["id"])
+    key = ",".join(ids)
+    polar = _wait(client, client.post(f"/api/datasets/{cube}/4d/polar", json={}).json())
+    assert polar["status"] == "done", polar
+    truth = _fe_grains_truth()
+
+    # At the cursors: one position inside each grain.
+    picks = [tuple(int(v) for v in np.argwhere(truth == k)[len(np.argwhere(truth == k)) // 2][::-1]) for k in (0, 1)]
+    r = client.post(f"/api/datasets/{cube}/4d/orientation/match", json={"templates": key, "positions": picks})
+    assert r.status_code == 200, r.text
+    for m, k in zip(r.json()["matches"], (0, 1)):
+        assert m["phase_index"] == k and m["phase"] == ("Fe-bcc", "Fe-fcc")[k] and m["templates"] == ids[k]
+        assert [p["name"] for p in m["phases"]] == ["Fe-bcc", "Fe-fcc"]
+        assert m["phases"][k]["correlation"] == max(p["correlation"] for p in m["phases"])
+    # The same Structure twice is refused.
+    assert client.post(f"/api/datasets/{cube}/4d/orientation/match",
+                       json={"templates": f"{ids[0]},{ids[0]}x", "positions": picks}).status_code in (400, 404, 422)
+
+    # The whole scan.
+    job = _wait(client, client.post(f"/api/datasets/{cube}/4d/orientation/map", json={"templates": key}).json())
+    assert job["status"] == "done", job
+    omap = session.get_dataset(job["result"]["id"])
+    assert omap.orientation["phase"] == "Fe-bcc + Fe-fcc" and [p["name"] for p in omap.orientation["phases"]] == ["Fe-bcc", "Fe-fcc"]
+    assert np.asarray(omap.signal.data).shape[:3] == (2, 20, 20)
+    images = {d.orientation["key"]: d for d in session.datasets.values() if d.parent_id == omap.id}
+    assert set(images) == {"correlation", "phase", "ipf-x", "ipf-y", "ipf-z"}
+    from si_viewer.processing.orientation import best_phase
+
+    which, _ = best_phase(np.asarray(omap.signal.data))
+    assert (which == truth).mean() > 0.95, (which == truth).mean()
+    # The phase image: each position's phase; the IPF images in their phases' keys.
+    assert np.array_equal(np.asarray(images["phase"].signal.data), which)
+    assert omap.orientation["phases"][0]["colour"] != omap.orientation["phases"][1]["colour"]
+    assert client.get(f"/api/datasets/{images['ipf-z'].id}/orientation/ipf").status_code == 200
+    at = client.post(f"/api/datasets/{omap.id}/orientation/at", json={"positions": picks}).json()["matches"]
+    assert [m["phase_index"] for m in at] == [0, 1] and [m["templates"] for m in at] == ids

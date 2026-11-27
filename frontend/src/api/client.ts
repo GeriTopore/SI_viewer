@@ -69,8 +69,27 @@ export interface MatchResult {
   vectors: { x: number[]; y: number[]; intensity: number[]; hkl: number[][] };
   /** The same on the polar transform: angle (rad), radius (1/Å). */
   polar: { theta: number[]; r: number[] };
-  /** Every template's correlation (null: not matched). */
+  /** Every template's correlation (null: not matched): of the phase matched. */
   correlations: (number | null)[];
+  /** Several phases (a phase map): the phase matched best, its Templates
+   * object, and every phase's best. */
+  phase?: string;
+  phase_index?: number;
+  templates?: string;
+  phases?: { name: string; templates: string; correlation: number; uvw?: number[] }[];
+  /** Every template matched, best first (all phases'; ``phase``: its index
+   * in the templates matched). Not in an orientation map's. */
+  ranked?: RankedMatch[];
+}
+
+/** One template of a match's ranked list: at what in-plane rotation it matched. */
+export interface RankedMatch {
+  index: number;
+  correlation: number;
+  rotation: number;
+  mirror: boolean;
+  uvw: number[];
+  phase: number;
 }
 
 /** orix's plots of a Structure. */
@@ -642,11 +661,14 @@ export interface DatasetSummary {
   /** Orientation mapping results: an orientation map ("map") and its
    * images ("correlation", "ipf" along ``direction``), with what was matched. */
   orientation?: {
-    output: "map" | "correlation" | "ipf";
+    output: "map" | "correlation" | "phase" | "ipf";
     direction?: "x" | "y" | "z";
+    /** The Templates matched (several, one per phase, joined by commas). */
     templates: string;
     polar: string;
     phase: string;
+    /** A phase map: each phase, its Templates and colour. */
+    phases?: { name: string; templates: string; colour: string }[];
     options: { n_best: number; frac_keep: number };
     map_id?: string;
   } | null;
@@ -1679,6 +1701,11 @@ export const api = {
   mapAt: (omapId: string, positions: number[][]) =>
     request<{ matches: MatchResult[] }>(`/api/datasets/${omapId}/orientation/at`, {
       method: "POST", body: JSON.stringify({ positions }),
+    }),
+  /** A template at an in-plane rotation described as a match (one of a match's ranked). */
+  describeTemplate: (id: string, row: Pick<RankedMatch, "index" | "rotation" | "mirror" | "correlation">) =>
+    request<MatchResult>(`/api/datasets/${id}/templates/describe`, {
+      method: "POST", body: JSON.stringify({ index: row.index, rotation: row.rotation, mirror: row.mirror, correlation: row.correlation }),
     }),
   matchAt: (id: string, templates: string, positions: number[][], polar?: string | null) =>
     request<{ polar: string; matches: MatchResult[] }>(`/api/datasets/${id}/4d/orientation/match`, {

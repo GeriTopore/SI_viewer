@@ -6874,6 +6874,13 @@ kbd {
 .match-table tr.selected td {
   background: var(--hover, rgba(127, 127, 127, 0.15));
 }
+/* Every template matched at the active cursor (Match tab): collapsible, rows picked. */
+.match-ranked { margin-top: 8px; }
+.match-ranked summary { cursor: pointer; padding: 2px 0; }
+.match-ranked-scroll { max-height: 260px; overflow: auto; }
+.match-ranked-scroll thead th { position: sticky; top: 0; background: var(--panel, #1c1c1e); }
+.match-ranked-scroll tbody tr { cursor: pointer; }
+.match-ranked-scroll tbody tr:hover td { background: var(--hover, rgba(127, 127, 127, 0.1)); }
 
 /* Bragg vectors' magnitude histogram (VectorMaskSection) */
 .magnitude-plot { display: block; margin: 4px 0; }
@@ -6884,3 +6891,8 @@ kbd {
 .magnitude-hkl { fill: var(--text, #ddd); font-size: 8px; }
 
 .omap-label { font-size: 9px; paint-order: stroke; stroke: rgba(0, 0, 0, 0.75); stroke-width: 2px; pointer-events: none; }
+
+/* A list row without an eye (Orientation mapping's phases): swatch, name, remove. */
+.layer-row.no-eye {
+  grid-template-columns: 18px 1fr 18px;
+}

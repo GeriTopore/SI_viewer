@@ -11,7 +11,7 @@ import { LineOverlay } from "../components/LineOverlay";
 import { RoiOverlay } from "../components/RoiOverlay";
 import { useCalibration } from "../state/calibration";
 import { planeOf, useCentring } from "../state/centring";
-import { chosenFor, isPolar, mapFor, mapKey, matchKey, perAngstrom, polarFor, useOrientation } from "../state/orientation";
+import { chosenFor, isPolar, mapFor, mapKey, matchKey, perAngstrom, phasesFor, polarFor, shownMatch, useOrientation } from "../state/orientation";
 import { MatchPanel } from "../components/MatchPanel";
 import { useViewTemplate } from "../state/viewTemplate";
 import { StructureScene } from "../components/StructureScene";
@@ -853,22 +853,26 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   // Each cursor's best template, as pyxem draws it (on the pattern's axes;
   // on polar patterns at angle, radius), when asked (Match current position).
   const polarData = isPolar(ds);
-  const matchTemplates = useOrientation((s) => chosenFor(s, ds));
+  // The phases matched: the Templates chosen and any other phases (a phase map), joined by commas.
+  const matchTemplates = useOrientation((s) => phasesFor(s, ds, allDatasets(files)));
   const matchLayer = ovOf("match");
   const matchVisible = matchLayer.visible ?? true;
   const matchStyle: MarkStyle = matchLayer.style === "cross" ? "cross" : "circle";
   // The polar patterns matched against (chosen in Orientation mapping; polar
   // patterns themselves): their matches, by position, shared with them.
   const matchPolar = useOrientation((s) => polarFor(s, allDatasets(files), ds));
-  const matchTemplatesOpen = !!matchTemplates && allDatasets(files).some((x) => x.id === matchTemplates);
+  const matchTemplatesOpen = !!matchTemplates && matchTemplates.split(",").every((id) => allDatasets(files).some((x) => x.id === id));
   const matchCacheKey = matchTemplatesOpen && matchPolar ? matchKey(matchPolar, matchTemplates!) : "";
   const matchAt = useOrientation((s) => (matchCacheKey ? s.matchCache[matchCacheKey] : undefined));
   const matchBusy = useOrientation((s) => (matchCacheKey ? s.matchBusy[matchCacheKey] ?? false : false));
   const matchError = useOrientation((s) => (matchCacheKey ? s.matchErrors[matchCacheKey] ?? null : null));
   const matchOn = !!matchAt || matchBusy || !!matchError;
+  // Each position's match shown: the one picked in the Match tab's list, else the best.
+  const matchPick = useOrientation((s) => s.matchPick);
+  const described = useOrientation((s) => s.described);
   const matchOf = (id: string) => {
     const c = cursors.find((k) => k.id === id);
-    return c ? matchAt?.[`${c.x},${c.y}`] : undefined;
+    return c && matchAt ? shownMatch({ matchCache: { [matchCacheKey]: matchAt }, matchPick, described }, matchCacheKey, `${c.x},${c.y}`, matchTemplates!) : undefined;
   };
   /** Where a match's reflections are on this data's patterns (pixel coordinates). */
   const spotsOf = (m: MatchResult): [number, number][] => {
@@ -917,22 +921,26 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const omapLabels = omapLayer.labels ?? true;
   const omapInset = omapLayer.inset ?? true;
   const omapColour = omapLayer.colour ?? OMAP_COLOR;
-  const omapTemplates = omap?.orientation?.templates ?? null;
-  const [omapIpf, setOmapIpf] = useState<{ id: string; ipf: TemplatesIpf } | null>(null);
+  // Each phase's IPF (several for a phase map: each match in its own phase's).
+  const omapTemplates = omap?.orientation?.templates?.split(",") ?? [];
+  const [omapIpfs, setOmapIpfs] = useState<Record<string, TemplatesIpf>>({});
   useEffect(() => {
-    if (!omapTemplates || !omapInset) return;
+    if (!omapInset) return;
     let live = true;
-    api.templatesIpf(omapTemplates).then((ipf) => live && setOmapIpf({ id: omapTemplates, ipf }), () => undefined);
+    for (const id of omapTemplates) {
+      if (omapIpfs[id]) continue;
+      api.templatesIpf(id).then((ipf) => live && setOmapIpfs((s) => ({ ...s, [id]: ipf })), () => undefined);
+    }
     return () => {
       live = false;
     };
-  }, [omapTemplates, omapInset]);
+  }, [omapTemplates.join(","), omapInset]); // eslint-disable-line react-hooks/exhaustive-deps
   const omapOverlay = (t: Transform, id: string): ReactNode => {
     const c = cursors.find((k) => k.id === id);
     const m = omapVisible && c ? omapAt?.[`${c.x},${c.y}`] : undefined;
     if (!m) return null;
     const points = spotsOf(m);
-    const ipf = omapInset && omapIpf?.id === omapTemplates ? omapIpf.ipf : null;
+    const ipf = omapInset ? omapIpfs[m.templates ?? omapTemplates[0]] ?? null : null;
     let inset: ReactNode = null;
     if (ipf) {
       // Top right of the pattern, a fifth of its size (as pyxem's).
@@ -1013,7 +1021,7 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
     label: "Match",
     content: (
       <MatchPanel templatesId={matchTemplates!} cursors={cursors} activeId={activeCursor.id}
-        at={matchAt ?? {}} busy={matchBusy} error={matchError} />
+        at={matchAt ?? {}} busy={matchBusy} error={matchError} matchKey={matchCacheKey} />
     ),
   }] : [];
 

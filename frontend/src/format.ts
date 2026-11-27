@@ -80,6 +80,7 @@ export function kindLabel(d: DatasetSummary): string {
   if (d.orientation?.output === "map") return "Orient";
   if (d.orientation?.output === "correlation") return "Corr";
   if (d.orientation?.output === "ipf") return "IPF";
+  if (d.orientation?.output === "phase") return "Phase";
   if (d.origin === "disks") return "Bragg";
   if (d.origin === "bragg-map") return "BVM";
   if (d.origin === "beam-shift") return "Shift";

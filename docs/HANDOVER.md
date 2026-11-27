@@ -1,4 +1,4 @@
-# Handover (2026-11-27, evening)
+# Handover (2026-11-27, late evening)
 
 Read this first. Then:
 - `docs/4DSTEM_PLAN.md`: the 4D-STEM design and what is built; phase 7 is the
@@ -9,7 +9,7 @@ Read this first. Then:
   `/Users/gt622/Documents/Obsidian Vault/Codes/Si-viewer.md`.
 
 This file covers what those don't: the checkouts and branches, the servers,
-the uncommitted work, how the user works, and what is open.
+the state of the work, how the user works, and what is open.
 
 ## The project
 
@@ -25,13 +25,14 @@ stacks, in-situ series and 4D-STEM.
 | Folder | Branch | State |
 |---|---|---|
 | `/Users/gt622/Documents/Dev/SI_viewer` | `abtem-plugin` (43ae9c9) | The abTEM plugin's work, separate. Holds `.claude/launch.json` and `examples/` (git-ignored). |
-| `/Users/gt622/Documents/Dev/SI_viewer-4dstem` | `4dstem` | **Current work.** Everything committed and pushed (`3f2513c` and this handover after it). |
+| `/Users/gt622/Documents/Dev/SI_viewer-4dstem` | `4dstem` | **Current work.** Everything committed and pushed (the phase map and the Match tab's "All matches" list are the last commit). |
 | `/Users/gt622/Documents/Dev/SI_viewer-remote` | `remote` (a773a1d, pushed, clean) | `si-viewer remote HOST` (SSH launcher, token auth, install). |
 
 - `main` and `origin/main` are at `d652fa6`, the merge of the remote work and
   4D-STEM's COM and calibration changes.
 - Since `d652fa6`, `4dstem` and `remote` have moved apart:
-  - `4dstem` has the orientation work (`780b69d`, `f7b2d37`, `3f2513c`).
+  - `4dstem` has the orientation work (`780b69d`, `f7b2d37`, `3f2513c`,
+    `590b050`, then the phase map).
   - `remote` has one fix: a server deletes the session files of servers no
     longer running.
 - Merge them when the user asks.
@@ -47,8 +48,8 @@ main checkout's. Never commit it, `.claude/` or `examples/`.
 - **Test:**
   `PYTHONPATH=/Users/gt622/Documents/Dev/SI_viewer-4dstem/backend /Users/gt622/miniforge3/envs/si-viewer/bin/python -m pytest -q -p no:cacheprovider /Users/gt622/Documents/Dev/SI_viewer-4dstem/backend/tests`
   - It takes about 2.5 min; run it in the background.
-  - Last run: **464 passed, 140 skipped**.
-  - While iterating, run only `tests/test_orientation.py` (11 tests, about 30 s).
+  - Last run: **465 passed, 140 skipped**.
+  - While iterating, run only `tests/test_orientation.py` (12 tests, about 30 s).
 - **Token auth:** since the remote merge, a server needs its token unless
   started with `--no-token`. Every 4dstem configuration in `.claude/launch.json`
   has `--no-token`.
@@ -59,7 +60,7 @@ main checkout's. Never commit it, `.claude/` or `examples/`.
 |---|---|---|
 | 8768 | `si-viewer-4dstem` | **The user's own server.** 4dstem code from 26 Nov, so it predates all the orientation work. **Ask before restarting it.** |
 | 8769, 8770 | `si-viewer-4dstem-test`, `-claude` | Old test servers. |
-| 8771 | `si-viewer-4dstem-orientation` | **The orientation test server**: 4dstem code with the latest backend, `--no-token`. The user also uses it in the browser pane (tab-7). |
+| 8771 | `si-viewer-4dstem-orientation` | **The orientation test server**: 4dstem code with the latest backend and frontend build (restarted after the All matches endpoint), `--no-token`. The user also uses it in the browser pane. |
 
 **Restarting 8771** (needed after any backend change). Everything is held in
 memory, so save first:
@@ -88,6 +89,11 @@ them. Match results aren't kept.
   - In the saved analysis it is already set, and saved analyses now keep
     edited calibrations.
   - The Ag structure is `examples/4dstem/Ag.cif` in the main checkout.
+- **Fe grains (phase map):** Examples → pyxem's simulated bcc/fcc Fe grains
+  (`pyxem-fe-grains`, opens centred). Structures `examples/4dstem/Fe-bcc.cif`
+  and `Fe-fcc.cif` in the main checkout (as pyxem's phases). Test options:
+  resolution 2°, no precession, excitation error 0.1 1/Å, reciprocal radius
+  2.5 1/Å.
 - **The tutorial followed:**
   `/Users/gt622/Documents/Dev/Hyperspy_Workshop_2025/pyxem/Orientation_mapping_SPED-Ag.ipynb`.
 
@@ -141,23 +147,78 @@ them. Match results aren't kept.
     no precession with s = 0.001 1/Å). The app turns that into a message
     saying what to change.
 
-### Last commit
+### Commits
 
-`3f2513c` added the whole-scan **Map** and what it needs:
-- `match_scan`, `orientation_map`, `ipf_colours`, `map_at` and `describe` in
-  `processing/orientation.py`;
-- `/4d/orientation/map`, `/orientation/ipf` and `/orientation/at`;
-- `session.set_orientation_map`;
-- the RGB renderer;
-- the IPF key tab;
-- the Orientation map layer.
+- `3f2513c` added the whole-scan **Map** and what it needs:
+  - `match_scan`, `orientation_map`, `ipf_colours`, `map_at` and `describe`
+    in `processing/orientation.py`;
+  - `/4d/orientation/map`, `/orientation/ipf` and `/orientation/at`;
+  - `session.set_orientation_map`;
+  - the RGB renderer;
+  - the IPF key tab;
+  - the Orientation map layer.
+- `590b050`:
+  - the map's markers are fetched one request at a time, newest cursor
+    positions first;
+  - Template, Best match, Orientation map and Bragg disk marks share one
+    Mark choice (circle or "+");
+  - diffraction patterns open in Linear contrast.
 
-Nothing is uncommitted.
+### The last commit: the phase map and All matches
+
+The phase map was built in another session. Details in `4DSTEM_PLAN.md`
+phase 7, "Phase map" and "All matches".
+
+- **Choosing phases** (`OrientationSection.tsx`): the Templates section is a
+  list, one row per phase with its colour, and a "+ Template ▾" menu (one set
+  per Structure; others disabled). The first row is the one drawn on the
+  patterns and in the Structure tab; clicking another row moves it first; ×
+  removes. Other phases are `useOrientation.others` (persisted);
+  `phasesFor` joins the ids by commas.
+- **Backend:** the `templates` field of match and map takes ids joined by
+  commas (`api/orientation.py: _phase_set`, refusing two of one Structure).
+  pyxem's `get_orientation` runs once per phase; each position keeps the
+  phase whose best template correlates best (`best_phase`,
+  `combine_matches`). pyxem's own multi-phase output was avoided: its
+  `to_phase_index` fails with one result kept, misplaces each phase's first
+  template, and its single-phase helpers refuse it.
+- **The map** keeps `[phases, y, x, n_best, 4]` (`phase_blocks` reads a
+  single-phase map as one phase, so the saved SPED-Ag analysis reads as
+  before). Its record has `phases` [{name, templates, colour}] (tab10,
+  `PHASE_COLOURS`, the same list in backend and frontend).
+- **Images:** Correlation (the best phase's); **Phase** (each position's
+  index, drawn with the colour map `stops:<colours>`; "Phase key" tab);
+  IPF-x/y/z, each position in its own phase's key and shaded by its
+  correlation as a fraction of its phase's best (IPF key tab shows a key per
+  phase). RGB images' contrast now starts at 0.
+- **Matches** carry `phase`, `phase_index`, `templates` and every phase's
+  best (`phases`). The Match tab has a Phase column; its heat map and the
+  map's IPF inset use the matched phase's templates.
+- **Examples:** pyxem's orientation examples open with the pattern centre in
+  the middle (`calibration.center = None`, `examples.py: _pyxem(centre=…)`).
+- **Test:** `test_phase_map_of_fe_grains`: > 95 % of the Fe grains' positions
+  get the right phase, at the cursors and over the scan.
+
+- **All matches** (Match tab, collapsed): every template matched at the
+  active cursor, all phases', best first; clicking a row draws that match on
+  the patterns (`POST /templates/describe`, `useOrientation.matchPick`).
+
+The Fe grains session is saved as
+`/Users/gt622/Documents/Dev/SI_viewer/examples/4dstem/Fe grains phase analysis.hspy`.
+Not yet checked in the browser after the phase map: that the saved SPED-Ag
+analysis still reads.
 
 ## Open items (nearest first)
 
-1. **Phase map:** templates of several Structures, since pyxem matches
-   several phases. Not started.
+1. **Phase map:** built and committed (above).
+   - **On hold: overlapping grains.** pyxem keeps one best orientation per
+     pattern (its runners-up are mostly the same grain). Options: a second
+     pass (mask the best template's spots, via `to_vectors` → `to_mask` or
+     the Bragg disks, match the rest, keep it if well misoriented by orix),
+     NMF components matched one by one (phase 8), or py4DSTEM's vector
+     orientation mapping (phase 9).
+   - The Ti550 file (MacLaren et al., α/β Ti) was set aside: it holds only
+     Bragg vectors.
 2. **The vector-masked copy:** in the saved analysis it was deleted, but if it
    is made again, check its pixel size. It inherits whatever the data had when
    it was made, and its polar patterns would map at the wrong scale.

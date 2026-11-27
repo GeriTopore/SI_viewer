@@ -494,9 +494,11 @@ def describe(res, sim, phase=None) -> list[dict]:
         inten = np.asarray(v.intensity, float).ravel()
         top = inten.max() if inten.size else 1.0
         corr = [None] * n
-        for idx, c in data[i, :, :2]:
+        ranked = []  # every template kept, best first (as pyxem orders them)
+        for idx, c, rot, factor in data[i]:
             if np.isfinite(c) and 0 <= int(idx) < n:
                 corr[int(idx)] = round(float(c), 6)
+                ranked.append({"index": int(idx), "correlation": round(float(c), 6), "rotation": float(rot), "mirror": bool(factor < 0)})
         best = data[i, 0]
         seen = view_of(oris[i, 0], phase) if phase is not None else {}
         out.append({
@@ -516,8 +518,27 @@ def describe(res, sim, phase=None) -> list[dict]:
                 "r": np.hypot(xy[:, 0], xy[:, 1]).round(6).tolist(),
             },
             "correlations": corr,
+            "ranked": ranked,
         })
     return out
+
+
+def describe_one(sim, phase, index: int, rotation: float, mirror: bool, correlation: float = 0.0) -> dict:
+    """``match``'s description of one template at an in-plane rotation (one
+    of a match's ``ranked``): its reflections on the pattern and its view."""
+    res = orientation_map(np.array([[[index, correlation, rotation, -1.0 if mirror else 1.0]]]), sim)
+    m = describe(res, sim, phase)[0]
+    del m["correlations"], m["ranked"]
+    return m
+
+
+def template_uvws(rotations, phase) -> np.ndarray:
+    """Every template's beam direction as ``direction_of`` gives it: [n, 3]."""
+    from orix.vector import Miller, Vector3d
+
+    v = (rotations * Vector3d.zvector()).in_fundamental_sector(phase.point_group)
+    uvw = np.asarray(Miller(xyz=v.data, phase=phase).uvw, float).reshape(-1, 3)
+    return (uvw / np.abs(uvw).max(axis=1, keepdims=True)).round(4)
 
 
 # ---------- the whole scan: the orientation map (pyxem's OrientationMap) ----------
@@ -593,5 +614,49 @@ def map_at(results: np.ndarray, sim, phase, positions) -> list[dict]:
     out = describe(orientation_map(picked, sim), sim, phase)
     for m, (x, y) in zip(out, positions):
         m["x"], m["y"] = int(x), int(y)
-        del m["correlations"]  # only the kept ones: see the Match tab for all
+        del m["correlations"], m["ranked"]  # only the kept ones: see the Match tab for all
+    return out
+
+
+# ---------- several phases (a phase map) ----------
+
+# A colour per phase (matplotlib's tab10, as orix's default phase colours).
+PHASE_COLOURS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
+
+
+def phase_blocks(results: np.ndarray) -> np.ndarray:
+    """An orientation map's results as [phases, y, x, n_best, 4] (a
+    single-phase map, [y, x, n_best, 4], as one phase)."""
+    r = np.asarray(results)
+    return r[None] if r.ndim == 4 else r
+
+
+def best_phase(results: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Each position's phase (the one whose best template correlates best,
+    as pyxem's multi-phase matching and the two-phase SPED work choose it):
+    the phase index [y, x] and that phase's results [y, x, n_best, 4]."""
+    blocks = phase_blocks(results)
+    which = np.argmax(blocks[..., 0, 1], axis=0)
+    picked = np.take_along_axis(blocks, which[None, ..., None, None], axis=0)[0]
+    return which.astype(np.int32), picked
+
+
+def combine_matches(per_phase: list[list[dict]], phases: list[dict]) -> list[dict]:
+    """Matches of the same positions against several phases (``phases``:
+    [{name, templates}], in order) as one per position: the phase whose best
+    match correlates best, with ``phase`` (its name), ``phase_index``,
+    ``templates`` (its Templates object) and ``phases`` (every phase's best:
+    name, templates, correlation, uvw)."""
+    out = []
+    for i in range(len(per_phase[0])):
+        rows = [p[i] for p in per_phase]
+        k = int(np.argmax([r["best"]["correlation"] for r in rows]))
+        m = dict(rows[k])
+        m["phase"], m["phase_index"], m["templates"] = phases[k]["name"], k, phases[k]["templates"]
+        m["phases"] = [{"name": ph["name"], "templates": ph["templates"], "correlation": r["best"]["correlation"],
+                        "uvw": r["best"].get("uvw")} for ph, r in zip(phases, rows)]
+        # Every phase's templates in one list, best first, each with its phase's index.
+        m["ranked"] = sorted(({**row, "phase": j} for j, r in enumerate(rows) for row in r.get("ranked", [])),
+                             key=lambda row: -row["correlation"])
+        out.append(m)
     return out

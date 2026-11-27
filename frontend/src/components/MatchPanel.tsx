@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type MatchResult, type TemplatesIpf } from "../api/client";
 import { colormapGradient, colormapLut } from "../viewer/colormaps";
 import { formatValue } from "../format";
+import { pickKey, useOrientation } from "../state/orientation";
 import { TemplatesIpfPlot } from "./OrixPlots";
 
 interface CursorLike {
@@ -17,8 +18,9 @@ const uvwLabel = (uvw: number[]) => `[${uvw.map((x) => formatValue(x)).join(" ")
  * correlation of every template at the active cursor on the inverse pole
  * figure (inferno, as the tutorial's heat map), each cursor's best ringed
  * in its colour; each cursor's best: [uvw], correlation, in-plane rotation,
- * Euler angles. */
-export function MatchPanel({ templatesId, cursors, activeId, at, busy, error }: {
+ * Euler angles. Under it, every template matched at the active cursor, best
+ * first: picking one draws it on the patterns instead of the best. */
+export function MatchPanel({ templatesId, cursors, activeId, at, busy, error, matchKey }: {
   templatesId: string;
   cursors: CursorLike[];
   activeId: string;
@@ -26,17 +28,22 @@ export function MatchPanel({ templatesId, cursors, activeId, at, busy, error }: 
   /** Matching now (a cursor without a result yet may get one). */
   busy: boolean;
   error: string | null;
+  /** The matches' key in ``useOrientation.matchCache`` (picks are kept by it). */
+  matchKey: string;
 }) {
+  const active = cursors.find((c) => c.id === activeId) ?? cursors[0];
+  const m = active ? at[`${active.x},${active.y}`] : undefined;
+  // The IPF of the phase matched at the active cursor (several phases: its own).
+  const shown = m?.templates ?? templatesId.split(",")[0];
+  const phased = templatesId.includes(",");
   const [ipf, setIpf] = useState<{ id: string; ipf: TemplatesIpf } | null>(null);
   useEffect(() => {
     let stale = false;
-    api.templatesIpf(templatesId).then((r) => !stale && setIpf({ id: templatesId, ipf: r }), () => undefined);
+    api.templatesIpf(shown).then((r) => !stale && setIpf({ id: shown, ipf: r }), () => undefined);
     return () => {
       stale = true;
     };
-  }, [templatesId]);
-  const active = cursors.find((c) => c.id === activeId) ?? cursors[0];
-  const m = active ? at[`${active.x},${active.y}`] : undefined;
+  }, [shown]);
   const lut = colormapLut("inferno");
   const colours = useMemo(() => {
     if (!m) return undefined;
@@ -48,21 +55,28 @@ export function MatchPanel({ templatesId, cursors, activeId, at, busy, error }: 
       return `rgb(${lut[k]},${lut[k + 1]},${lut[k + 2]})`;
     });
   }, [m, lut]);
+  const ids = templatesId.split(",");
+  // The match shown at each position (its rank in the ranked list; 0 the best).
+  const picks = useOrientation((s) => s.matchPick);
+  const rankAt = (x: number, y: number) => picks[pickKey(matchKey, `${x},${y}`)] ?? 0;
   const rings = cursors.flatMap((c) => {
     const r = at[`${c.x},${c.y}`];
-    return r ? [{ index: r.best.index, colour: c.color }] : [];
+    const row = r?.ranked?.[rankAt(c.x, c.y)];
+    const id = row ? ids[row.phase] : r?.templates ?? shown;
+    return r && id === shown ? [{ index: row?.index ?? r.best.index, colour: c.color }] : [];
   });
+  const activeRank = active ? rankAt(active.x, active.y) : 0;
 
   return (
     <div className="templates-tab">
       {error && <p className="field-error">{error}</p>}
       <div className="templates-panes">
         <figure>
-          {ipf?.id === templatesId && m ? (
+          {ipf?.id === shown && m ? (
             <>
               <TemplatesIpfPlot ipf={ipf.ipf} picked={null} colours={colours} rings={rings} />
               <figcaption className="small match-key">
-                <span className="muted">Correlation at ({active.x}, {active.y})</span>
+                <span className="muted">{m.phase ? `${m.phase} · ` : ""}Correlation at ({active.x}, {active.y})</span>
                 <span className="match-scale" style={{ background: colormapGradient("inferno") }} />
               </figcaption>
             </>
@@ -76,6 +90,7 @@ export function MatchPanel({ templatesId, cursors, activeId, at, busy, error }: 
               <tr>
                 <th />
                 <th>Cursor</th>
+                {phased && <th>Phase</th>}
                 <th>[uvw]</th>
                 <th>Corr.</th>
                 <th>In-plane</th>
@@ -89,6 +104,9 @@ export function MatchPanel({ templatesId, cursors, activeId, at, busy, error }: 
                   <tr key={c.id} className={c.id === active?.id ? "selected" : undefined}>
                     <td><span className="match-dot" style={{ background: c.color }} /></td>
                     <td>({c.x}, {c.y})</td>
+                    {phased && (
+                      <td title={r?.phases?.map((p) => `${p.name}: ${formatValue(p.correlation)}`).join(" · ")}>{r?.phase ?? ""}</td>
+                    )}
                     <td>{r ? uvwLabel(r.best.uvw) : busy ? "…" : "–"}</td>
                     <td>{r ? formatValue(r.best.correlation) : ""}</td>
                     <td>{r ? `${formatValue(r.best.rotation)}°${r.best.mirror ? " (mirrored)" : ""}` : ""}</td>
@@ -98,6 +116,36 @@ export function MatchPanel({ templatesId, cursors, activeId, at, busy, error }: 
               })}
             </tbody>
           </table>
+          {m?.ranked && m.ranked.length > 0 && (
+            <details className="match-ranked">
+              <summary className="small muted">All matches at ({active.x}, {active.y}) · {m.ranked.length}</summary>
+              <div className="match-ranked-scroll">
+                <table className="axes match-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      {phased && <th>Phase</th>}
+                      <th>[uvw]</th>
+                      <th>Corr.</th>
+                      <th>In-plane</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {m.ranked.map((row, i) => (
+                      <tr key={i} className={i === activeRank ? "selected" : undefined}
+                        onClick={() => void useOrientation.getState().pickMatch(matchKey, `${active.x},${active.y}`, i, templatesId)}>
+                        <td>{i + 1}</td>
+                        {phased && <td>{m.phases?.[row.phase]?.name ?? ""}</td>}
+                        <td>{uvwLabel(row.uvw)}</td>
+                        <td>{formatValue(row.correlation)}</td>
+                        <td>{`${formatValue(row.rotation)}°${row.mirror ? " (mirrored)" : ""}`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
         </figure>
       </div>
     </div>

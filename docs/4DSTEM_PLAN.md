@@ -936,8 +936,7 @@ Calibration's step 1 and the Info tab's row are now "Descan".
     reflections (circles or + crosses), each labelled with the crystal's hkl
     (Layers: hkl), and an inverse pole figure inset in the pattern's top
     right with the beam direction (Layers: IPF). The button is "Map".
-  - **Still to do:** the phase map (several phases: templates of more than
-    one Structure), and the masked copy's calibration (made before the
+  - **Still to do:** the masked copy's calibration (made before the
     original's pixel size was corrected).
 - orix's crystal-map tutorial loads EBSD orientations indexed by EMsoft
   (dictionary indexing, `dp` its score); orix itself doesn't index. pyxem
@@ -947,6 +946,43 @@ Calibration's step 1 and the Info tab's row are now "Descan".
   matching at the cursors then the whole scan, then IPF / correlation /
   phase maps. Tested on the Au data (`examples/4dstem/Au.cif`), with Si as
   a decoy phase.
+
+- **Phase map (built 2026-11-27).** Orientation mapping's Templates section
+  lists the phases (a row and colour each, "+ Template ▾" adds Templates of
+  another Structure, one each; the first row is drawn on the patterns); matching and the Map run pyxem's `get_orientation` once per phase
+  and keep, at each position, the phase whose best template correlates
+  best (what pyxem's multi-phase matching compares, and what MacLaren et
+  al. 2024 did for α/β Ti; pyxem's own multi-phase output was avoided: its
+  `to_phase_index` fails with one result kept and misplaces each phase's
+  first template, and its single-phase helpers refuse it). The Templates
+  key is the ids joined by commas (matches cached by it); the map keeps
+  [phases, y, x, n_best, 4]. Images: Correlation (the best phase's), Phase
+  (each position's phase index, drawn with a colour map of the phases'
+  colours, tab10; Phase key tab), IPF-x/y/z (each position in its phase's
+  key; shaded by the correlation as a fraction of its phase's best; IPF key
+  tab with a key per phase). Matches and the map's markers carry `phase`,
+  `templates` (the Match tab's heat map and the IPF inset use that phase's).
+  RGB images' contrast now starts at 0 (the worst grain no longer black).
+  Tested on pyxem's simulated Fe bcc/fcc grains (CIFs as pyxem's phases:
+  `examples/4dstem/Fe-bcc.cif`, `Fe-fcc.cif`; the example now opens
+  centred, `calibration.center = None`): >95 % of positions get the right
+  phase. Single-phase maps (e.g. the saved SPED-Ag analysis) read as before.
+  The Ti550 file (MacLaren et al.) was set aside: Bragg vectors only.
+- **All matches (2026-11-27).** The Match tab's "All matches at (x, y)"
+  (collapsed by default): every template matched at the active cursor, all
+  phases', best first (`ranked`: index, correlation, in-plane, mirror, uvw,
+  phase). Clicking a row draws that match on the patterns (and turns the
+  Structure tab with Match orientation; the IPF ring follows) instead of
+  the best: `POST /templates/describe` describes one template at an
+  in-plane rotation (`describe_one`); picks kept per position
+  (`useOrientation.matchPick`).
+- **On hold (2026-11-27): overlapping grains.** pyxem's `get_orientation`
+  keeps one best orientation per pattern (its runner-ups are mostly the
+  same grain); orix only stores and plots. Options: a second pass (mask
+  the best template's spots, via `to_vectors` → `to_mask` or the Bragg
+  disks, match the rest, keep it if well misoriented by orix), NMF
+  components matched one by one (phase 8), or py4DSTEM's vector ACOM
+  (phase 9).
 
 ### Phase 8: decomposition and segmentation
 - The existing decomposition (PCA, NMF, …) on 4D data, VDF segmentation,

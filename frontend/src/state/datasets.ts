@@ -818,6 +818,8 @@ export const elementOf = (d: DatasetSummary) => d.element ?? d.title;
 export function initialColormap(d: DatasetSummary): string {
   if (isWindowMap(d)) return useDisplay.getState().ensureWindowColour(d.id);
   if (d.dpc?.output === "colour") return "hsv"; // a direction: a circular map
+  // A phase map: each phase index in its phase's colour.
+  if (d.orientation?.output === "phase" && d.orientation.phases?.length) return `stops:${d.orientation.phases.map((p) => p.colour).join(",")}`;
   // Atomic-resolution maps: a phase is circular; strains and rotations diverge from 0.
   if (d.atomic?.output === "phase") return "phase"; // cmocean's, as kemstem plots it
   // Amplitudes: a colour per peak, so overlaid they map the domains.

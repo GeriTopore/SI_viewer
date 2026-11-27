@@ -3,9 +3,10 @@ import { api, type DatasetSummary } from "../api/client";
 import { formatValue } from "../format";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { useLayers } from "../state/layers";
-import { chosenFor, isPolar, matchKey, perAngstrom, polarFor, polarStale, polarsFor, templatesOf, useOrientation } from "../state/orientation";
+import { PHASE_COLOURS, chosenFor, isPolar, matchKey, othersFor, perAngstrom, phasesFor, polarFor, polarStale, polarsFor, templatesOf, useOrientation } from "../state/orientation";
 import { useFourDState } from "../views/FourDView";
 import { done } from "./FourDCalibrationInfo";
+import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { templatesLabel } from "./TemplatesView";
 import { JobProgress } from "./StrainSection";
 
@@ -27,24 +28,70 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
   const stale = matchedOn ? polarStale(matchedOn, all) : false;
   // The cursors (shared by the data and its polar patterns): matched where they are.
   const { st } = useFourDState(d);
-  const key = chosen && matchedOn ? matchKey(matchedOn, chosen.id) : "";
-  const busy = useOrientation((s) => (key ? s.matchBusy[key] ?? false : false));
-  const matchNow = () => chosen && matchedOn && useOrientation.getState().runMatch(
-    key, d.id, chosen.id, polar ? null : matchedOn.id, st.cursors.map((c) => [c.x, c.y]),
-  );
+  // The phases matched: the Templates chosen, and those of other Structures ticked (a phase map).
+  const phases = useOrientation((s) => phasesFor(s, d, all));
+  const others = useOrientation((s) => othersFor(s, d));
   const nameOf = (x: DatasetSummary) => `${structureOf(x)?.title ?? x.templates!.name} · ${x.title.replace(/^Templates · /, "")} (${x.templates!.templates})`;
+  // The list: the Templates chosen (drawn), then the other phases' (matched with it).
+  const listed = [chosen, ...others.filter((id) => id !== chosen?.id).map((id) => sets.find((x) => x.id === id))]
+    .filter((x): x is DatasetSummary => !!x);
+  const setList = (ids: string[]) => {
+    choose(d.id, ids[0] ?? null);
+    useOrientation.getState().setOthers(d.id, ids.slice(1));
+  };
+  const [addMenu, setAddMenu] = useState<{ x: number; y: number } | null>(null);
+  const addItems: MenuItem[] = sets.map((x) => {
+    const sameStructure = listed.find((y) => y.parent_id === x.parent_id);
+    return {
+      label: nameOf(x),
+      title: sameStructure ? `${structureOf(x)?.title ?? "Its Structure"} is listed already: one set of templates per phase` : templatesLabel(x),
+      disabled: !!sameStructure,
+      onSelect: () => setList([...listed.map((y) => y.id), x.id]),
+    };
+  });
+  const key = phases && matchedOn ? matchKey(matchedOn, phases) : "";
+  const busy = useOrientation((s) => (key ? s.matchBusy[key] ?? false : false));
+  const matchNow = () => phases && matchedOn && useOrientation.getState().runMatch(
+    key, d.id, phases, polar ? null : matchedOn.id, st.cursors.map((c) => [c.x, c.y]),
+  );
 
   return (
     <section className="q-form virtual-form">
       <h4 className="process-heading">Templates{done(!!chosen)}</h4>
+      {/* The phases matched, as the detector groups: the highlighted one drawn on the
+          patterns (and in the Structure tab), the others matched with it (a phase map). */}
+      {listed.length > 0 && (
+        <ul className="group-list">
+          {listed.map((x, i) => (
+            <li key={x.id} className={`layer-row no-eye${i === 0 ? " active" : ""}`}
+              title={`${templatesLabel(x)}${i === 0 ? "" : " · click to draw it on the patterns"}`}
+              onClick={() => i > 0 && setList([x.id, ...listed.filter((y) => y.id !== x.id).map((y) => y.id)])}>
+              <span className="layer-swatch" style={{ background: PHASE_COLOURS[i % PHASE_COLOURS.length] }} />
+              <span className="layer-label">{nameOf(x)}</span>
+              <button className="icon-button" title={`Remove ${nameOf(x)}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setList(listed.filter((y) => y.id !== x.id).map((y) => y.id));
+                }}>
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {sets.length ? (
-        <label title={chosen ? templatesLabel(chosen) : "The templates drawn on the patterns (a layer) and matched against"}>
-          <span>Templates</span>
-          <select value={chosen?.id ?? ""} onChange={(e) => choose(d.id, e.target.value || null)}>
-            <option value="">None</option>
-            {sets.map((x) => <option key={x.id} value={x.id}>{nameOf(x)}</option>)}
-          </select>
-        </label>
+        <div className="virtual-row">
+          <button className="secondary" aria-haspopup="menu"
+            onMouseDown={(e) => addMenu && e.stopPropagation()}
+            onClick={(e) => {
+              if (addMenu) return setAddMenu(null);
+              const r = e.currentTarget.getBoundingClientRect();
+              setAddMenu({ x: r.left, y: r.bottom + 4 });
+            }}>
+            + Template ▾
+          </button>
+          {addMenu && <ContextMenu x={addMenu.x} y={addMenu.y} onClose={() => setAddMenu(null)} items={addItems} />}
+        </div>
       ) : (
         <p className="muted small">Make templates on a Structure first (open a .cif, then its Templates process).</p>
       )}
@@ -74,7 +121,7 @@ export function OrientationSection({ d }: { d: DatasetSummary }) {
           </button>
         </div>
       )}
-      {chosen && matchedOn && <MapScan d={d} templates={chosen.id} polar={polar ? null : matchedOn.id} />}
+      {phases && matchedOn && <MapScan d={d} templates={phases} polar={polar ? null : matchedOn.id} />}
     </section>
   );
 }

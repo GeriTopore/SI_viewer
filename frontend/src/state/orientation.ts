@@ -80,6 +80,8 @@ interface OrientationState {
   /** Match ``dsId`` (4D-STEM data, or polar patterns: ``polar`` null) at
    * ``positions`` ([x, y]) against ``templates``; kept under ``key``. */
   runMatch: (key: string, dsId: string, templates: string, polar: string | null, positions: number[][]) => Promise<void>;
+  /** Match the cursors as they move (once the scan is mapped): queued, the newest positions next. */
+  followMatches: (key: string, dsId: string, templates: string, polar: string | null, positions: number[][]) => Promise<void>;
   /** The match shown at a position (``pickKey``): its rank in the match's
    * ranked list (none: the best). */
   matchPick: Record<string, number>;
@@ -153,6 +155,9 @@ const safeStorage: StateStorage = {
  * positions wanted next for each. */
 const mapAtBusy = new Set<string>();
 const mapAtWanted = new Map<string, { omapId: string; positions: number[][] }>();
+/** ``followMatches``' queue, the same way. */
+const matchFollowBusy = new Set<string>();
+const matchWanted = new Map<string, { dsId: string; templates: string; polar: string | null; positions: number[][] }>();
 
 export const useOrientation = create<OrientationState>()(persist((set, get) => {
   /** Run a job to its end, kept in ``jobs`` under ``id``; ``done`` with its result. */
@@ -207,6 +212,23 @@ export const useOrientation = create<OrientationState>()(persist((set, get) => {
       set((s) => ({ matchErrors: { ...s.matchErrors, [key]: (e as Error).message } }));
     } finally {
       set((s) => ({ matchBusy: { ...s.matchBusy, [key]: false } }));
+    }
+  },
+  followMatches: async (key, dsId, templates, polar, positions) => {
+    // As fetchMapAt: one request at a time per key, only the newest wanted
+    // positions waiting; positions already matched are skipped.
+    matchWanted.set(key, { dsId, templates, polar, positions });
+    if (matchFollowBusy.has(key)) return;
+    matchFollowBusy.add(key);
+    try {
+      for (let w = matchWanted.get(key); w; w = matchWanted.get(key)) {
+        matchWanted.delete(key);
+        const have = get().matchCache[key] ?? {};
+        const missing = w.positions.filter(([x, y]) => !have[`${x},${y}`]);
+        if (missing.length) await get().runMatch(key, w.dsId, w.templates, w.polar, missing);
+      }
+    } finally {
+      matchFollowBusy.delete(key);
     }
   },
   matchPick: {},

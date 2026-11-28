@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { colourFrame, fetchArray, fetchFrame, fetchStackFrame, type Frame } from "../api/arrays";
-import { api, dataVersion, type DatasetSummary, type MatchResult, type TemplatesIpf } from "../api/client";
+import { dataVersion, type DatasetSummary, type MatchResult } from "../api/client";
 import { ContextMenu, type MenuItem } from "../components/ContextMenu";
 import { ImageView, type AxisCal, type Interaction, type Pt, type Transform } from "../components/ImageView";
 import { AnnotationsToggle } from "../components/AnnotationsToggle";
@@ -906,64 +906,32 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
   const activeBest = matchOf(activeCursor.id)?.best;
   const activeMatchView = activeBest?.view && activeBest.up ? { view: activeBest.view, up: activeBest.up } : null;
   // ---------- the orientation map on the patterns (the tutorial's
-  // to_markers(annotate=True) and to_ipf_markers): at each cursor, the
-  // map's best template, its reflections labelled, and where its beam
-  // direction falls in the inverse pole figure (an inset) ----------
+  // to_markers(annotate=True)): at each cursor, the
+  // map's best template, its reflections labelled ----------
   const omap = mapFor(allDatasets(files), ds, matchPolar, matchTemplates);
   const omapKey = omap ? mapKey(omap) : "";
   const omapAt = useOrientation((s) => (omapKey ? s.mapAtCache[omapKey] : undefined));
   useEffect(() => {
     if (omap) void useOrientation.getState().fetchMapAt(omapKey, omap.id, cursors.map((c) => [c.x, c.y]));
   }, [omapKey, cursorKeys.join(";")]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Once the scan is mapped with these templates, the cursors are matched as
+  // they move or are added, so the Match tab follows them.
+  const mapped = !!omap && !!matchCacheKey && omap.orientation?.templates === matchTemplates
+    && omap.orientation?.polar === matchPolar?.id;
+  useEffect(() => {
+    if (mapped) void useOrientation.getState().followMatches(matchCacheKey, ds.id, matchTemplates!,
+      polarData ? null : matchPolar!.id, cursors.map((c) => [c.x, c.y]));
+  }, [mapped, matchCacheKey, cursorKeys.join(";")]); // eslint-disable-line react-hooks/exhaustive-deps
   const omapLayer = ovOf("omap");
   const omapVisible = !!omap && (omapLayer.visible ?? true);
   const omapStyle: MarkStyle = omapLayer.style === "cross" ? "cross" : "circle";
   const omapLabels = omapLayer.labels ?? true;
-  const omapInset = omapLayer.inset ?? true;
   const omapColour = omapLayer.colour ?? OMAP_COLOR;
-  // Each phase's IPF (several for a phase map: each match in its own phase's).
-  const omapTemplates = omap?.orientation?.templates?.split(",") ?? [];
-  const [omapIpfs, setOmapIpfs] = useState<Record<string, TemplatesIpf>>({});
-  useEffect(() => {
-    if (!omapInset) return;
-    let live = true;
-    for (const id of omapTemplates) {
-      if (omapIpfs[id]) continue;
-      api.templatesIpf(id).then((ipf) => live && setOmapIpfs((s) => ({ ...s, [id]: ipf })), () => undefined);
-    }
-    return () => {
-      live = false;
-    };
-  }, [omapTemplates.join(","), omapInset]); // eslint-disable-line react-hooks/exhaustive-deps
   const omapOverlay = (t: Transform, id: string): ReactNode => {
     const c = cursors.find((k) => k.id === id);
     const m = omapVisible && c ? omapAt?.[`${c.x},${c.y}`] : undefined;
     if (!m) return null;
     const points = spotsOf(m);
-    const ipf = omapInset ? omapIpfs[m.templates ?? omapTemplates[0]] ?? null : null;
-    let inset: ReactNode = null;
-    if (ipf) {
-      // Top right of the pattern, a fifth of its size (as pyxem's).
-      const [ax, ay] = t.toScreen(0, 0);
-      const [bx, by] = t.toScreen(patternG.width, patternG.height);
-      const size = 0.22 * Math.min(Math.abs(bx - ax), Math.abs(by - ay));
-      const { x: ox, y: oy } = ipf.sector.outline;
-      const x0 = Math.min(...ox), x1 = Math.max(...ox), y0 = Math.min(...oy), y1 = Math.max(...oy);
-      const k = size / Math.max(x1 - x0, y1 - y0);
-      const rx = Math.max(ax, bx) - size - 8, ry = Math.min(ay, by) + 8;
-      const at = (x: number, y: number) => [rx + (x - x0) * k, ry + (y1 - y) * k];
-      const path = ox.map((x, i) => `${i ? "L" : "M"}${at(x, oy[i]).join(",")}`).join("") + "Z";
-      const [px, py] = at(ipf.points.x[m.best.index], ipf.points.y[m.best.index]);
-      const rgb = ipf.points.rgb[m.best.index];
-      inset = (
-        <g className="omap-inset">
-          <path d={path} fill="rgba(0,0,0,0.45)" stroke="#fff" strokeWidth={1} />
-          <circle cx={px} cy={py} r={4} fill={rgb ? `rgb(${rgb.join(",")})` : omapColour} stroke="#000" strokeWidth={1}>
-            <title>{`[${m.best.uvw.map((v) => formatValue(v)).join(" ")}] · ${formatValue(m.best.correlation)}`}</title>
-          </circle>
-        </g>
-      );
-    }
     return (
       <g className="fourd-overlay" opacity={omapLayer.opacity ?? 1}>
         {points.map(([px, py], i) => {
@@ -979,7 +947,6 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
             </g>
           );
         })}
-        {inset}
       </g>
     );
   };
@@ -997,11 +964,6 @@ export function FourDView({ ds, vectors = false }: { ds: DatasetSummary; vectors
         label: "hkl",
         control: <input type="checkbox" checked={omapLabels} title="Label each reflection"
           onChange={(e) => setOverlay(ds.id, "omap", { labels: e.target.checked })} />,
-      },
-      {
-        label: "IPF",
-        control: <input type="checkbox" checked={omapInset} title="Where the beam direction falls in the inverse pole figure"
-          onChange={(e) => setOverlay(ds.id, "omap", { inset: e.target.checked })} />,
       },
     ],
   }] : [];

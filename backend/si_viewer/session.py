@@ -452,6 +452,14 @@ class Dataset:
         self.thumbnails = {}
         self.cache = {}
 
+    def signal_quantity(self) -> str | None:
+        """HyperSpy's ``Signal.quantity`` (what the values are), if set."""
+        try:
+            q = self.signal.metadata.get_item("Signal.quantity", None)
+        except Exception:  # noqa: BLE001 - metadata of any shape
+            return None
+        return str(q) if q else None
+
     def summary(self) -> dict:
         from .processing.element_maps import MapOptions
         from .processing.eels import eels_info, microscope_info
@@ -485,6 +493,8 @@ class Dataset:
             ),
             "quantities": list(self.quantities),
             "quantity": self.quantity,
+            # What the values are (HyperSpy's Signal.quantity, e.g. "Shift (px)").
+            "signal_quantity": self.signal_quantity(),
             "parent_id": self.parent_id,
             "window": None if self.window is None else dict(self.window),
             "background": None if self.background is None else {

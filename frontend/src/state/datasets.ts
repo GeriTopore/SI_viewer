@@ -89,6 +89,11 @@ interface DatasetsState {
   clearErrors: () => void;
 }
 
+/** Maps whose values are fractions (strain), shown as percentages on request. */
+export const isFractionMap = (d: DatasetSummary): boolean =>
+  ["exx", "eyy", "exy"].includes(d.strain?.output ?? "")
+  || ["exx", "eyy", "exy", "strain-par", "strain-perp"].includes(d.atomic?.output ?? "");
+
 export const allDatasets = (files: FileSummary[]): DatasetSummary[] =>
   files.flatMap((f) => f.datasets);
 

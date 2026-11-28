@@ -589,6 +589,8 @@ export interface DatasetSummary {
   nbytes: number;
   lazy: boolean;
   axes: Axis[];
+  /** What the values are (HyperSpy's Signal.quantity, e.g. "Shift (px)"). */
+  signal_quantity?: string | null;
   /** Present for EDS spectra and spectrum images. */
   eds: EdsInfo | null;
   /** Spectra and spectrum images only; null when unknown (or not a spectrum). */

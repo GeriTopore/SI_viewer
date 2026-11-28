@@ -304,3 +304,36 @@ export function bytesLabel(n: number): string {
   }
   return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
 }
+
+/** A title and its units, written "title (units)". */
+export interface Titled {
+  title: string;
+  units: string;
+}
+export const titledText = (t: Titled) => (t.units ? `${t.title} (${t.units})` : t.title).trim();
+
+const undefinedName = (n: string | undefined) => !n || /^<?undefined>?$/i.test(n.trim());
+
+/** What an image's values are, for a colour bar: from HyperSpy's
+ * Signal.quantity ("Shift (px)" → Shift, px); maps that are one of a set
+ * (strain components, …) by their own title, with the quantity's units. */
+export function valueTitle(d: DatasetSummary): Titled {
+  const q = (d.signal_quantity ?? "").trim();
+  const m = /^(.*?)\s*\(([^()]*)\)$/.exec(q);
+  const qTitle = (m ? m[1] : q).trim();
+  const units = m ? m[2].trim() : "";
+  const named = !!d.strain || !!d.atomic || !!d.dpc;
+  return { title: named || !qTitle ? d.title : qTitle, units };
+}
+
+/** The names and units of the axes of ``d`` drawn ``width`` × ``height``
+ * (its signal or its navigation plane, whichever has that size). */
+export function axisTitles(d: DatasetSummary, width: number, height: number): { x: Titled; y: Titled } {
+  const plane = (nav: boolean) => d.axes.filter((a) => a.navigate === nav).slice(-2);
+  const [ay, ax] = [plane(false), plane(true)].find(([y, x]) => x?.size === width && y?.size === height) ?? [];
+  const named = (a: { name: string; units: string } | undefined, fallback: string): Titled => ({
+    title: undefinedName(a?.name) ? fallback : a!.name,
+    units: a?.units ?? "",
+  });
+  return { x: named(ax, "x"), y: named(ay, "y") };
+}

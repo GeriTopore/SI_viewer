@@ -3,13 +3,14 @@ import type { Frame } from "../api/arrays";
 import { useDisplay } from "../state/display";
 import { useViewerImage } from "../state/viewerImage";
 import { ImageRenderer, type DisplayParams, type ViewTransform } from "../viewer/renderer";
-import { formatValue, niceScaleBar } from "../format";
+import { axisTitles, formatValue, niceScaleBar, valueTitle } from "../format";
 import { isTyping, useShortcuts } from "../keyboard";
 import { safeFileName } from "../download";
 import type { SnapshotPanel } from "../viewer/snapshot";
 import { PngExportDialog } from "./PngExportDialog";
 import { ViewerLoupe, lastPointer, overFft, useLoupeLink } from "./Loupe";
 import { useUi } from "../state/ui";
+import { allDatasets, isFractionMap, useDatasets } from "../state/datasets";
 import { scanPixel } from "../views/si/scan";
 
 export interface AxisCal {
@@ -465,13 +466,31 @@ export function ImageView({
   const saveImage = () => {
     const shown = layers.filter((l) => l.visible && l.frame && l.display);
     if (!shown.length) return;
+    const all = allDatasets(useDatasets.getState().files);
+    const datasetOf = (id?: string) => (id ? all.find((x) => x.id === id) : undefined);
+    const fraction = (id?: string) => {
+      const d = datasetOf(id);
+      return !!d && isFractionMap(d);
+    };
+    // Automatic titles: the axes of the first layer's dataset, the values of
+    // the one a colour bar would show (the first without its own colours).
+    const axesOf = datasetOf(shown.find((l) => l.datasetId)?.datasetId);
+    const valuesOf = datasetOf(shown.find((l) => !l.frame!.rgb && l.datasetId)?.datasetId);
+    const named = axesOf ? axisTitles(axesOf, fullWidth, fullHeight) : null;
+    const titles = {
+      x: named?.x ?? { title: "x", units: calX.units },
+      y: named?.y ?? { title: "y", units: calY.units },
+      value: valuesOf ? valueTitle(valuesOf) : { title: shown[0].label, units: "" },
+    };
     setExporting({
       name: `${safeFileName(shown.map((l) => l.label).join("+"))}.png`,
       panels: [{
-        layers: shown.map((l) => ({ key: l.key, frame: l.frame!, display: l.display!, opacity: l.opacity })),
+        layers: shown.map((l) => ({ key: l.key, frame: l.frame!, display: l.display!, opacity: l.opacity, fraction: fraction(l.datasetId) })),
         width: fullWidth,
         height: fullHeight,
         calX,
+        calY,
+        titles,
       }],
     });
   };

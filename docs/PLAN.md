@@ -415,6 +415,26 @@ viewer's active layer.
   - **Save PNG** under the image saves the whole image as shown (layers,
     colours, contrast) at full resolution with a scale bar. Small scans are
     enlarged by a whole factor to about 1024 px.
+  - A single image can carry axes and, if drawn with a colour map (e.g.
+    strain), a colour bar (2026-11-28; `snapshot.ts: decorate`):
+    - Colour bar: beside the right, left, top or bottom edge, as long as
+      that edge, beyond the axis on that side; width and distance in output
+      pixels; the map's colour map, contrast and gamma.
+    - Axes: the calibrated x below and y on the left, with the units.
+    - Each has a font, a number of ticks (evenly from end to end) and
+      decimals (empty: automatic). Strain maps (`isFractionMap`) offer
+      Percent: the colour bar's values × 100, its units "%".
+    - Titles and units, typed or automatic: the axes' names and units
+      (`format.ts: axisTitles`), the values' from HyperSpy's Signal.quantity
+      ("Shift (px)" → Shift, px; strain and other maps of a set by their own
+      title; `valueTitle`, the summary's `signal_quantity`).
+    - Margins: background (white, black, none) and text colour.
+    - The dialog: at least 560 px tall (or the window's height), the
+      options scrolling beside a preview level with their middle, each
+      section folded by its heading (remembered).
+    - The dialog's choices are kept when it is closed (stored at once);
+      the scale bar length and titles are kept per image while the app is
+      open.
   - The spectrum plot saves CSV (every series shown) and PNG.
   - The quantification table and line profiles save as CSV.
 - **Keyboard shortcuts** (`?` or the ? button lists them):

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { downloadBlob } from "../download";
-import { scaleBarLabel } from "../format";
+import { scaleBarLabel, titledText } from "../format";
 import { useLayers } from "../state/layers";
 import {
-  MAX_FIGURE_AREA, MAX_FIGURE_SIDE, autoBarLength, autoBarSizes, autoFactor, autoLabelFont, autoSpacing,
-  barPixels, canvasBlob, composeFigure, factorChoices, figureLayout, renderBase,
-  type BarBackground, type Corner, type FigureStyle, type Ink, type SnapshotPanel,
+  MAX_FIGURE_AREA, MAX_FIGURE_SIDE, autoBarLength, autoBarSizes, autoColourBar, autoFactor, autoLabelFont, autoSpacing,
+  barPixels, canvasBlob, colourBarLayer, composeFigure, decorate, factorChoices, figureLayout, renderBase,
+  type BarBackground, type Corner, type Edge, type FigureStyle, type Ink, type MarginStyle, type SnapshotPanel,
 } from "../viewer/snapshot";
 
 type BarOn = "first" | "all" | "none";
@@ -23,6 +23,16 @@ interface Stored {
   gridBackground: GridBackground;
   labels: boolean;
   labelColour: Ink;
+  /** A single image's colour bar (beside which edge; strain as %), its axes,
+   * and the margins they are drawn in. */
+  cbShow: boolean;
+  cbEdge: Edge;
+  cbPercent: boolean;
+  axesShow: boolean;
+  marginBackground: MarginStyle["background"];
+  marginColour: Ink;
+  /** Sections of the options folded away. */
+  folded: string[];
 }
 
 const STORAGE_KEY = "si-viewer.pngExport";
@@ -36,6 +46,13 @@ const DEFAULTS: Stored = {
   gridBackground: "dark",
   labels: true,
   labelColour: "white",
+  cbShow: false,
+  cbEdge: "right",
+  cbPercent: false,
+  axesShow: false,
+  marginBackground: "white",
+  marginColour: "black",
+  folded: [],
 };
 const GRID_COLOURS: Record<GridBackground, string> = { dark: "#0f1115", black: "#000", white: "#fff" };
 
@@ -63,8 +80,29 @@ interface Typed {
   labelFont?: string;
   spacing?: string;
   padding?: string;
+  cbWidth?: string;
+  cbDistance?: string;
+  cbFont?: string;
+  cbTicks?: string;
+  cbDecimals?: string;
+  axesFont?: string;
+  axesTicks?: string;
+  axesDecimals?: string;
 }
 let typedInSession: Typed = {};
+
+/** What is typed for one image (by its file name), kept while the app is
+ * open: the scale bar length and the titles (absent = automatic). */
+interface PerImage {
+  length?: string;
+  xTitle?: string;
+  xUnits?: string;
+  yTitle?: string;
+  yUnits?: string;
+  cbTitle?: string;
+  cbUnits?: string;
+}
+const perImage = new Map<string, PerImage>();
 
 const num = (t: string) => (t.trim() === "" ? NaN : Number(t));
 const PREVIEW = 420;
@@ -89,9 +127,22 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
   const [factor, setFactor] = useState(() => Math.min(...panels.map((p) => autoFactor(p.width, p.height))));
   const [stored, setStored] = useState(loadStored);
   const [typed, setTyped] = useState<Typed>(typedInSession);
-  const [lengthText, setLengthText] = useState<string>();
+  const [mine, setMine] = useState<PerImage>(() => perImage.get(name) ?? {});
+  const setOwn = (k: keyof PerImage, v: string) => {
+    const next = { ...(perImage.get(name) ?? {}), [k]: v };
+    perImage.set(name, next);
+    setMine(next);
+  };
+  const lengthText = mine.length;
+  const setLengthText = (v: string) => setOwn("length", v);
   const [busy, setBusy] = useState(false);
   const patch = (p: Partial<Stored>) => setStored((s) => ({ ...s, ...p }));
+  // Kept as soon as changed, whether the dialog is saved or closed.
+  useEffect(() => saveStored(stored), [stored]);
+  const fold = (id: string) => ({
+    folded: stored.folded.includes(id),
+    onToggle: () => patch({ folded: stored.folded.includes(id) ? stored.folded.filter((x) => x !== id) : [...stored.folded, id] }),
+  });
   const type = (k: keyof Typed, v: string) => {
     typedInSession = { ...typedInSession, [k]: v };
     setTyped(typedInSession);
@@ -123,12 +174,21 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
     [ready, cols],
   );
   const barAuto = autoBarSizes(layout0?.rects[0].w ?? 1024);
+  const cbAuto = autoColourBar(layout0?.width ?? 1024, layout0?.height ?? 1024);
   const autos = {
     thickness: String(barAuto.thickness),
     font: String(barAuto.font),
     labelFont: String(autoLabelFont(layout0?.cellW ?? 1024)),
     spacing: layout0 ? String(autoSpacing(layout0.cellW, layout0.cellH)) : "0",
     padding: "0",
+    cbWidth: String(cbAuto.width),
+    cbDistance: String(cbAuto.distance),
+    cbFont: String(Math.round(barAuto.font * 0.8)),
+    cbTicks: "3",
+    cbDecimals: "",
+    axesFont: String(Math.round(barAuto.font * 0.8)),
+    axesTicks: "5",
+    axesDecimals: "",
   };
   const text = (k: keyof Typed) => typed[k] ?? autos[k];
 
@@ -141,6 +201,28 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
   const spacing = grid ? num(text("spacing")) : 0;
   const padding = grid ? num(text("padding")) : 0;
   const labelsVisible = grid && stored.labels;
+  // A colour bar for a single map drawn with a colour map.
+  const cbLayer = grid ? null : colourBarLayer(first);
+  const cbVisible = !!cbLayer && stored.cbShow;
+  const cbWidth = num(text("cbWidth"));
+  const cbDistance = num(text("cbDistance"));
+  const cbFont = num(text("cbFont"));
+  const cbTicks = num(text("cbTicks"));
+  const cbDecimals = decimalsOf(text("cbDecimals"));
+  const cbPercent = !!cbLayer?.fraction && stored.cbPercent;
+  // Axes of a single image.
+  const axesAvailable = !grid;
+  const axesVisible = axesAvailable && stored.axesShow;
+  const axesFont = num(text("axesFont"));
+  const axesTicks = num(text("axesTicks"));
+  const axesDecimals = decimalsOf(text("axesDecimals"));
+  const marginsShown = cbVisible || axesVisible;
+  // Titles: typed, else the image's own (percent: the colour bar's units are %).
+  const auto = first.titles;
+  const own = (k: keyof PerImage, fallback: string) => mine[k] ?? fallback;
+  const xTitle = own("xTitle", auto?.x.title ?? "x"), xUnits = own("xUnits", auto?.x.units ?? first.calX.units);
+  const yTitle = own("yTitle", auto?.y.title ?? "y"), yUnits = own("yUnits", auto?.y.units ?? (first.calY ?? first.calX).units);
+  const cbTitle = own("cbTitle", auto?.value.title ?? ""), cbUnits = own("cbUnits", cbPercent ? "%" : auto?.value.units ?? "");
 
   const figure = useMemo(() => {
     if (!ready || !layout0) return { error: renderError };
@@ -155,6 +237,18 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
     if (!error && labelsVisible && !(labelFont > 0)) error = "Label font size must be positive";
     if (!error && grid && !(spacing >= 0)) error = "Spacing must be zero or more";
     if (!error && grid && !(padding >= 0)) error = "Padding must be zero or more";
+    if (!error && cbVisible) {
+      if (!(cbWidth > 0)) error = "Colour bar width must be positive";
+      else if (!(cbDistance >= 0)) error = "Colour bar distance must be zero or more";
+      else if (!(cbFont > 0)) error = "Colour bar font size must be positive";
+      else if (!(Number.isInteger(cbTicks) && cbTicks >= 2)) error = "Colour bar ticks: a whole number, 2 or more";
+      else if (Number.isNaN(cbDecimals)) error = "Colour bar decimals: a whole number from 0 to 10, or empty";
+    }
+    if (!error && axesVisible) {
+      if (!(axesFont > 0)) error = "Axes font size must be positive";
+      else if (!(Number.isInteger(axesTicks) && axesTicks >= 2)) error = "Axes ticks: a whole number, 2 or more";
+      else if (Number.isNaN(axesDecimals)) error = "Axes decimals: a whole number from 0 to 10, or empty";
+    }
     if (error) return { error };
     const style: FigureStyle = {
       cols,
@@ -179,7 +273,7 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
     if (size.width > MAX_FIGURE_SIDE || size.height > MAX_FIGURE_SIDE || size.width * size.height > MAX_FIGURE_AREA)
       return { error: "Too large; use a smaller scale" };
     try {
-      const canvas = composeFigure(
+      const figure = composeFigure(
         ready.map((base, i) => ({
           base,
           dataWidth: panels[i].width,
@@ -189,12 +283,27 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
         })),
         style,
       );
-      return { canvas };
+      if (!marginsShown) return { canvas: figure };
+      return {
+        canvas: decorate(
+          figure, first, cbLayer,
+          axesVisible ? {
+            font: axesFont, ticks: axesTicks, decimals: axesDecimals,
+            x: titledText({ title: xTitle, units: xUnits }), y: titledText({ title: yTitle, units: yUnits }),
+          } : null,
+          cbVisible ? {
+            edge: stored.cbEdge, width: cbWidth, distance: cbDistance, font: cbFont,
+            ticks: cbTicks, decimals: cbDecimals, percent: cbPercent,
+            title: titledText({ title: cbTitle, units: cbUnits }),
+          } : null,
+          { background: stored.marginBackground, colour: stored.marginColour },
+        ),
+      };
     } catch (e) {
       return { error: (e as Error).message };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, layout0, stored, length, thickness, font, labelFont, spacing, padding, grid, cols, barOn]);
+  }, [ready, layout0, stored, length, thickness, font, labelFont, spacing, padding, grid, cols, barOn, cbLayer, cbWidth, cbDistance, cbFont, cbTicks, cbDecimals, cbPercent, axesVisible, axesFont, axesTicks, axesDecimals, xTitle, xUnits, yTitle, yUnits, cbTitle, cbUnits]);
   const canvas = "canvas" in figure ? figure.canvas : null;
   const error = "error" in figure ? figure.error : null;
 
@@ -271,8 +380,7 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
             </Row>
 
             {barAvailable && (
-              <>
-                <h3>Scale bar</h3>
+              <Fold title="Scale bar" {...fold("bar")}>
                 {grid ? (
                   <Row label="On">
                     <Select
@@ -342,12 +450,79 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
                     options={[["none", "None"], ["black", "Black"], ["white", "White"], ["translucent", "Translucent"]]}
                   />
                 </Row>
-              </>
+              </Fold>
+            )}
+
+            {cbLayer && (
+              <Fold title="Colour bar" {...fold("cb")}>
+                <Row label="Show">
+                  <input type="checkbox" checked={stored.cbShow} onChange={(e) => patch({ cbShow: e.target.checked })} />
+                </Row>
+                <Row label="Edge">
+                  <Select
+                    value={stored.cbEdge}
+                    onChange={(cbEdge) => patch({ cbEdge })}
+                    disabled={!cbVisible}
+                    options={[["right", "Right"], ["left", "Left"], ["top", "Top"], ["bottom", "Bottom"]]}
+                  />
+                </Row>
+                <Row label="Width">
+                  <Num value={text("cbWidth")} onChange={(v) => type("cbWidth", v)} disabled={!cbVisible} />
+                  <span className="muted">px</span>
+                </Row>
+                <Row label="Distance">
+                  <Num value={text("cbDistance")} onChange={(v) => type("cbDistance", v)} disabled={!cbVisible} title="From the image, or its axis" />
+                  <span className="muted">px</span>
+                </Row>
+                <TitleRow label="Title" title={cbTitle} units={cbUnits} disabled={!cbVisible}
+                  onTitle={(v) => setOwn("cbTitle", v)} onUnits={(v) => setOwn("cbUnits", v)} />
+                <TickRows prefix="cb" text={text} type={type} disabled={!cbVisible} />
+                {cbLayer.fraction && (
+                  <Row label="Percent">
+                    <input type="checkbox" checked={stored.cbPercent} disabled={!cbVisible}
+                      onChange={(e) => patch({ cbPercent: e.target.checked })} title="Values × 100" />
+                  </Row>
+                )}
+              </Fold>
+            )}
+
+            {axesAvailable && (
+              <Fold title="Axes" {...fold("axes")}>
+                <Row label="Show">
+                  <input type="checkbox" checked={stored.axesShow} onChange={(e) => patch({ axesShow: e.target.checked })} />
+                </Row>
+                <TitleRow label="X" title={xTitle} units={xUnits} disabled={!axesVisible}
+                  onTitle={(v) => setOwn("xTitle", v)} onUnits={(v) => setOwn("xUnits", v)} />
+                <TitleRow label="Y" title={yTitle} units={yUnits} disabled={!axesVisible}
+                  onTitle={(v) => setOwn("yTitle", v)} onUnits={(v) => setOwn("yUnits", v)} />
+                <TickRows prefix="axes" text={text} type={type} disabled={!axesVisible} />
+              </Fold>
+            )}
+
+            {(cbLayer || axesAvailable) && (
+              <Fold title="Margins" {...fold("margins")}>
+                <Row label="Background">
+                  <Select
+                    value={stored.marginBackground}
+                    onChange={(marginBackground) => patch({ marginBackground })}
+                    disabled={!marginsShown}
+                    options={[["white", "White"], ["black", "Black"], ["none", "None"]]}
+                  />
+                </Row>
+                <Row label="Text">
+                  <Select
+                    value={stored.marginColour}
+                    onChange={(marginColour) => patch({ marginColour })}
+                    disabled={!marginsShown}
+                    options={[["black", "Black"], ["white", "White"]]}
+                  />
+                </Row>
+              </Fold>
             )}
 
             {grid && (
               <>
-                <h3>Labels</h3>
+                <Fold title="Labels" {...fold("labels")}>
                 <Row label="Show">
                   <input type="checkbox" checked={stored.labels} onChange={(e) => patch({ labels: e.target.checked })} />
                 </Row>
@@ -367,7 +542,8 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
                     options={[["white", "White"], ["black", "Black"]]}
                   />
                 </Row>
-                <h3>Layout</h3>
+                </Fold>
+                <Fold title="Layout" {...fold("layout")}>
                 <Row label="Spacing">
                   <Num value={text("spacing")} onChange={(v) => type("spacing", v)} min={0} />
                   <span className="muted">px</span>
@@ -383,6 +559,7 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
                     options={[["dark", "Dark"], ["black", "Black"], ["white", "White"]]}
                   />
                 </Row>
+                </Fold>
               </>
             )}
           </div>
@@ -402,6 +579,76 @@ export function PngExportDialog({ panels, cols, grid, name, scaleBar = true, onC
   );
 }
 
+/** Decimals typed: empty is automatic (null); NaN if not 0–10. */
+function decimalsOf(t: string): number | null {
+  if (t.trim() === "") return null;
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 0 && n <= 10 ? n : NaN;
+}
+
+/** A section of the options: its heading folds it away. */
+function Fold({ title, folded, onToggle, children }: {
+  title: string;
+  folded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <h3 className={folded ? "collapsed" : undefined}>
+        <button type="button" className="process-group-toggle" aria-expanded={!folded} onClick={onToggle}>
+          <span className="process-chevron" aria-hidden="true" />
+          {title}
+        </button>
+      </h3>
+      {!folded && children}
+    </>
+  );
+}
+
+/** A title and its units (written "title (units)"). */
+function TitleRow({ label, title, units, disabled, onTitle, onUnits }: {
+  label: string;
+  title: string;
+  units: string;
+  disabled: boolean;
+  onTitle: (v: string) => void;
+  onUnits: (v: string) => void;
+}) {
+  return (
+    <Row label={label}>
+      <input type="text" className="png-title" value={title} disabled={disabled} placeholder="Title"
+        onChange={(e) => onTitle(e.target.value)} />
+      <input type="text" className="png-units" value={units} disabled={disabled} placeholder="Units"
+        onChange={(e) => onUnits(e.target.value)} />
+    </Row>
+  );
+}
+
+/** A scale's label font, tick count and decimals. */
+function TickRows({ prefix, text, type, disabled }: {
+  prefix: "cb" | "axes";
+  text: (k: keyof Typed) => string;
+  type: (k: keyof Typed, v: string) => void;
+  disabled: boolean;
+}) {
+  const k = (s: "Font" | "Ticks" | "Decimals") => `${prefix}${s}` as keyof Typed;
+  return (
+    <>
+      <Row label="Font">
+        <Num value={text(k("Font"))} onChange={(v) => type(k("Font"), v)} disabled={disabled} />
+        <span className="muted">px</span>
+      </Row>
+      <Row label="Ticks">
+        <Num value={text(k("Ticks"))} onChange={(v) => type(k("Ticks"), v)} disabled={disabled} min={2} />
+      </Row>
+      <Row label="Decimals">
+        <Num value={text(k("Decimals"))} onChange={(v) => type(k("Decimals"), v)} disabled={disabled} placeholder="auto" />
+      </Row>
+    </>
+  );
+}
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="png-row">
@@ -412,8 +659,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function Num({
-  value, onChange, disabled, min = 0, title,
-}: { value: string; onChange: (v: string) => void; disabled?: boolean; min?: number; title?: string }) {
+  value, onChange, disabled, min = 0, title, placeholder,
+}: { value: string; onChange: (v: string) => void; disabled?: boolean; min?: number; title?: string; placeholder?: string }) {
   return (
     <input
       type="number"
@@ -422,6 +669,7 @@ function Num({
       value={value}
       disabled={disabled}
       title={title}
+      placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
     />
   );

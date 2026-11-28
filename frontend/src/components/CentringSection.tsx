@@ -3,7 +3,7 @@ import { dataVersion, type DatasetSummary } from "../api/client";
 import { allDatasets, useDatasets } from "../state/datasets";
 import { beamOf, jobRunning, planeOf, useCentring } from "../state/centring";
 import { formatValue } from "../format";
-import { segmented } from "../views/FourDView";
+import { segmented, useFourDState } from "../views/FourDView";
 import { InPlaceChoice, useInPlace } from "./InPlaceChoice";
 
 const range = (r: [number, number]) => `${formatValue(r[0])} … ${formatValue(r[1])}`;
@@ -19,8 +19,24 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
   const job = useCentring((s) => s.jobs[d.id]);
   const error = useCentring((s) => s.errors[d.id] ?? null);
   const { setBeam, setPlane, find, centre, cancel } = useCentring.getState();
+  // Apertures that can mark the beam: circle groups, and each aperture of an aperture group.
+  const { st } = useFourDState(d);
+  const marks = st.groups.flatMap((g) => {
+    const det = g.detector;
+    if (det.shape === "circle") return [{ key: g.id, label: g.name, cx: det.cx, cy: det.cy, r: det.r }];
+    if (det.shape !== "apertures") return [];
+    const all = det.apertures ?? [];
+    return all.map((a, i) => ({ key: `${g.id}:${i}`, label: all.length > 1 ? `${g.name} · ${i + 1}` : g.name, cx: a.x, cy: a.y, r: a.r ?? det.r }));
+  });
+  const mark = beam.from ? marks.find((m) => m.key === beam.from) ?? null : null;
+  const findNow = () => {
+    setBeam(d.id, { seed: mark ? { cx: mark.cx, cy: mark.cy, r: mark.r } : null });
+    void find(d.id);
+  };
   const running = jobRunning(job);
   const [inPlace, setInPlace] = useInPlace("centre");
+  // Shift the patterns, or (a negligible descan) only put the pattern axes' 0 on the beam.
+  const [move, setMove] = useState<"patterns" | "axes">("patterns");
   const files = useDatasets((s) => s.files);
   const shifts = allDatasets(files).filter((x) => x.origin === "beam-shift" && x.parent_id === d.id);
   const found = shifts.find((x) => x.beam)?.beam ?? null;
@@ -48,6 +64,25 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
     <section className="q-form virtual-form">
       <h4 className="process-heading">Step 1 · Find the beam</h4>
       <div className="virtual-row">
+        {segmented("Beam", [
+          { id: "brightest", label: "Brightest disk", title: "The mean pattern's brightest disk" },
+          { id: "aperture", label: "Aperture", title: marks.length ? "A group's aperture placed on the beam" : "Place a circle or aperture group on the beam first" },
+        ], beam.from ? "aperture" : "brightest", (v) => setBeam(d.id, { from: v === "aperture" ? (beam.from ?? marks[0]?.key ?? null) : null }))}
+      </div>
+      {beam.from !== null && (
+        marks.length ? (
+          <label title="The aperture on the direct beam">
+            <span>Aperture</span>
+            <select value={mark?.key ?? ""} onChange={(e) => setBeam(d.id, { from: e.target.value })}>
+              {!mark && <option value="">–</option>}
+              {marks.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          </label>
+        ) : (
+          <p className="muted small">No circle or aperture group</p>
+        )
+      )}
+      <div className="virtual-row">
         {segmented("Method", [
           { id: "center_of_mass", label: "Centre of mass", title: "The centre of mass of the bright-field disk (sub-pixel)" },
           { id: "blur", label: "Blur", title: "The brightest pixel after a Gaussian blur (whole pixels)" },
@@ -66,13 +101,16 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
             onChange={(e) => e.target.value !== "" && setBeam(d.id, { sigma: Math.max(0.5, Number(e.target.value)) })} />
         </label>
       )}
-      <label title="Half the side of the search square; empty: 3 × the disk radius">
-        <span>Search (± px)</span>
-        <input type="number" min={2} step={1} placeholder="3 r" value={beam.half_width ?? ""}
-          onChange={(e) => setBeam(d.id, { half_width: e.target.value === "" ? null : Math.max(2, Math.round(Number(e.target.value))) })} />
-      </label>
+      {/* An aperture with the centre of mass searches the aperture itself, following the beam. */}
+      {!(beam.from && beam.method === "center_of_mass") && (
+        <label title={beam.from ? "Half the side of the search square; empty: the aperture's radius" : "Half the side of the search square; empty: 3 × the disk radius"}>
+          <span>Search (± px)</span>
+          <input type="number" min={2} step={1} placeholder={beam.from ? "r" : "3 r"} value={beam.half_width ?? ""}
+            onChange={(e) => setBeam(d.id, { half_width: e.target.value === "" ? null : Math.max(2, Math.round(Number(e.target.value))) })} />
+        </label>
+      )}
       <div className="process-actions">
-        <button className={found ? "secondary" : "primary"} disabled={running} onClick={() => void find(d.id)}
+        <button className={found ? "secondary" : "primary"} disabled={running || (beam.from !== null && !mark)} onClick={findNow}
           title="Find the beam in every pattern">
           {found ? "Find again" : "Find the beam"}
         </button>
@@ -101,10 +139,20 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
       {residual !== null && <p className="muted small">Plane − beam found: {formatValue(residual)} px RMS</p>}
 
       <h4 className="process-heading">Step 3 · Centre</h4>
-      <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={running} what={d.title} />
-      <div className="rebin-warning" role="note" hidden={!inPlace}>
-        Overwrites the loaded data; the file is unchanged.
+      <div className="virtual-row">
+        {segmented("Move", [
+          { id: "patterns", label: "Patterns", title: "Shift every pattern so the beam is at its centre" },
+          { id: "axes", label: "Axes", title: "Put the pattern axes' 0 on the beam; no pattern moves" },
+        ], move, setMove)}
       </div>
+      {move === "patterns" && (
+        <>
+          <InPlaceChoice inPlace={inPlace} onChange={setInPlace} disabled={running} what={d.title} />
+          <div className="rebin-warning" role="note" hidden={!inPlace}>
+            Overwrites the loaded data; the file is unchanged.
+          </div>
+        </>
+      )}
       {error && <p className="field-error">{error}</p>}
       {running ? (
         <div className="q-job">
@@ -118,9 +166,9 @@ export function CentringSection({ d }: { d: DatasetSummary }) {
         </div>
       ) : (
         <div className="process-actions">
-          <button className="primary" disabled={!current} onClick={() => void centre(d.id, inPlace)}
-            title="Shift every pattern so the beam is at its centre">
-            Centre the patterns
+          <button className="primary" disabled={!current} onClick={() => void centre(d.id, inPlace, move)}
+            title={move === "axes" ? "The beam's median over the scan becomes the axes' 0" : "Shift every pattern so the beam is at its centre"}>
+            {move === "axes" ? "Move the axes' 0" : "Centre the patterns"}
           </button>
         </div>
       )}

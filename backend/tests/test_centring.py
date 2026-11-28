@@ -53,6 +53,23 @@ def test_finds_the_beam_and_the_descan_plane():
     assert stats["x"][1] - stats["x"][0] > 2.5 and stats["y"][1] - stats["y"][0] > 1.2
 
 
+def test_an_aperture_marks_the_beam_among_brighter_disks():
+    """Overlapping CBED disks, a diffracted one brighter than the direct beam:
+    the mean pattern's brightest disk is the wrong one, an aperture placed on
+    the beam finds it (searched over the aperture alone)."""
+    data, true = _cube()
+    yy, xx = np.mgrid[0:N, 0:N] + 0.5
+    for iy in range(data.shape[0]):
+        for ix in range(data.shape[1]):
+            cx, cy = true[iy, ix]
+            data[iy, ix] += (np.hypot(xx - cx - 10, yy - cy) <= 4) * 150  # brighter, 10 px away
+    wrong = centring.find_beam(_signal(data), centring.BeamOptions(), _bf(data))
+    assert np.abs(centring.beam_positions(wrong, (N, N)) - true).max() > 2
+    seed = centring.BeamSeed(cx=31.5, cy=32.0, r=4)
+    shifts = centring.find_beam(_signal(data), centring.BeamOptions(seed=seed), seed.model_dump())
+    np.testing.assert_allclose(centring.beam_positions(shifts, (N, N)), true, atol=0.3)
+
+
 def test_centring_puts_the_beam_at_the_centre():
     data, _ = _cube()
     shifts = centring.find_beam(_signal(data), centring.BeamOptions(), _bf(data))
@@ -105,6 +122,21 @@ def test_centring_through_the_api(tmp_path):
     np.testing.assert_allclose(at["used"], true[5, 7], atol=0.05)
     assert at["residual"] < 0.05
     assert client.get(f"/api/datasets/{cube_id}/4d/beam?x=99&y=0").status_code == 416
+
+    # The axes only (a negligible descan): no pattern moves; the pattern
+    # axes' 0 is on the beam's median over the scan.
+    before = np.asarray(session.get_dataset(cube_id).signal.data).copy()
+    rev = session.get_dataset(cube_id).revision
+    job = _wait(client, client.post(f"/api/datasets/{cube_id}/4d/beam/centre", json={"move": "axes", "plane": {"mode": "none"}}).json())
+    assert job["status"] == "done", job["error"]
+    cube = session.get_dataset(cube_id)
+    assert cube.revision == rev and np.array_equal(np.asarray(cube.signal.data), before)
+    mid = np.median(true.reshape(-1, 2), axis=0)
+    np.testing.assert_allclose(job["result"]["at"], mid, atol=0.05)
+    kx, ky = cube.signal.axes_manager.signal_axes
+    for axis, at in ((kx, mid[0]), (ky, mid[1])):
+        assert abs(axis.offset + (at - 0.5) * axis.scale) < 0.05 * axis.scale  # value 0 at the beam
+    # The shifts still hold (the patterns didn't move): the copy below uses them.
 
     # As a copy: the data is left as it is.
     job = _wait(client, client.post(f"/api/datasets/{cube_id}/4d/beam/centre", json={"in_place": False}).json())

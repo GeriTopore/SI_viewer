@@ -1717,11 +1717,12 @@ export const api = {
   structurePlots: (id: string) => request<StructurePlots>(`/api/datasets/${id}/structure/plots`),
   findBeam: (id: string, options: object) =>
     request<JobSummary>(`/api/datasets/${id}/4d/beam/find`, { method: "POST", body: JSON.stringify({ options }) }),
-  /** Shift every pattern so the beam is at the centre (a job; not ``inPlace``: a copy). */
-  centreBeam: (id: string, plane: object, inPlace: boolean) =>
+  /** Shift every pattern so the beam is at the centre (a job; not ``inPlace``: a copy),
+   * or (``move`` "axes") only put the pattern axes' 0 on the beam. */
+  centreBeam: (id: string, plane: object, inPlace: boolean, move: "patterns" | "axes" = "patterns") =>
     request<JobSummary>(`/api/datasets/${id}/4d/beam/centre`, {
       method: "POST",
-      body: JSON.stringify({ plane, in_place: inPlace }),
+      body: JSON.stringify({ plane, in_place: inPlace, move }),
     }),
   /** Subtract the background of every pattern of 4D-STEM data (a job), in place or as a copy. */
   subtractBackground: (id: string, options: object, inPlace: boolean) =>

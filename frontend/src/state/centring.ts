@@ -10,8 +10,12 @@ export interface BeamOptions {
   threshold: number;
   /** Blur: the Gaussian's sigma (px). */
   sigma: number;
-  /** Half the side of the square searched around the bright-field disk (px); null: 3 × its radius. */
+  /** Half the side of the square searched around the bright-field disk (px); null: 3 × its radius (1 × an aperture's). */
   half_width: number | null;
+  /** The aperture marking the beam (a detector group's, by ``beamMarkKey``); null: the mean pattern's brightest disk. */
+  from: string | null;
+  /** Where that aperture is, sent with the request (pattern px). */
+  seed: { cx: number; cy: number; r: number } | null;
 }
 
 /** The descan used for centring: ``PlaneOptions``. */
@@ -20,7 +24,7 @@ export interface PlaneOptions {
   corners: number;
 }
 
-export const DEFAULT_BEAM: BeamOptions = { method: "center_of_mass", threshold: 1, sigma: 2, half_width: null };
+export const DEFAULT_BEAM: BeamOptions = { method: "center_of_mass", threshold: 1, sigma: 2, half_width: null, from: null, seed: null };
 export const DEFAULT_PLANE: PlaneOptions = { mode: "plane", corners: 0.1 };
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -37,7 +41,7 @@ interface CentringState {
   /** Find the beam in every pattern (a job): its shift images join the dataset list. */
   find: (id: string) => Promise<void>;
   /** Shift every pattern so the beam is at the centre (a job). */
-  centre: (id: string, inPlace: boolean) => Promise<void>;
+  centre: (id: string, inPlace: boolean, move?: "patterns" | "axes") => Promise<void>;
   cancel: (id: string) => Promise<void>;
 }
 
@@ -79,9 +83,13 @@ export const useCentring = create<CentringState>((set, get) => {
         useDatasets.getState().replaceFile(job.result!.file);
         useLayers.getState().notify("Beam found: Beam shift x and y added to the dataset pane.");
       }),
-    centre: (id, inPlace) =>
-      follow(id, () => api.centreBeam(id, planeOf(get(), id), inPlace), (job) => {
+    centre: (id, inPlace, move = "patterns") =>
+      follow(id, () => api.centreBeam(id, planeOf(get(), id), inPlace, move), (job) => {
         useDatasets.getState().replaceFile(job.result!.file);
+        if (move === "axes") {
+          useLayers.getState().notify("Pattern axes' 0 moved to the beam.");
+          return;
+        }
         if (!inPlace && job.result!.id) useDatasets.getState().select(job.result!.id);
         useLayers.getState().notify(inPlace ? "Patterns centred." : "Centred copy added to the dataset pane.");
       }),

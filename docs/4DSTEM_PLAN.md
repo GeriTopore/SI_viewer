@@ -447,6 +447,24 @@ grid's *Merged* mode with each group's colour), and presets.
   another scan size are refused, so centring can't be applied twice. Au NP
   dm4: finding 0.3 s, centring 1.4 s; after centring with the plane, a plane
   fitted again is at the centre to 0.02 px.
+  - **Beam from an aperture (2026-11-28):** step 1's "Beam" choice:
+    the mean pattern's brightest disk, or an aperture placed on the beam (a
+    circle group, or one aperture of an aperture group), for patterns where
+    no disk stands out (overlapping CBED disks, no vacuum). With the centre
+    of mass the search is a circle of the aperture's radius, moved onto each
+    pattern's centre of mass and taken again (4 passes, `_follow_aperture`),
+    so a drifting beam stays inside and its neighbours out; with blur,
+    pyxem's search square of ± the aperture's radius. Test: a brighter
+    diffracted disk 10 px away fools the default (> 2 px off), the aperture
+    finds the beam to 0.23 px. On the Ti strain data (oscar
+    `vec_binned_cube.h5`, 67k patterns): the beam within 2 px over the scan,
+    a plane to 0.46 px RMS.
+  - **Axes instead of patterns (2026-11-28):** step 3's "Move": shift the
+    patterns (as before), or only put the pattern axes' 0 on the beam (its
+    median over the scan, of the descan chosen; `session.centre_axes`): no
+    resampling, the data and its revision unchanged. For a negligible
+    descan: the polar transform and matching only need the axes' 0 on the
+    beam.
 - **Built (2026-11-26): Calibration process** (`processing/calibration.py`,
   `/4d/calibration*`, `CalibrationSection`). Since 2026-11-26 a process of
   the **Bragg vectors** (selecting them shows the 4D view; the ring is drawn

@@ -2379,6 +2379,26 @@ class Session:
         cube.replace_signal(centred)
         return cube
 
+    def centre_axes(self, cube: Dataset, shifts: np.ndarray) -> tuple[float, float]:
+        """Put the pattern axes' 0 on the beam (``shifts``' median over the
+        scan) without moving any pattern: for data whose descan is negligible
+        (no resampling). Returns where the 0 now is (x, y; pattern px, pixel
+        i spanning [i, i + 1))."""
+        from .processing.centring import beam_positions
+
+        if cube.kind is not DatasetKind.DIFFRACTION4D:
+            raise ValueError(f"{cube.title} is not 4D-STEM data")
+        if shifts.shape[:2] != tuple(cube.signal.data.shape[:2]):
+            raise ValueError("The shifts are not on this scan (was it binned since?)")
+        h, w = cube.signal.data.shape[2:]
+        bx, by = (float(v) for v in np.nanmedian(beam_positions(shifts, (h, w)).reshape(-1, 2), axis=0))
+        axes = cube.signal.axes_manager
+        kx, ky = axes.signal_axes
+        # Index coordinates (pixel i centred on i): the axis value there is 0.
+        for axis, at in ((kx, bx - 0.5), (ky, by - 0.5)):
+            cube.set_axis_calibration(axes._axes.index(axis), offset=-at * axis.scale)
+        return bx, by
+
     def polar_transform(self, cube: Dataset, options, in_place: bool = False, report=None) -> Dataset:
         """The polar transform of every pattern of 4D-STEM data
         (``processing.orientation.polar_scan``, pyxem's, with the

@@ -16,6 +16,15 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 
+class BeamSeed(BaseModel):
+    """Where the direct beam is, given by hand (an aperture placed on it):
+    centre and radius in pattern px (pixel i spanning [i, i + 1))."""
+
+    cx: float
+    cy: float
+    r: float = Field(gt=0)
+
+
 class BeamOptions(BaseModel):
     # "center_of_mass": the centre of mass (above ``threshold`` × the mean);
     # "blur": the maximum after a Gaussian blur of ``sigma`` (whole pixels).
@@ -25,8 +34,11 @@ class BeamOptions(BaseModel):
     threshold: float = Field(1.0, ge=0, le=1000)
     sigma: float = Field(2.0, gt=0, le=100)
     # Half the side of the square searched, around the bright-field disk of
-    # the mean pattern (px); None: 3 × its radius.
+    # the mean pattern (px); None: 3 × its radius (1 × an aperture's).
     half_width: int | None = Field(None, ge=2, le=4096)
+    # The beam given by an aperture instead of the mean pattern's brightest
+    # disk (patterns with no disk that stands out, e.g. overlapping CBED disks).
+    seed: BeamSeed | None = None
 
 
 class PlaneOptions(BaseModel):
@@ -48,10 +60,13 @@ def find_beam(signal, opts: BeamOptions, bf: dict) -> np.ndarray:
     numpy or dask): float32 [y, x, 2] (x-shift, y-shift; pattern px). The
     search is limited to a square around ``bf`` (``fourd.bright_field_disk``
     of the mean pattern), so brighter spots elsewhere don't take the beam's
-    place."""
+    place. ``bf`` is the aperture when ``opts.seed`` is given."""
+    if opts.seed is not None and opts.method == "center_of_mass":
+        return _follow_aperture(signal, opts.seed, opts.threshold)
     s = _diffraction(signal)
     h, w = signal.data.shape[2:]
-    hw = opts.half_width or max(4, int(np.ceil(3 * bf["r"])))
+    # An aperture marks the beam itself: search only it (not its neighbours).
+    hw = opts.half_width or max(2 if opts.seed else 4, int(np.ceil((1 if opts.seed else 3) * bf["r"])))
     cx, cy = int(np.floor(bf["cx"])), int(np.floor(bf["cy"]))
     box = (max(0, cx - hw), min(w, cx + hw), max(0, cy - hw), min(h, cy + hw))
     kwargs: dict = {}
@@ -61,6 +76,36 @@ def find_beam(signal, opts: BeamOptions, bf: dict) -> np.ndarray:
         kwargs["sigma"] = opts.sigma
     shifts = s.get_direct_beam_position(method=opts.method, signal_slice=box, lazy_output=False, **kwargs)
     return np.asarray(shifts.data, dtype=np.float32)
+
+
+def _follow_aperture(signal, seed: BeamSeed, threshold: float, passes: int = 4) -> np.ndarray:
+    """``find_beam`` from an aperture on the beam: in every pattern, the centre
+    of mass inside a circle of the aperture's radius, the circle moved onto
+    it and the centre of mass taken again (``passes`` times), so a beam that
+    moves over the scan stays inside and its neighbours outside. Pixels below
+    ``threshold`` × the pattern's mean are left out (pyxem's convention)."""
+    data = signal.data
+    ny, nx, h, w = data.shape
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    out = np.empty((ny, nx, 2), np.float32)
+    # Index coordinates: pixel i is centred on i (the seed's are i + 0.5).
+    x0, y0 = seed.cx - 0.5, seed.cy - 0.5
+    for y in range(ny):
+        rows = np.asarray(data[y], np.float32)  # nx × h × w
+        floor = threshold * rows.mean(axis=(1, 2), keepdims=True)
+        weights = np.where(rows >= floor, rows, 0)
+        cx = np.full(nx, x0, np.float32)
+        cy = np.full(nx, y0, np.float32)
+        for _ in range(passes):
+            inside = (xx[None] - cx[:, None, None]) ** 2 + (yy[None] - cy[:, None, None]) ** 2 <= seed.r**2
+            wsum = (weights * inside).sum(axis=(1, 2))
+            ok = wsum > 0
+            cx = np.where(ok, (weights * inside * xx[None]).sum(axis=(1, 2)) / np.where(ok, wsum, 1), cx)
+            cy = np.where(ok, (weights * inside * yy[None]).sum(axis=(1, 2)) / np.where(ok, wsum, 1), cy)
+        # pyxem's shifts: what moves the beam to index (w/2, h/2).
+        out[y, :, 0] = w / 2 - cx
+        out[y, :, 1] = h / 2 - cy
+    return out
 
 
 def plane(shifts: np.ndarray, opts: PlaneOptions) -> np.ndarray:

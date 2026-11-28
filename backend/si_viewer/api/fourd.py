@@ -784,10 +784,18 @@ def beam_find(dataset_id: str, body: BeamBody, request: Request) -> dict:
 
     session = request.app.state.session
     ds = _cube(request, dataset_id)
-    try:
-        bf = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
-    except ValueError as e:
-        raise HTTPException(422, str(e))
+    seed = body.options.seed
+    if seed is not None:
+        # The beam marked by an aperture.
+        h, w = ds.signal.axes_manager.signal_shape[::-1]
+        if not (0 <= seed.cx <= w and 0 <= seed.cy <= h):
+            raise HTTPException(422, "The aperture is outside the pattern")
+        bf = {"cx": seed.cx, "cy": seed.cy, "r": seed.r}
+    else:
+        try:
+            bf = fourd.bright_field_disk(get_frame(ds, projection="mean-pattern"))
+        except ValueError as e:
+            raise HTTPException(422, str(e))
 
     def run(job) -> dict:
         job.report(0.05, "Finding the beam in every pattern")
@@ -843,6 +851,9 @@ def beam_at(
 class CentreBody(BaseModel):
     plane: PlaneOptions = PlaneOptions()
     in_place: bool = True
+    # "patterns": shift every pattern; "axes": only put the pattern axes' 0 on
+    # the beam (its median over the scan; for a negligible descan).
+    move: Literal["patterns", "axes"] = "patterns"
 
 
 @router.post("/api/datasets/{dataset_id}/4d/beam/centre")
@@ -855,6 +866,12 @@ def beam_centre(dataset_id: str, body: CentreBody, request: Request) -> dict:
     _, used = _shifts(request, ds, body.plane)
 
     def run(job) -> dict:
+        if body.move == "axes":
+            try:
+                at = session.centre_axes(ds, used)
+            except ValueError as e:
+                raise RuntimeError(str(e))
+            return {"file": session.file_of(ds).summary(session), "id": ds.id, "at": at}
         try:
             made = session.centre_patterns(ds, used, body.in_place, lambda f, m: job.report(f, m))
         except ValueError as e:
